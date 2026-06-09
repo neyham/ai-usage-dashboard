@@ -1,0 +1,8 @@
+node_modules
+dist
+dist-ssr
+HANDOFF.md
+*.local
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
