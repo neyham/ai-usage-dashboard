@@ -5,7 +5,7 @@
 //!   "failures"  — Codex + DeepSeek failed, showing cached data; UI stays up
 
 use crate::models::{ClaudeService, CodexService, DeepSeekService, Services, UsageSummary};
-use crate::util::{fmt_local, local_label, normalize_percent};
+use crate::util::{clamp_percent, fmt_local, local_label, normalize_percent};
 use chrono::{Duration, Utc};
 use serde_json::Value;
 
@@ -77,8 +77,8 @@ fn parse_codex() -> CodexService {
         from_cache: false,
         data_may_be_stale: false,
         plan: v.get("plan_type").and_then(Value::as_str).map(str::to_string),
-        five_hour_percent: primary.get("used_percent").and_then(Value::as_f64).map(normalize_percent),
-        seven_day_percent: secondary.get("used_percent").and_then(Value::as_f64).map(normalize_percent),
+        five_hour_percent: primary.get("used_percent").and_then(Value::as_f64).map(clamp_percent),
+        seven_day_percent: secondary.get("used_percent").and_then(Value::as_f64).map(clamp_percent),
         five_hour_reset_local: primary.get("reset_at").and_then(local_label),
         seven_day_reset_local: secondary.get("reset_at").and_then(local_label),
     }

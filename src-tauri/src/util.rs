@@ -3,11 +3,17 @@
 use chrono::{DateTime, Local, TimeZone, Utc};
 use serde_json::Value;
 
-/// Claude reports `utilization` as 0..1; Codex reports `used_percent` as 0..100.
-/// Normalize both to a 0..100 scale.
+/// Normalize values that may be ratios, such as Claude `utilization`, to a
+/// 0..100 percent scale.
 pub fn normalize_percent(value: f64) -> f64 {
     let v = if value <= 1.0 { value * 100.0 } else { value };
     v.max(0.0)
+}
+
+/// Clamp values that are already reported as 0..100 percentages, such as Codex
+/// `used_percent`. Do not apply ratio heuristics here: `1` means 1%, not 100%.
+pub fn clamp_percent(value: f64) -> f64 {
+    value.clamp(0.0, 100.0)
 }
 
 /// Parse a JSON value that may be an RFC3339 string, a numeric epoch (seconds

@@ -5,7 +5,7 @@
 use super::{send_with_one_retry, Resp};
 use crate::config::Config;
 use crate::models::CodexService;
-use crate::util::{local_label, normalize_percent};
+use crate::util::{clamp_percent, local_label};
 use anyhow::{anyhow, bail, Context};
 use reqwest::Client;
 use serde_json::Value;
@@ -40,8 +40,8 @@ fn parse_usage(body: &str) -> anyhow::Result<CodexService> {
         from_cache: false,
         data_may_be_stale: false,
         plan: root.get("plan_type").and_then(Value::as_str).map(str::to_string),
-        five_hour_percent: primary.get("used_percent").and_then(Value::as_f64).map(normalize_percent),
-        seven_day_percent: secondary.get("used_percent").and_then(Value::as_f64).map(normalize_percent),
+        five_hour_percent: primary.get("used_percent").and_then(Value::as_f64).map(clamp_percent),
+        seven_day_percent: secondary.get("used_percent").and_then(Value::as_f64).map(clamp_percent),
         five_hour_reset_local: primary.get("reset_at").and_then(local_label),
         seven_day_reset_local: secondary.get("reset_at").and_then(local_label),
     })
@@ -70,4 +70,31 @@ fn read_token(config: &Config) -> anyhow::Result<String> {
         }
     }
     bail!("Codex token missing in auth.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_usage;
+
+    #[test]
+    fn codex_used_percent_is_already_percent_scale() {
+        let body = r#"{
+            "plan_type": "pro",
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 1,
+                    "reset_at": 1780813800
+                },
+                "secondary_window": {
+                    "used_percent": 38,
+                    "reset_at": 1781121600
+                }
+            }
+        }"#;
+
+        let usage = parse_usage(body).expect("valid Codex usage");
+
+        assert_eq!(usage.five_hour_percent, Some(1.0));
+        assert_eq!(usage.seven_day_percent, Some(38.0));
+    }
 }
