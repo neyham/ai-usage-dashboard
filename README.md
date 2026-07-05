@@ -81,7 +81,7 @@ into the binary, so mock mode needs no network.
 
 | Service  | Endpoint                                             | Credential source |
 |----------|------------------------------------------------------|-------------------|
-| Claude   | `GET api.anthropic.com/api/oauth/usage`              | `%USERPROFILE%\.claude\.credentials.json`, else WSL `/root/.claude/.credentials.json` via `wsl.exe`. Refreshes on 401; 429 → cooldown (`retry-after` + 30s, else 30 min). |
+| Claude   | `GET api.anthropic.com/api/oauth/usage`              | `%USERPROFILE%\.claude\.credentials.json`, else a configured WSL Claude credential file via `wsl.exe`. Refreshes on 401; 429 → cooldown (`retry-after` + 30s, else 30 min). If Claude's web OAuth refresh is blocked, the UI reports `REFRESH BLOCKED`; an optional Claude Code fallback can be enabled in config. |
 | Codex    | `GET chatgpt.com/backend-api/wham/usage`             | `%USERPROFILE%\.codex\auth.json` → `tokens.access_token` \| `id_token` |
 | DeepSeek | `GET api.deepseek.com/user/balance`                  | Windows Credential Manager target `AiUsageDashboard/DeepSeekApiKey`, else `DEEPSEEK_API_KEY` env, else config |
 
@@ -127,32 +127,36 @@ Both scripts default to `src-tauri\target\release\ai-usage-dashboard.exe`; pass
   "deepSeekApiKey": "",
   "deepSeekCredentialTarget": "AiUsageDashboard/DeepSeekApiKey",
   "claudeCredentialsPath": "",
+  "claudeCodeRefreshEnabled": false,
+  "claudeCodeCommand": "claude",
+  "claudeCodeRefreshTimeoutSeconds": 30,
+  "claudeCodeRefreshMaxBudgetUsd": 0.03,
   "codexAuthPath": "",
   "mockMode": ""
 }
 ```
 
 `claudeCredentialsPath` accepts a normal path or a `wsl:<distro>:<path>` spec,
-e.g. `wsl:Ubuntu:/root/.claude/.credentials.json`.
+e.g. `wsl:Ubuntu:/home/your-user/.claude/.credentials.json`.
 
-## Status
+`claudeCodeRefreshEnabled` is off by default because it may spend a small amount
+of Claude Code usage. When enabled, the backend uses Claude Code as a last-resort
+credential refresher after direct OAuth refresh fails, then reloads the refreshed
+credential file and retries the usage request. On Windows, WSL-backed credential
+paths run the command through `wsl.exe -d <distro> --`.
 
-**Verified:** the frontend TypeScript/Vite build passes with `npm run build`.
+## Status — what's done vs. next
 
-**Implemented:** full project structure, the dark dashboard UI, config/cache/
-secrets, all three live fetchers, Claude refresh + cooldown, mock mode, the
-background refresh loop, the icon set, **and the launch modes** (`--fullscreen`
-/ `/s` screensaver with exit-on-input / `/c` config / `/p` preview) plus the
-idle-task and screensaver install scripts.
+**Scaffolded & implemented:** full project structure, the dark dashboard UI,
+config/cache/secrets, all three live fetchers, Claude refresh + cooldown, mock
+mode, the background refresh loop, the icon set, **and the launch modes**
+(`--fullscreen` / `/s` screensaver with exit-on-input / `/c` config / `/p`
+preview) plus the idle-task and screensaver install scripts.
 
-**Not yet verified in this checkout:** Rust/Tauri compilation, because this
-environment does not have `cargo` installed. First run on Windows may surface
-minor fixups, most likely:
-- the `windows` crate `CredReadW` call in `secrets.rs` and the exact DeepSeek
-  credential blob encoding;
-- Tauri v2 window-API method names (`set_fullscreen` / `set_cursor_visible` /
-  `set_always_on_top` in `lib.rs::run`).
+**Verified locally:** TypeScript type-checking and Rust `cargo check` pass on
+the source tree. Windows installer packaging still needs to be rebuilt on a
+Windows host before publishing binaries.
 
-**Next:** confirm it compiles, walk the three mock states, then verify live
-credential reads (Claude via WSL, Codex `auth.json`, DeepSeek Credential
+**Then:** rebuild the Windows app bundle, walk the three mock states, then verify
+live credential reads (Claude via WSL, Codex `auth.json`, DeepSeek Credential
 Manager).

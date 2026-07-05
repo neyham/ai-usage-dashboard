@@ -62,11 +62,6 @@ pub fn fmt_local(dt: DateTime<Utc>) -> String {
     dt.with_timezone(&Local).format("%m-%d %H:%M").to_string()
 }
 
-/// Format a UTC timestamp as local "HH:mm".
-pub fn fmt_local_time(dt: DateTime<Utc>) -> String {
-    dt.with_timezone(&Local).format("%H:%M").to_string()
-}
-
 /// Convenience: parse a JSON value to a local "MM-DD HH:mm" label, if possible.
 pub fn local_label(value: &Value) -> Option<String> {
     parse_datetime(value).map(fmt_local)

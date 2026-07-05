@@ -1,6 +1,6 @@
 //! Claude usage fetcher. Reads OAuth credentials from the local
 //! `.claude/.credentials.json` (or, on Windows, falls back to reading the WSL
-//! root credentials via `wsl.exe`). Refreshes on expiry / 401 and signals 429
+//! home credentials via `wsl.exe`). Refreshes on expiry / 401 and signals 429
 //! back to the orchestrator so it can enter cooldown.
 
 use super::{send, FetchError};
@@ -12,17 +12,23 @@ use chrono::{DateTime, Duration, Utc};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::time::{Duration as StdDuration, Instant};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const TOKEN_URL: &str = "https://claude.ai/v1/oauth/token";
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const ANTHROPIC_BETA: &str = "oauth-2025-04-20";
+const MSG_LOGIN_REQUIRED: &str = "LOGIN REQUIRED";
+const MSG_AUTH_EXPIRED: &str = "AUTH EXPIRED";
+const MSG_REFRESH_BLOCKED: &str = "REFRESH BLOCKED";
+const MSG_AUTH_CHECK_FAILED: &str = "AUTH CHECK FAILED";
 
 pub async fn fetch(config: &Config, client: &Client) -> Result<ClaudeService, FetchError> {
-    let mut creds = load(config).map_err(FetchError::Other)?;
+    let mut creds = load(config).map_err(load_error)?;
 
     if creds.is_expired_soon() {
-        creds.refresh(client).await.map_err(FetchError::Other)?;
+        refresh_or_recover(config, client, &mut creds).await?;
     }
 
     let mut resp = send(usage_request(client, &creds.access_token))
@@ -30,7 +36,7 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<ClaudeService, Fe
         .map_err(FetchError::Other)?;
 
     if resp.status == 401 {
-        creds.refresh(client).await.map_err(FetchError::Other)?;
+        refresh_or_recover(config, client, &mut creds).await?;
         resp = send(usage_request(client, &creds.access_token))
             .await
             .map_err(FetchError::Other)?;
@@ -42,6 +48,11 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<ClaudeService, Fe
         });
     }
     if !resp.is_success() {
+        if resp.status == 401 {
+            return Err(FetchError::Auth {
+                message: MSG_AUTH_EXPIRED,
+            });
+        }
         return Err(FetchError::Other(anyhow!(
             "Claude usage HTTP {}",
             resp.status
@@ -49,6 +60,50 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<ClaudeService, Fe
     }
 
     parse_usage(&resp.body).map_err(FetchError::Other)
+}
+
+async fn refresh_or_recover(
+    config: &Config,
+    client: &Client,
+    creds: &mut Creds,
+) -> Result<(), FetchError> {
+    match creds.refresh(client).await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let message = auth_message_from_refresh_error(&err);
+            if config.claude_code_refresh_enabled
+                && try_claude_code_refresh(config, creds).is_ok()
+            {
+                return Ok(());
+            }
+            Err(FetchError::Auth { message })
+        }
+    }
+}
+
+fn load_error(err: anyhow::Error) -> FetchError {
+    let text = err.to_string();
+    if text.contains("credentials not found") || text.contains("OAuth token missing") {
+        FetchError::Auth {
+            message: MSG_LOGIN_REQUIRED,
+        }
+    } else {
+        FetchError::Other(err)
+    }
+}
+
+fn auth_message_from_refresh_error(err: &anyhow::Error) -> &'static str {
+    let text = err.to_string();
+    if text.contains("HTTP 403") {
+        MSG_REFRESH_BLOCKED
+    } else if text.contains("HTTP 400")
+        || text.contains("HTTP 401")
+        || text.contains("refresh token missing")
+    {
+        MSG_AUTH_EXPIRED
+    } else {
+        MSG_AUTH_CHECK_FAILED
+    }
 }
 
 fn usage_request(client: &Client, access_token: &str) -> reqwest::RequestBuilder {
@@ -81,6 +136,28 @@ enum CredSource {
     File(PathBuf),
     #[cfg(windows)]
     Wsl { distro: String, path: String },
+}
+
+impl CredSource {
+    #[cfg(windows)]
+    fn wsl_distro(&self) -> Option<String> {
+        match self {
+            CredSource::Wsl { distro, .. } => Some(distro.clone()),
+            CredSource::File(path) => {
+                let text = path.to_string_lossy();
+                for prefix in ["\\\\wsl.localhost\\", "\\\\wsl$\\"] {
+                    if let Some(rest) = text.strip_prefix(prefix) {
+                        return rest
+                            .split(['\\', '/'])
+                            .next()
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string);
+                    }
+                }
+                None
+            }
+        }
+    }
 }
 
 struct Creds {
@@ -169,6 +246,115 @@ impl Creds {
     }
 }
 
+fn try_claude_code_refresh(config: &Config, creds: &mut Creds) -> anyhow::Result<()> {
+    if !config.claude_code_refresh_enabled {
+        bail!("Claude Code refresh disabled");
+    }
+
+    let before_access = creds.access_token.clone();
+    let before_expires = creds.expires_at;
+
+    let mut cmd = build_claude_code_refresh_command(config, &creds.source);
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+
+    let timeout = StdDuration::from_secs(config.claude_code_refresh_timeout_seconds.max(5));
+    let run_result = run_with_timeout(cmd, timeout);
+
+    // Claude Code may refresh credentials before a non-zero exit, e.g. when the
+    // configured budget is too low for the actual tiny prompt. Trust the file,
+    // not the process status, and never expose command output to the renderer.
+    let refreshed = load(config)?;
+    let has_new_access =
+        refreshed.access_token != before_access || refreshed.expires_at != before_expires;
+    let is_fresh = match refreshed.expires_at {
+        Some(exp) => exp > Utc::now() + Duration::minutes(5),
+        None => !refreshed.access_token.is_empty(),
+    };
+
+    if has_new_access && is_fresh {
+        *creds = refreshed;
+        return Ok(());
+    }
+
+    run_result?;
+    bail!("Claude Code did not refresh credentials")
+}
+
+fn build_claude_code_refresh_command(config: &Config, _source: &CredSource) -> Command {
+    #[cfg(windows)]
+    {
+        if let Some(distro) = _source.wsl_distro() {
+            let mut cmd = Command::new("wsl.exe");
+            let shell = claude_code_refresh_shell(config);
+            cmd.args(["-d", &distro, "--", "bash", "-lc", &shell]);
+            return cmd;
+        }
+    }
+
+    let mut cmd = Command::new(config.claude_code_command.trim());
+    add_claude_code_refresh_args(&mut cmd, config);
+    cmd
+}
+
+fn add_claude_code_refresh_args(cmd: &mut Command, config: &Config) {
+    let budget = claude_code_refresh_budget(config);
+    cmd.args([
+        "-p",
+        "OK",
+        "--output-format",
+        "json",
+        "--tools",
+        "",
+        "--model",
+        "claude-haiku-4-5-20251001",
+        "--max-budget-usd",
+        &budget,
+    ]);
+}
+
+fn claude_code_refresh_budget(config: &Config) -> String {
+    config
+        .claude_code_refresh_max_budget_usd
+        .max(0.001)
+        .to_string()
+}
+
+#[cfg(windows)]
+fn claude_code_refresh_shell(config: &Config) -> String {
+    format!(
+        "PATH=\"$HOME/.local/bin:$PATH\"; {} -p OK --output-format json --tools '' --model claude-haiku-4-5-20251001 --max-budget-usd {}",
+        shell_quote(config.claude_code_command.trim()),
+        shell_quote(&claude_code_refresh_budget(config))
+    )
+}
+
+#[cfg(windows)]
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn run_with_timeout(mut cmd: Command, timeout: StdDuration) -> anyhow::Result<()> {
+    let mut child = cmd.spawn().context("spawn Claude Code refresh")?;
+    let start = Instant::now();
+
+    loop {
+        if let Some(status) = child.try_wait().context("poll Claude Code refresh")? {
+            if status.success() {
+                return Ok(());
+            }
+            bail!("Claude Code refresh exited with {status}");
+        }
+
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("Claude Code refresh timed out");
+        }
+
+        std::thread::sleep(StdDuration::from_millis(250));
+    }
+}
+
 fn str_field(v: &Value, keys: &[&str]) -> String {
     for k in keys {
         if let Some(s) = v.get(*k).and_then(Value::as_str) {
@@ -237,17 +423,6 @@ fn resolve_and_read(config: &Config) -> anyhow::Result<(String, CredSource)> {
         candidates.push(home.join(".claude").join(".credentials.json"));
         candidates.push(home.join(".claude").join("credentials.json"));
     }
-    #[cfg(windows)]
-    {
-        candidates.push(PathBuf::from(r"\\wsl.localhost\Ubuntu\root\.claude\.credentials.json"));
-        candidates.push(PathBuf::from(r"\\wsl$\Ubuntu\root\.claude\.credentials.json"));
-    }
-    #[cfg(not(windows))]
-    {
-        candidates.push(PathBuf::from("/root/.claude/.credentials.json"));
-        candidates.push(PathBuf::from("/root/.claude/credentials.json"));
-    }
-
     for p in candidates {
         if let Ok(text) = std::fs::read_to_string(&p) {
             if !text.trim().is_empty() {
@@ -258,16 +433,13 @@ fn resolve_and_read(config: &Config) -> anyhow::Result<(String, CredSource)> {
 
     #[cfg(windows)]
     {
-        for path in [
-            "/root/.claude/.credentials.json",
-            "/root/.claude/credentials.json",
-        ] {
-            if let Some(text) = wsl_read("Ubuntu", path) {
+        for relative_path in [".claude/.credentials.json", ".claude/credentials.json"] {
+            if let Some((text, path)) = wsl_read_home_file("Ubuntu", relative_path) {
                 return Ok((
                     text,
                     CredSource::Wsl {
                         distro: "Ubuntu".into(),
-                        path: path.into(),
+                        path,
                     },
                 ));
             }
@@ -311,6 +483,28 @@ fn wsl_read(distro: &str, path: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(windows)]
+fn wsl_read_home_file(distro: &str, relative_path: &str) -> Option<(String, String)> {
+    let shell = format!(
+        "p=\"$HOME\"/{}; [ -s \"$p\" ] || exit 1; printf '%s\\n' \"$p\"; cat \"$p\"",
+        shell_quote(relative_path)
+    );
+    let out = std::process::Command::new("wsl.exe")
+        .args(["-d", distro, "--", "bash", "-lc", &shell])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let (path, text) = stdout.split_once('\n')?;
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some((text.to_string(), path.to_string()))
+    }
 }
 
 #[cfg(windows)]

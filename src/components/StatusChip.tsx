@@ -11,7 +11,11 @@ export function StatusChip({
 }) {
   let cls = "chip-ok";
   let tag = "ONLINE";
-  if (dataMayBeStale) {
+  const authIssue = /AUTH|LOGIN|REFRESH/.test(status.toUpperCase());
+  if (authIssue) {
+    cls = "chip-auth";
+    tag = "AUTH";
+  } else if (dataMayBeStale) {
     cls = "chip-stale";
     tag = "STALE";
   } else if (fromCache) {

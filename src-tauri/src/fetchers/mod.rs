@@ -34,6 +34,8 @@ impl Resp {
 pub enum FetchError {
     /// HTTP 429 — carries the parsed `retry-after` seconds if present.
     RateLimited { retry_after: Option<u64> },
+    /// Authentication or OAuth refresh failure, sanitized for the UI.
+    Auth { message: &'static str },
     Other(anyhow::Error),
 }
 
@@ -209,7 +211,11 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
                     true,
                 )
             }
-            Err(FetchError::Other(_)) => {
+            Err(FetchError::Auth { message }) => {
+                (cached_service(cache, "claude", message, None), true)
+            }
+            Err(FetchError::Other(err)) => {
+                let _ = err.to_string();
                 (cached_service(cache, "claude", MSG_FAILED, None), true)
             }
         }

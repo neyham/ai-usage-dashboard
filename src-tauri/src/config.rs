@@ -15,6 +15,12 @@ pub struct Config {
     pub deep_seek_credential_target: String,
     /// Optional override path / "wsl:<distro>:<path>" spec for Claude creds.
     pub claude_credentials_path: String,
+    /// Optional recovery path for Claude OAuth refresh failures. Disabled by
+    /// default because it can spend a tiny amount of Claude Code usage.
+    pub claude_code_refresh_enabled: bool,
+    pub claude_code_command: String,
+    pub claude_code_refresh_timeout_seconds: u64,
+    pub claude_code_refresh_max_budget_usd: f64,
     /// Optional override path for Codex auth.json.
     pub codex_auth_path: String,
     /// "" for live; "normal" | "claude429" | "failures" for mock mode.
@@ -29,6 +35,10 @@ impl Default for Config {
             deep_seek_api_key: String::new(),
             deep_seek_credential_target: "AiUsageDashboard/DeepSeekApiKey".into(),
             claude_credentials_path: String::new(),
+            claude_code_refresh_enabled: false,
+            claude_code_command: "claude".into(),
+            claude_code_refresh_timeout_seconds: 30,
+            claude_code_refresh_max_budget_usd: 0.03,
             codex_auth_path: String::new(),
             mock_mode: String::new(),
         }
@@ -43,6 +53,15 @@ impl Config {
         }
         if self.network_timeout_seconds < 5 {
             self.network_timeout_seconds = 15;
+        }
+        if self.claude_code_command.trim().is_empty() {
+            self.claude_code_command = "claude".into();
+        }
+        if self.claude_code_refresh_timeout_seconds < 5 {
+            self.claude_code_refresh_timeout_seconds = 30;
+        }
+        if self.claude_code_refresh_max_budget_usd <= 0.0 {
+            self.claude_code_refresh_max_budget_usd = 0.03;
         }
         self
     }
@@ -64,6 +83,10 @@ const DEFAULT_CONFIG_JSON: &str = r#"{
   "deepSeekApiKey": "",
   "deepSeekCredentialTarget": "AiUsageDashboard/DeepSeekApiKey",
   "claudeCredentialsPath": "",
+  "claudeCodeRefreshEnabled": false,
+  "claudeCodeCommand": "claude",
+  "claudeCodeRefreshTimeoutSeconds": 30,
+  "claudeCodeRefreshMaxBudgetUsd": 0.03,
   "codexAuthPath": "",
   "mockMode": ""
 }
