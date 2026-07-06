@@ -3,7 +3,7 @@
 //! home credentials via `wsl.exe`). Refreshes on expiry / 401 and signals 429
 //! back to the orchestrator so it can enter cooldown.
 
-use super::{send, FetchError};
+use super::{send_with_one_retry, FetchError};
 use crate::config::Config;
 use crate::models::ClaudeService;
 use crate::util::{local_label, normalize_percent, parse_datetime};
@@ -31,13 +31,13 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<ClaudeService, Fe
         refresh_or_recover(config, client, &mut creds).await?;
     }
 
-    let mut resp = send(usage_request(client, &creds.access_token))
+    let mut resp = send_with_one_retry(|| usage_request(client, &creds.access_token))
         .await
         .map_err(FetchError::Other)?;
 
     if resp.status == 401 {
         refresh_or_recover(config, client, &mut creds).await?;
-        resp = send(usage_request(client, &creds.access_token))
+        resp = send_with_one_retry(|| usage_request(client, &creds.access_token))
             .await
             .map_err(FetchError::Other)?;
     }
@@ -113,6 +113,18 @@ fn usage_request(client: &Client, access_token: &str) -> reqwest::RequestBuilder
         .header("anthropic-beta", ANTHROPIC_BETA)
 }
 
+fn refresh_request(client: &Client, refresh_token: &str) -> reqwest::RequestBuilder {
+    client
+        .post(TOKEN_URL)
+        .header("Origin", "https://claude.ai")
+        .header("Referer", "https://claude.ai/")
+        .json(&json!({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": CLIENT_ID,
+        }))
+}
+
 fn parse_usage(body: &str) -> anyhow::Result<ClaudeService> {
     let root: Value = serde_json::from_str(body).context("parse Claude usage body")?;
     let five = &root["five_hour"];
@@ -181,17 +193,7 @@ impl Creds {
             bail!("Claude refresh token missing");
         }
 
-        let req = client
-            .post(TOKEN_URL)
-            .header("Origin", "https://claude.ai")
-            .header("Referer", "https://claude.ai/")
-            .json(&json!({
-                "grant_type": "refresh_token",
-                "refresh_token": self.refresh_token,
-                "client_id": CLIENT_ID,
-            }));
-
-        let resp = send(req).await?;
+        let resp = send_with_one_retry(|| refresh_request(client, &self.refresh_token)).await?;
         if !resp.is_success() {
             bail!("Claude token refresh HTTP {}", resp.status);
         }
@@ -472,14 +474,19 @@ fn expand(p: &str) -> String {
 
 #[cfg(windows)]
 fn wsl_read(distro: &str, path: &str) -> Option<String> {
-    let out = std::process::Command::new("wsl.exe")
-        .args(["-d", distro, "--", "cat", path])
-        .output()
-        .ok()?;
-    if out.status.success() {
-        let s = String::from_utf8_lossy(&out.stdout).to_string();
-        if !s.trim().is_empty() {
-            return Some(s);
+    for attempt in 0..2 {
+        let out = std::process::Command::new("wsl.exe")
+            .args(["-d", distro, "--", "cat", path])
+            .output()
+            .ok()?;
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).to_string();
+            if !s.trim().is_empty() {
+                return Some(s);
+            }
+        }
+        if attempt == 0 {
+            std::thread::sleep(StdDuration::from_millis(250));
         }
     }
     None
@@ -491,20 +498,24 @@ fn wsl_read_home_file(distro: &str, relative_path: &str) -> Option<(String, Stri
         "p=\"$HOME\"/{}; [ -s \"$p\" ] || exit 1; printf '%s\\n' \"$p\"; cat \"$p\"",
         shell_quote(relative_path)
     );
-    let out = std::process::Command::new("wsl.exe")
-        .args(["-d", distro, "--", "bash", "-lc", &shell])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+    for attempt in 0..2 {
+        let out = std::process::Command::new("wsl.exe")
+            .args(["-d", distro, "--", "bash", "-lc", &shell])
+            .output()
+            .ok()?;
+        if out.status.success() {
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            if let Some((path, text)) = stdout.split_once('\n') {
+                if !text.trim().is_empty() {
+                    return Some((text.to_string(), path.to_string()));
+                }
+            }
+        }
+        if attempt == 0 {
+            std::thread::sleep(StdDuration::from_millis(250));
+        }
     }
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let (path, text) = stdout.split_once('\n')?;
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some((text.to_string(), path.to_string()))
-    }
+    None
 }
 
 #[cfg(windows)]

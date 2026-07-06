@@ -197,6 +197,7 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
     } else {
         match claude::fetch(config, &client).await {
             Ok(svc) => {
+                cache.claude_cooldown_until = None;
                 if let Ok(v) = serde_json::to_value(&svc) {
                     cache.put("claude", v);
                 }
