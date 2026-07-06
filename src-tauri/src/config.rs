@@ -102,7 +102,7 @@ pub fn load_or_create() -> Config {
         return Config::default();
     }
     match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str::<Config>(&text)
+        Ok(text) => serde_json::from_str::<Config>(text.trim_start_matches('\u{feff}'))
             .unwrap_or_default()
             .clamp(),
         Err(_) => Config::default(),
