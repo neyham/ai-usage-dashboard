@@ -22,7 +22,9 @@ export function ClockHeader() {
 
   return (
     <div className="clockwrap">
-      <div className="clock">{time}</div>
+      <time className="clock" dateTime={now.toISOString()}>
+        {time}
+      </time>
       <div className="clock-date">
         {date} <span className="clock-day">{weekday}</span>
       </div>

@@ -3,15 +3,8 @@
 use chrono::{DateTime, Local, TimeZone, Utc};
 use serde_json::Value;
 
-/// Normalize values that may be ratios, such as Claude `utilization`, to a
-/// 0..100 percent scale.
-pub fn normalize_percent(value: f64) -> f64 {
-    let v = if value <= 1.0 { value * 100.0 } else { value };
-    v.max(0.0)
-}
-
 /// Clamp values that are already reported as 0..100 percentages, such as Codex
-/// `used_percent`. Do not apply ratio heuristics here: `1` means 1%, not 100%.
+/// `used_percent` and Claude `utilization`. `1` means 1%, not 100%.
 pub fn clamp_percent(value: f64) -> f64 {
     value.clamp(0.0, 100.0)
 }
@@ -24,7 +17,7 @@ pub fn parse_datetime(value: &Value) -> Option<DateTime<Utc>> {
             if let Some(i) = n.as_i64() {
                 from_epoch(i)
             } else {
-                n.as_f64().map(|f| from_epoch(f as i64)).flatten()
+                n.as_f64().and_then(|f| from_epoch(f as i64))
             }
         }
         Value::String(s) => parse_datetime_str(s),
@@ -49,7 +42,7 @@ pub fn parse_datetime_str(s: &str) -> Option<DateTime<Utc>> {
 
 fn from_epoch(value: i64) -> Option<DateTime<Utc>> {
     // Heuristic: > ~year 2001 in ms means it's milliseconds.
-    let secs = if value.abs() > 100_000_000_000 {
+    let secs = if value.unsigned_abs() > 100_000_000_000 {
         value / 1000
     } else {
         value

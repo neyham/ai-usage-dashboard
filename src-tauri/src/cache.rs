@@ -2,10 +2,12 @@
 //! Each service keeps its last successful payload plus a timestamp so the UI
 //! can degrade gracefully and mark data older than 6 hours as possibly stale.
 
+use crate::fs_util::atomic_write;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io;
 use std::path::PathBuf;
 
 pub const STALE_AFTER_HOURS: i64 = 6;
@@ -50,12 +52,11 @@ impl CacheState {
         }
     }
 
-    pub fn save(&self) {
+    pub fn save(&self) -> io::Result<()> {
         let dir = cache_dir();
-        let _ = std::fs::create_dir_all(&dir);
-        if let Ok(text) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(cache_path(), text);
-        }
+        std::fs::create_dir_all(&dir)?;
+        let text = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
+        atomic_write(&cache_path(), &text)
     }
 
     pub fn get(&self, key: &str) -> Option<&CachedCard> {
