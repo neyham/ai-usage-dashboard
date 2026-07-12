@@ -28,6 +28,37 @@ pub struct AppState {
     refreshing: Mutex<bool>,
 }
 
+struct RefreshFlagGuard {
+    app: AppHandle,
+    armed: bool,
+}
+
+impl RefreshFlagGuard {
+    fn new(app: &AppHandle) -> Self {
+        Self {
+            app: app.clone(),
+            armed: true,
+        }
+    }
+
+    async fn release(mut self) {
+        *self.app.state::<AppState>().refreshing.lock().await = false;
+        self.armed = false;
+    }
+}
+
+impl Drop for RefreshFlagGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let app = self.app.clone();
+        tauri::async_runtime::spawn(async move {
+            *app.state::<AppState>().refreshing.lock().await = false;
+        });
+    }
+}
+
 /// Launch flags parsed from argv, mirroring the WinForms `AppOptions`.
 #[derive(Default)]
 struct AppOptions {
@@ -131,6 +162,7 @@ async fn try_begin_refresh(app: &AppHandle) -> bool {
 }
 
 async fn run_refresh(app: &AppHandle) {
+    let refresh_flag = RefreshFlagGuard::new(app);
     let state = app.state::<AppState>();
 
     let summary = if state.config.load_error {
@@ -149,7 +181,7 @@ async fn run_refresh(app: &AppHandle) {
     *state.summary.lock().await = summary.clone();
     let _ = app.emit("summary", &summary);
 
-    *state.refreshing.lock().await = false;
+    refresh_flag.release().await;
 }
 
 fn config_error_summary() -> UsageSummary {

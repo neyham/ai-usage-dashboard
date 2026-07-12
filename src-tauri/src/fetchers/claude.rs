@@ -46,7 +46,7 @@ enum RefreshError {
     InvalidGrant,
     DirectRefreshUnavailable,
     Forbidden,
-    Other(anyhow::Error),
+    Other(#[allow(dead_code)] anyhow::Error),
 }
 
 impl From<anyhow::Error> for RefreshError {
@@ -104,9 +104,6 @@ async fn refresh_or_recover(
 ) -> Result<(), FetchError> {
     match creds.refresh(client).await {
         Ok(()) => Ok(()),
-        Err(RefreshError::RateLimited { retry_after }) => {
-            Err(FetchError::RateLimited { retry_after })
-        }
         Err(err) => recover_allowed_error(config, creds, err).await,
     }
 }
@@ -116,12 +113,7 @@ async fn recover_allowed_error(
     creds: &mut Creds,
     err: RefreshError,
 ) -> Result<(), FetchError> {
-    if let RefreshError::RateLimited { retry_after } = &err {
-        return Err(FetchError::RateLimited {
-            retry_after: *retry_after,
-        });
-    }
-    let (allow_claude_code, message) = recovery_policy(&err);
+    let (allow_claude_code, message) = recovery_policy(&err)?;
 
     if allow_claude_code
         && config.claude_code_refresh_enabled
@@ -132,17 +124,18 @@ async fn recover_allowed_error(
     Err(FetchError::Auth { message })
 }
 
-fn recovery_policy(err: &RefreshError) -> (bool, &'static str) {
+fn recovery_policy(err: &RefreshError) -> Result<(bool, &'static str), FetchError> {
     match err {
-        RefreshError::MissingRefreshToken | RefreshError::InvalidGrant => (true, MSG_AUTH_EXPIRED),
+        RefreshError::RateLimited { retry_after } => Err(FetchError::RateLimited {
+            retry_after: *retry_after,
+        }),
+        RefreshError::MissingRefreshToken | RefreshError::InvalidGrant => {
+            Ok((true, MSG_AUTH_EXPIRED))
+        }
         RefreshError::DirectRefreshUnavailable | RefreshError::Forbidden => {
-            (true, MSG_REFRESH_BLOCKED)
+            Ok((true, MSG_REFRESH_BLOCKED))
         }
-        RefreshError::Other(err) => {
-            let _ = err;
-            (false, MSG_AUTH_CHECK_FAILED)
-        }
-        RefreshError::RateLimited { .. } => (false, MSG_AUTH_CHECK_FAILED),
+        RefreshError::Other(_) => Ok((false, MSG_AUTH_CHECK_FAILED)),
     }
 }
 
@@ -566,6 +559,8 @@ impl WslRefreshLock {
     fn acquire(distro: &str, credentials_path: &str) -> anyhow::Result<Self> {
         use std::io::BufRead;
 
+        // Compatibility target: Claude Code 2.1.202's three-directory WSL lock
+        // convention and its 10s/15s stale-lock break thresholds.
         const SCRIPT: &str = r#"set -u
 credentials_path=$1
 root=$(dirname -- "$credentials_path")
@@ -1286,7 +1281,7 @@ mod tests {
         Creds, OsFileLock, RefreshError, OAUTH_SCOPES, TOKEN_URL,
     };
     use crate::config::Config;
-    use crate::fetchers::Resp;
+    use crate::fetchers::{FetchError, Resp};
     use chrono::{Duration, TimeZone, Utc};
     use reqwest::Client;
     use serde_json::{json, Value};
@@ -1426,20 +1421,31 @@ mod tests {
             RefreshError::DirectRefreshUnavailable,
             RefreshError::Forbidden,
         ] {
-            assert!(recovery_policy(&err).0, "expected CLI recovery for {err:?}");
+            assert!(
+                recovery_policy(&err).expect("non-rate-limit policy").0,
+                "expected CLI recovery for {err:?}"
+            );
         }
 
         for err in [
             RefreshError::Other(anyhow::anyhow!("transport failure")),
             RefreshError::Other(anyhow::anyhow!("HTTP 500")),
             RefreshError::Other(anyhow::anyhow!("parse refresh response")),
-            RefreshError::RateLimited { retry_after: None },
         ] {
             assert!(
-                !recovery_policy(&err).0,
+                !recovery_policy(&err).expect("non-rate-limit policy").0,
                 "unexpected CLI recovery for {err:?}"
             );
         }
+
+        assert!(matches!(
+            recovery_policy(&RefreshError::RateLimited {
+                retry_after: Some(91)
+            }),
+            Err(FetchError::RateLimited {
+                retry_after: Some(91)
+            })
+        ));
     }
 
     #[test]

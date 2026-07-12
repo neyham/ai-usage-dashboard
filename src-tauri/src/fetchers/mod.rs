@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use std::time::Duration as StdDuration;
 
 pub const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36";
+const MAX_RETRY_AFTER_SECONDS: u64 = 86_400;
 
 /// A flattened HTTP response we actually care about.
 pub struct Resp {
@@ -76,7 +77,7 @@ pub async fn send(req: RequestBuilder) -> anyhow::Result<Resp> {
 fn parse_retry_after_at(value: &str, now: DateTime<Utc>) -> Option<u64> {
     let value = value.trim();
     if let Ok(seconds) = value.parse::<u64>() {
-        return Some(seconds);
+        return Some(seconds.min(MAX_RETRY_AFTER_SECONDS));
     }
 
     let retry_at = DateTime::parse_from_rfc2822(value)
@@ -86,7 +87,7 @@ fn parse_retry_after_at(value: &str, now: DateTime<Utc>) -> Option<u64> {
     if millis <= 0 {
         Some(0)
     } else {
-        Some((millis as u64).div_ceil(1000))
+        Some((millis as u64).div_ceil(1000).min(MAX_RETRY_AFTER_SECONDS))
     }
 }
 
@@ -225,7 +226,9 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
                     (svc, false)
                 }
                 Err(FetchError::RateLimited { retry_after }) => {
-                    let secs = retry_after.map(|s| s + 30).unwrap_or(1800);
+                    let secs = retry_after
+                        .map(|s| s.saturating_add(30).min(MAX_RETRY_AFTER_SECONDS))
+                        .unwrap_or(1800);
                     let until = Utc::now() + Duration::seconds(secs as i64);
                     cache.claude_cooldown_until = Some(until);
                     (
@@ -361,5 +364,21 @@ mod tests {
             Some(0)
         );
         assert_eq!(parse_retry_after_at("later", now), None);
+    }
+
+    #[test]
+    fn retry_after_is_clamped_to_one_day() {
+        let now = DateTime::parse_from_rfc3339("2026-07-11T01:00:00Z")
+            .expect("fixed timestamp")
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            parse_retry_after_at("100000000000000000", now),
+            Some(86_400)
+        );
+        assert_eq!(
+            parse_retry_after_at("Fri, 31 Dec 9999 23:59:59 GMT", now),
+            Some(86_400)
+        );
     }
 }
