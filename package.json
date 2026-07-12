@@ -1,11 +1,27 @@
 {
   "name": "ai-usage-dashboard",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "license": "MIT",
+  "description": "Local Windows desktop dashboard for Codex and Claude usage limits and DeepSeek API balance",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/neyham/ai-usage-dashboard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/neyham/ai-usage-dashboard/issues"
+  },
+  "homepage": "https://github.com/neyham/ai-usage-dashboard#readme",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test": "npm run build && npm run test:ui",
+    "test:ui": "node scripts/viewport-check.mjs",
+    "test:rust": "cargo test --locked --all-targets --manifest-path src-tauri/Cargo.toml",
     "preview": "vite preview",
     "tauri": "tauri",
     "app:dev": "tauri dev",
@@ -23,6 +39,7 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "playwright": "^1.59.1",
     "typescript": "^5.6.3",
     "vite": "^6.0.3"
   }

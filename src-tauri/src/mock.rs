@@ -4,23 +4,48 @@
 //!   "claude429" — Claude rate-limited, showing cached data + cooldown
 //!   "failures"  — Codex + DeepSeek failed, showing cached data; UI stays up
 
-use crate::models::{ClaudeService, CodexService, DeepSeekService, Services, UsageSummary};
-use crate::util::{clamp_percent, fmt_local, local_label, normalize_percent};
+use crate::fetchers::{claude, codex, deepseek};
+use crate::models::{Services, UsageSummary};
+use crate::util::fmt_local;
 use chrono::{Duration, Utc};
-use serde_json::Value;
 
 const CLAUDE_JSON: &str = include_str!("../../mocks/claude_normal.json");
 const CODEX_JSON: &str = include_str!("../../mocks/codex_normal.json");
 const DEEPSEEK_JSON: &str = include_str!("../../mocks/deepseek_normal.json");
 
-pub fn summary(mode: &str) -> UsageSummary {
+pub fn summary(mode: &str) -> Option<UsageSummary> {
     let mode = mode.trim().to_lowercase();
+    if mode.is_empty() {
+        return None;
+    }
+    if !matches!(mode.as_str(), "normal" | "claude429" | "failures") {
+        return Some(invalid_mode_summary());
+    }
 
-    let mut claude = parse_claude();
-    let mut codex = parse_codex();
-    let mut deepseek = parse_deepseek();
+    Some(summary_from_payloads(
+        &mode,
+        CLAUDE_JSON,
+        CODEX_JSON,
+        DEEPSEEK_JSON,
+    ))
+}
 
-    match mode.as_str() {
+fn summary_from_payloads(
+    mode: &str,
+    claude_json: &str,
+    codex_json: &str,
+    deepseek_json: &str,
+) -> UsageSummary {
+    let Some((mut claude, mut codex, mut deepseek)) = claude::parse_usage(claude_json)
+        .ok()
+        .zip(codex::parse_usage(codex_json).ok())
+        .zip(deepseek::parse_balance(deepseek_json).ok())
+        .map(|((claude, codex), deepseek)| (claude, codex, deepseek))
+    else {
+        return mock_data_error_summary();
+    };
+
+    match mode {
         "claude429" => {
             claude.from_cache = true;
             claude.status = "RATE LIMITED".into();
@@ -32,14 +57,11 @@ pub fn summary(mode: &str) -> UsageSummary {
             deepseek.from_cache = true;
             deepseek.status = "API ERROR".into();
         }
-        _ => {}
+        "normal" => {}
+        _ => return invalid_mode_summary(),
     }
 
-    let status = if mode == "normal" || mode.is_empty() {
-        "ok"
-    } else {
-        "partial"
-    };
+    let status = if mode == "normal" { "ok" } else { "partial" };
 
     UsageSummary {
         refreshed_at: Some(Utc::now().to_rfc3339()),
@@ -52,64 +74,67 @@ pub fn summary(mode: &str) -> UsageSummary {
     }
 }
 
-fn parse_claude() -> ClaudeService {
-    let v: Value = serde_json::from_str(CLAUDE_JSON).unwrap_or(Value::Null);
-    let five = &v["five_hour"];
-    let seven = &v["seven_day"];
-    ClaudeService {
-        status: "NOMINAL".into(),
-        from_cache: false,
-        data_may_be_stale: false,
-        cooldown_until_local: None,
-        five_hour_percent: five.get("utilization").and_then(Value::as_f64).map(normalize_percent),
-        seven_day_percent: seven.get("utilization").and_then(Value::as_f64).map(normalize_percent),
-        five_hour_reset_local: five.get("resets_at").and_then(local_label),
-        seven_day_reset_local: seven.get("resets_at").and_then(local_label),
+fn invalid_mode_summary() -> UsageSummary {
+    error_summary("INVALID MOCK MODE")
+}
+
+fn mock_data_error_summary() -> UsageSummary {
+    error_summary("MOCK DATA ERROR")
+}
+
+fn error_summary(message: &str) -> UsageSummary {
+    let mut services = Services::default();
+    services.codex.status = message.into();
+    services.claude.status = message.into();
+    services.deepseek.status = message.into();
+    services.codex.data_may_be_stale = true;
+    services.claude.data_may_be_stale = true;
+    services.deepseek.data_may_be_stale = true;
+
+    UsageSummary {
+        refreshed_at: None,
+        status: "error".into(),
+        services,
     }
 }
 
-fn parse_codex() -> CodexService {
-    let v: Value = serde_json::from_str(CODEX_JSON).unwrap_or(Value::Null);
-    let primary = &v["rate_limit"]["primary_window"];
-    let secondary = &v["rate_limit"]["secondary_window"];
-    CodexService {
-        status: "NOMINAL".into(),
-        from_cache: false,
-        data_may_be_stale: false,
-        plan: v.get("plan_type").and_then(Value::as_str).map(str::to_string),
-        five_hour_percent: primary.get("used_percent").and_then(Value::as_f64).map(clamp_percent),
-        seven_day_percent: secondary.get("used_percent").and_then(Value::as_f64).map(clamp_percent),
-        five_hour_reset_local: primary.get("reset_at").and_then(local_label),
-        seven_day_reset_local: secondary.get("reset_at").and_then(local_label),
+#[cfg(test)]
+mod tests {
+    use super::{summary, summary_from_payloads, CODEX_JSON, DEEPSEEK_JSON};
+
+    #[test]
+    fn empty_mock_mode_uses_live_mode() {
+        assert!(summary("").is_none());
     }
-}
 
-fn parse_deepseek() -> DeepSeekService {
-    let v: Value = serde_json::from_str(DEEPSEEK_JSON).unwrap_or(Value::Null);
-    let infos = v.get("balance_infos").and_then(Value::as_array).cloned().unwrap_or_default();
-    let selected = infos
-        .iter()
-        .find(|i| {
-            i.get("currency")
-                .and_then(Value::as_str)
-                .map(|c| c.eq_ignore_ascii_case("CNY"))
-                .unwrap_or(false)
-        })
-        .or_else(|| infos.first());
+    #[test]
+    fn unknown_mock_mode_is_visible_and_does_not_use_live_mode() {
+        let summary = summary("normla").expect("invalid mode summary");
 
-    let (currency, balance) = match selected {
-        Some(info) => (
-            info.get("currency").and_then(Value::as_str).map(str::to_string),
-            info.get("total_balance").and_then(Value::as_str).map(str::to_string),
-        ),
-        None => (None, None),
-    };
+        assert_eq!(summary.status, "error");
+        assert_eq!(summary.services.claude.status, "INVALID MOCK MODE");
+    }
 
-    DeepSeekService {
-        status: "NOMINAL".into(),
-        from_cache: false,
-        data_may_be_stale: false,
-        currency,
-        balance,
+    #[test]
+    fn normal_mock_uses_production_parsers() {
+        let summary = summary("normal").expect("known mock mode");
+
+        assert_eq!(summary.status, "ok");
+        assert_eq!(summary.services.claude.five_hour_percent, Some(42.0));
+        assert_eq!(summary.services.claude.seven_day_percent, Some(73.0));
+    }
+
+    #[test]
+    fn malformed_mock_payload_is_visible_and_never_selects_live_mode() {
+        let summary = summary_from_payloads("normal", "{}", CODEX_JSON, DEEPSEEK_JSON);
+
+        assert_eq!(summary.status, "error");
+        assert_eq!(summary.services.codex.status, "MOCK DATA ERROR");
+        assert_eq!(summary.services.claude.status, "MOCK DATA ERROR");
+        assert_eq!(summary.services.deepseek.status, "MOCK DATA ERROR");
+
+        assert!(super::summary("").is_none());
+        assert!(super::summary("normal").is_some());
+        assert!(super::summary("unknown").is_some());
     }
 }

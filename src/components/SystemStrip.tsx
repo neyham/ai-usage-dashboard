@@ -5,15 +5,22 @@ import type { SummaryStatus } from "../types";
 const MAP: Record<SummaryStatus, [string, string]> = {
   ok: ["sys-nominal", "● SYSTEM NOMINAL"],
   refreshing: ["sys-sync", "◴ SYNCHRONIZING"],
-  partial: ["sys-warn", "▲ WARNING · CACHED DATA"],
-  error: ["sys-alert", "■ ALERT · OFFLINE · SHOWING CACHE"],
+  partial: ["sys-warn", "▲ WARNING · SERVICE DEGRADED"],
+  error: ["sys-alert", "■ ALERT · SERVICE FAILURE"],
   idle: ["sys-sync", "◴ STANDBY"],
 };
 
-export function SystemStrip({ status }: { status: SummaryStatus }) {
-  const [cls, text] = MAP[status] ?? MAP.idle;
+export function SystemStrip({
+  status,
+  message,
+}: {
+  status: SummaryStatus;
+  message?: string | null;
+}) {
+  const [cls, defaultText] = MAP[status] ?? MAP.idle;
+  const text = message ? `■ ALERT · ${message}` : defaultText;
   return (
-    <div className={`sysstrip ${cls}`}>
+    <div className={`sysstrip ${cls}`} role="status" aria-live="polite" aria-atomic="true">
       <span className="sys-hatch" aria-hidden />
       <span className="sys-text">{text}</span>
       <span className="sys-hatch" aria-hidden />

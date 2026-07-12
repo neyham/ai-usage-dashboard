@@ -31,8 +31,10 @@ export function ServicePanel({
   code: string;
   service: AnyService;
 }) {
+  const titleId = `panel-${kind}-title`;
+
   return (
-    <section className={`panel panel-${kind}`}>
+    <section className={`panel panel-${kind}`} aria-labelledby={titleId}>
       <div className="panel-edge" aria-hidden />
       <CornerBrackets />
       <Reticle />
@@ -41,7 +43,9 @@ export function ServicePanel({
         <div className="panel-titles">
           <div className="panel-title-row">
             <span className="panel-glyph" aria-hidden />
-            <h2 className="panel-title">{title}</h2>
+            <h2 className="panel-title" id={titleId}>
+              {title}
+            </h2>
           </div>
           <span className="panel-sub">
             {kind === "deepseek" ? "ACCOUNT OVERVIEW" : "USAGE OVERVIEW"}

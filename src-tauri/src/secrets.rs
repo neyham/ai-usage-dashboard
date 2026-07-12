@@ -58,33 +58,48 @@ fn from_credential_store(target: &str) -> Option<String> {
             None
         } else {
             let bytes = std::slice::from_raw_parts(cred.CredentialBlob, size);
-            Some(decode_blob(bytes))
+            decode_blob(bytes)
         };
         CredFree(pcred as *const core::ffi::c_void);
-        result.filter(|s| !s.is_empty())
+        result
     }
 }
 
 /// Most Windows tools (PowerShell, cmdkey) store the blob as UTF-16LE; some
-/// store UTF-8. Try UTF-16 first, then fall back to UTF-8 — same order as the
-/// WinForms prototype.
-#[cfg(windows)]
-fn decode_blob(bytes: &[u8]) -> String {
-    if bytes.len() % 2 == 0 {
+/// store UTF-8. Prefer strict UTF-8 when it contains no embedded NULs, then try
+/// UTF-16LE. This avoids treating an even-length ASCII key as arbitrary UTF-16.
+#[cfg(any(windows, test))]
+fn decode_blob(bytes: &[u8]) -> Option<String> {
+    if let Some(decoded) = std::str::from_utf8(bytes)
+        .ok()
+        .and_then(valid_decoded_secret)
+    {
+        return Some(decoded);
+    }
+
+    if bytes.len().is_multiple_of(2) {
         let utf16: Vec<u16> = bytes
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
-        if let Ok(s) = String::from_utf16(&utf16) {
-            let trimmed = s.trim_end_matches('\0');
-            if !trimmed.is_empty() && !trimmed.contains('\0') {
-                return trimmed.to_string();
-            }
+        if let Some(decoded) = String::from_utf16(&utf16)
+            .ok()
+            .and_then(|value| valid_decoded_secret(&value))
+        {
+            return Some(decoded);
         }
     }
-    String::from_utf8_lossy(bytes)
-        .trim_end_matches('\0')
-        .to_string()
+    None
+}
+
+#[cfg(any(windows, test))]
+fn valid_decoded_secret(value: &str) -> Option<String> {
+    let trimmed = value.trim_end_matches('\0');
+    if trimmed.is_empty() || trimmed.contains('\0') {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 // ---------- Non-Windows: use the keyring crate ----------
@@ -97,4 +112,30 @@ fn from_credential_store(target: &str) -> Option<String> {
     let (service, account) = target.split_once('/').unwrap_or((target, "DeepSeekApiKey"));
     let entry = keyring::Entry::new(service, account).ok()?;
     entry.get_password().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_blob;
+
+    #[test]
+    fn credential_blob_decodes_even_length_utf8_without_utf16_corruption() {
+        assert_eq!(decode_blob(b"sk-abcde").as_deref(), Some("sk-abcde"));
+    }
+
+    #[test]
+    fn credential_blob_decodes_utf16le_with_terminator() {
+        let mut bytes = Vec::new();
+        for unit in "sk-secret".encode_utf16().chain(std::iter::once(0)) {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+
+        assert_eq!(decode_blob(&bytes).as_deref(), Some("sk-secret"));
+    }
+
+    #[test]
+    fn credential_blob_rejects_empty_or_embedded_nul() {
+        assert_eq!(decode_blob(b""), None);
+        assert_eq!(decode_blob(b"sk\0secret"), None);
+    }
 }

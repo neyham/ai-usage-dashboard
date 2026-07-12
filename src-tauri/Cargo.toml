@@ -1,10 +1,13 @@
 [package]
 name = "ai-usage-dashboard"
-version = "0.1.0"
-description = "AI usage dashboard screensaver (Codex / Claude / DeepSeek)"
-authors = ["neyha"]
+version = "0.2.0"
+description = "Local Windows desktop dashboard for Codex and Claude usage limits and DeepSeek API balance"
+authors = ["neyham"]
+license = "MIT"
+repository = "https://github.com/neyham/ai-usage-dashboard"
+homepage = "https://github.com/neyham/ai-usage-dashboard"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.88"
 
 [lib]
 name = "ai_usage_dashboard_lib"
@@ -33,6 +36,8 @@ keyring = "3"
 windows = { version = "0.58", features = [
   "Win32_Foundation",
   "Win32_Security_Credentials",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
 ] }
 
 [profile.release]

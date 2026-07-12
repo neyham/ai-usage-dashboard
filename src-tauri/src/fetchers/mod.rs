@@ -9,13 +9,14 @@ use crate::cache::CacheState;
 use crate::config::Config;
 use crate::models::{Services, UsageSummary};
 use crate::util::fmt_local;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use reqwest::{Client, RequestBuilder};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::time::Duration as StdDuration;
 
 pub const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36";
+const MAX_RETRY_AFTER_SECONDS: u64 = 86_400;
 
 /// A flattened HTTP response we actually care about.
 pub struct Resp {
@@ -33,9 +34,13 @@ impl Resp {
 #[derive(Debug)]
 pub enum FetchError {
     /// HTTP 429 — carries the parsed `retry-after` seconds if present.
-    RateLimited { retry_after: Option<u64> },
+    RateLimited {
+        retry_after: Option<u64>,
+    },
     /// Authentication or OAuth refresh failure, sanitized for the UI.
-    Auth { message: &'static str },
+    Auth {
+        message: &'static str,
+    },
     Other(anyhow::Error),
 }
 
@@ -60,13 +65,30 @@ pub async fn send(req: RequestBuilder) -> anyhow::Result<Resp> {
         .headers()
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.trim().parse::<u64>().ok());
+        .and_then(|value| parse_retry_after_at(value, Utc::now()));
     let body = resp.text().await.unwrap_or_default();
     Ok(Resp {
         status,
         body,
         retry_after,
     })
+}
+
+fn parse_retry_after_at(value: &str, now: DateTime<Utc>) -> Option<u64> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(seconds.min(MAX_RETRY_AFTER_SECONDS));
+    }
+
+    let retry_at = DateTime::parse_from_rfc2822(value)
+        .ok()?
+        .with_timezone(&Utc);
+    let millis = retry_at.signed_duration_since(now).num_milliseconds();
+    if millis <= 0 {
+        Some(0)
+    } else {
+        Some((millis as u64).div_ceil(1000).min(MAX_RETRY_AFTER_SECONDS))
+    }
 }
 
 /// Send once; retry a single time on transport error or 408/5xx, mirroring the
@@ -188,39 +210,41 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
     };
 
     // ----- Claude (honor any active cooldown before hitting the network) -----
-    let (claude, claude_cached): (ClaudeService, bool) = if let Some(until) = cache.cooldown_active()
-    {
-        (
-            cached_service(cache, "claude", MSG_RATE_LIMITED, Some(fmt_local(until))),
-            true,
-        )
-    } else {
-        match claude::fetch(config, &client).await {
-            Ok(svc) => {
-                cache.claude_cooldown_until = None;
-                if let Ok(v) = serde_json::to_value(&svc) {
-                    cache.put("claude", v);
+    let (claude, claude_cached): (ClaudeService, bool) =
+        if let Some(until) = cache.cooldown_active() {
+            (
+                cached_service(cache, "claude", MSG_RATE_LIMITED, Some(fmt_local(until))),
+                true,
+            )
+        } else {
+            match claude::fetch(config, &client).await {
+                Ok(svc) => {
+                    cache.claude_cooldown_until = None;
+                    if let Ok(v) = serde_json::to_value(&svc) {
+                        cache.put("claude", v);
+                    }
+                    (svc, false)
                 }
-                (svc, false)
+                Err(FetchError::RateLimited { retry_after }) => {
+                    let secs = retry_after
+                        .map(|s| s.saturating_add(30).min(MAX_RETRY_AFTER_SECONDS))
+                        .unwrap_or(1800);
+                    let until = Utc::now() + Duration::seconds(secs as i64);
+                    cache.claude_cooldown_until = Some(until);
+                    (
+                        cached_service(cache, "claude", MSG_RATE_LIMITED, Some(fmt_local(until))),
+                        true,
+                    )
+                }
+                Err(FetchError::Auth { message }) => {
+                    (cached_service(cache, "claude", message, None), true)
+                }
+                Err(FetchError::Other(err)) => {
+                    let _ = err.to_string();
+                    (cached_service(cache, "claude", MSG_FAILED, None), true)
+                }
             }
-            Err(FetchError::RateLimited { retry_after }) => {
-                let secs = retry_after.map(|s| s + 30).unwrap_or(1800);
-                let until = Utc::now() + Duration::seconds(secs as i64);
-                cache.claude_cooldown_until = Some(until);
-                (
-                    cached_service(cache, "claude", MSG_RATE_LIMITED, Some(fmt_local(until))),
-                    true,
-                )
-            }
-            Err(FetchError::Auth { message }) => {
-                (cached_service(cache, "claude", message, None), true)
-            }
-            Err(FetchError::Other(err)) => {
-                let _ = err.to_string();
-                (cached_service(cache, "claude", MSG_FAILED, None), true)
-            }
-        }
-    };
+        };
 
     // ----- Codex -----
     let (codex, codex_cached): (CodexService, bool) = match codex::fetch(config, &client).await {
@@ -246,7 +270,14 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
         };
 
     cache.updated_at = Some(Utc::now());
-    assemble(claude, codex, deepseek, claude_cached, codex_cached, deepseek_cached)
+    assemble(
+        claude,
+        codex,
+        deepseek,
+        claude_cached,
+        codex_cached,
+        deepseek_cached,
+    )
 }
 
 fn assemble(
@@ -259,12 +290,16 @@ fn assemble(
 ) -> UsageSummary {
     let any_cache = claude_cached || codex_cached || deepseek_cached;
     let all_cache = claude_cached && codex_cached && deepseek_cached;
-    let status = if !any_cache {
-        "ok"
-    } else if all_cache {
+    let unhealthy_services = [&claude.status, &codex.status, &deepseek.status]
+        .into_iter()
+        .filter(|status| status.as_str() != "NOMINAL")
+        .count();
+    let status = if all_cache || unhealthy_services == 3 {
         "error"
-    } else {
+    } else if any_cache || unhealthy_services > 0 {
         "partial"
+    } else {
+        "ok"
     };
 
     UsageSummary {
@@ -275,5 +310,75 @@ fn assemble(
             claude,
             deepseek,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{assemble, parse_retry_after_at};
+    use crate::models::{ClaudeService, CodexService, DeepSeekService};
+    use chrono::{DateTime, Utc};
+
+    fn nominal_services() -> (ClaudeService, CodexService, DeepSeekService) {
+        let mut claude = ClaudeService::default();
+        let mut codex = CodexService::default();
+        let mut deepseek = DeepSeekService::default();
+        claude.status = "NOMINAL".into();
+        codex.status = "NOMINAL".into();
+        deepseek.status = "NOMINAL".into();
+        (claude, codex, deepseek)
+    }
+
+    #[test]
+    fn live_service_warning_degrades_aggregate_status() {
+        let (claude, codex, mut deepseek) = nominal_services();
+        deepseek.status = "INSUFFICIENT BALANCE".into();
+
+        let summary = assemble(claude, codex, deepseek, false, false, false);
+
+        assert_eq!(summary.status, "partial");
+    }
+
+    #[test]
+    fn all_nominal_live_services_are_ok() {
+        let (claude, codex, deepseek) = nominal_services();
+
+        let summary = assemble(claude, codex, deepseek, false, false, false);
+
+        assert_eq!(summary.status, "ok");
+    }
+
+    #[test]
+    fn retry_after_accepts_seconds_and_http_dates() {
+        let now = DateTime::parse_from_rfc3339("2026-07-11T01:00:00.250Z")
+            .expect("fixed timestamp")
+            .with_timezone(&Utc);
+
+        assert_eq!(parse_retry_after_at("91", now), Some(91));
+        assert_eq!(
+            parse_retry_after_at("Sat, 11 Jul 2026 01:02:01 GMT", now),
+            Some(121)
+        );
+        assert_eq!(
+            parse_retry_after_at("Sat, 11 Jul 2026 00:59:00 GMT", now),
+            Some(0)
+        );
+        assert_eq!(parse_retry_after_at("later", now), None);
+    }
+
+    #[test]
+    fn retry_after_is_clamped_to_one_day() {
+        let now = DateTime::parse_from_rfc3339("2026-07-11T01:00:00Z")
+            .expect("fixed timestamp")
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            parse_retry_after_at("100000000000000000", now),
+            Some(86_400)
+        );
+        assert_eq!(
+            parse_retry_after_at("Fri, 31 Dec 9999 23:59:59 GMT", now),
+            Some(86_400)
+        );
     }
 }
