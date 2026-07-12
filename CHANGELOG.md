@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- Accept Codex usage responses that expose only one duration-labelled rate-limit
+  window instead of failing the entire provider card when the legacy secondary
+  window is null.
+
 ## [0.2.0] - 2026-07-12
 
 ### Changed
