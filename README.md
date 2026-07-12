@@ -27,10 +27,10 @@ one provider does not erase last-known-good data for the other providers.
 
 ## Project status
 
-Version `0.2.0` is a Windows-first source release. The responsive UI and build
-pipeline are exercised on Windows 11 and Surface-sized viewports. There are no
-official signed binary releases yet; build from source and treat locally built
-installers as unsigned unless you sign them yourself.
+Version `0.2.0` is a Windows-first release. The responsive UI, native build, and
+installer flow are exercised on Windows 11 and Surface-sized viewports. The
+installers published on the GitHub Releases page are not code-signed, so Windows
+SmartScreen may require explicit confirmation before installation.
 
 This project reads credential formats and usage endpoints used by provider CLI
 tools. Some of those interfaces are undocumented and can change without notice.
@@ -56,6 +56,21 @@ balances, timestamps, and status text.
 
 See [SECURITY.md](SECURITY.md) before reporting a vulnerability or suspected
 credential exposure.
+
+## Install
+
+Download the latest Windows installer from
+[GitHub Releases](https://github.com/neyham/ai-usage-dashboard/releases/latest):
+
+- The NSIS `setup.exe` installs for the current user and is the simplest option.
+- The MSI package is available for environments that prefer Windows Installer.
+- Verify the downloaded file against `SHA256SUMS.txt` attached to the same
+  release before running it.
+
+These installers are built from this repository but are currently unsigned.
+Review the source and release checksums before accepting a SmartScreen prompt.
+The WinGet package is planned but should not be considered available until its
+manifest is accepted into `microsoft/winget-pkgs`.
 
 ## Requirements
 
