@@ -28,13 +28,16 @@ pub async fn fetch(config: &Config, client: &Client) -> anyhow::Result<DeepSeekS
     parse_balance(&resp.body)
 }
 
-fn parse_balance(body: &str) -> anyhow::Result<DeepSeekService> {
+pub(crate) fn parse_balance(body: &str) -> anyhow::Result<DeepSeekService> {
     let root: Value = serde_json::from_str(body).context("parse DeepSeek balance body")?;
+    let is_available = root
+        .get("is_available")
+        .and_then(Value::as_bool)
+        .context("DeepSeek balance missing is_available")?;
     let infos = root
         .get("balance_infos")
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+        .context("DeepSeek balance missing balance_infos")?;
 
     // Prefer the CNY entry; otherwise take the first.
     let selected = infos
@@ -47,19 +50,58 @@ fn parse_balance(body: &str) -> anyhow::Result<DeepSeekService> {
         })
         .or_else(|| infos.first());
 
-    let (currency, balance) = match selected {
-        Some(info) => (
-            info.get("currency").and_then(Value::as_str).map(str::to_string),
-            info.get("total_balance").and_then(Value::as_str).map(str::to_string),
-        ),
-        None => (None, None),
-    };
+    let selected = selected.context("DeepSeek balance_infos is empty")?;
+    let currency = selected
+        .get("currency")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .context("DeepSeek balance missing currency")?;
+    let balance = selected
+        .get("total_balance")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .context("DeepSeek balance missing total_balance")?;
 
     Ok(DeepSeekService {
-        status: "NOMINAL".into(),
+        status: if is_available {
+            "NOMINAL".into()
+        } else {
+            "INSUFFICIENT BALANCE".into()
+        },
         from_cache: false,
         data_may_be_stale: false,
-        currency,
-        balance,
+        currency: Some(currency.to_string()),
+        balance: Some(balance.to_string()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_balance;
+
+    #[test]
+    fn deepseek_reports_unavailable_balance_without_discarding_amount() {
+        let service = parse_balance(
+            r#"{
+                "is_available": false,
+                "balance_infos": [{"currency":"CNY","total_balance":"0.00"}]
+            }"#,
+        )
+        .expect("valid unavailable balance response");
+
+        assert_eq!(service.status, "INSUFFICIENT BALANCE");
+        assert_eq!(service.currency.as_deref(), Some("CNY"));
+        assert_eq!(service.balance.as_deref(), Some("0.00"));
+    }
+
+    #[test]
+    fn deepseek_balance_requires_availability_and_amount_fields() {
+        for body in [
+            r#"{"balance_infos":[{"currency":"CNY","total_balance":"1.00"}]}"#,
+            r#"{"is_available":true,"balance_infos":[]}"#,
+            r#"{"is_available":true,"balance_infos":[{"currency":"CNY"}]}"#,
+        ] {
+            assert!(parse_balance(body).is_err(), "unexpectedly accepted {body}");
+        }
+    }
 }

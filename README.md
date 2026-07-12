@@ -1,128 +1,153 @@
-# AI Usage Dashboard (Tauri)
+# AI Usage Dashboard
 
-Cross-platform AI usage dashboard for a mostly-idle machine. Shows real
-server-side usage/balance for **Codex**, **Claude**, and **DeepSeek** in a dark,
-mecha-terminal full-screen view. Tauri rewrite of the WinForms prototype in
-Rust + React.
+[![CI](https://github.com/neyham/ai-usage-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/neyham/ai-usage-dashboard/actions/workflows/ci.yml)
 
-> Architecture: the **Rust backend owns all secrets and network access**. The
-> renderer only ever receives a sanitized `UsageSummary` — never tokens, keys,
-> credential file contents, or raw API error bodies.
+A local-first Windows dashboard and screensaver for viewing Claude Code and
+Codex usage limits alongside a DeepSeek API balance. The desktop application is
+built with Tauri, Rust, React, and TypeScript.
 
-## Layout
+![AI Usage Dashboard showing synthetic mock data](docs/assets/dashboard.png)
 
-```
-src/                     React + TypeScript renderer (dark dashboard UI)
-  components/            ClockHeader, ServicePanel, ProgressMeter, StatusChip
-src-tauri/
-  src/
-    lib.rs              Tauri app: state, commands, background refresh loop
-    config.rs           %APPDATA%\AiUsageDashboard\config.json
-    cache.rs            %LOCALAPPDATA%\AiUsageDashboard\state.json (last-known-good)
-    secrets.rs          DeepSeek key: Credential Manager / Keychain / env / config
-    util.rs             percent normalize, date parse/format
-    mock.rs             mock-mode summaries (normal / claude429 / failures)
-    fetchers/
-      mod.rs            HTTP helpers + per-cycle orchestration
-      claude.rs         OAuth usage, refresh, 401 retry, 429 cooldown, WSL creds
-      codex.rs          ChatGPT/Codex backend usage
-      deepseek.rs       balance
-mocks/                   sample payloads (also embedded for mock mode)
-scripts/make-icons.mjs   regenerates the icon set
-```
+> The screenshot uses synthetic test data. It contains no account information or
+> provider credentials.
 
-## Prerequisites (Windows — the primary build target)
+## What it shows
 
-1. **Node 18+** (you have 22).
-2. **Rust** (stable, MSVC toolchain): https://rustup.rs — pick the
-   `x86_64-pc-windows-msvc` host. Also install **Visual Studio Build Tools**
-   with the "Desktop development with C++" workload, and the **WebView2**
-   runtime (preinstalled on Windows 11).
+- Claude five-hour and seven-day utilization, reset times, cooldowns, and cache
+  state.
+- Codex five-hour and seven-day utilization, reset times, and plan label.
+- DeepSeek API balance and insufficient-balance state.
+- A combined health state that distinguishes fresh data, partial degradation,
+  total failure, and an in-progress refresh.
+- Normal window, borderless fullscreen, scheduled idle, and Windows
+  screensaver launch modes.
 
-> Build on Windows, not inside WSL. WSL would produce a Linux binary and cannot
-> reach Windows Credential Manager or the screensaver hooks. The backend already
-> knows how to read the Claude credentials *out of* WSL via `wsl.exe`.
+Each provider is checked independently. A missing credential or an outage for
+one provider does not erase last-known-good data for the other providers.
 
-## Run
+## Project status
+
+Version `0.2.0` is a Windows-first source release. The responsive UI and build
+pipeline are exercised on Windows 11 and Surface-sized viewports. There are no
+official signed binary releases yet; build from source and treat locally built
+installers as unsigned unless you sign them yourself.
+
+This project reads credential formats and usage endpoints used by provider CLI
+tools. Some of those interfaces are undocumented and can change without notice.
+The project is not affiliated with, endorsed by, or supported by Anthropic,
+OpenAI, or DeepSeek.
+
+## Privacy and security
+
+The Rust backend owns credentials and network requests. The React renderer only
+receives a sanitized summary containing percentages, reset times, plan labels,
+balances, timestamps, and status text.
+
+- No project server, analytics, or telemetry is used.
+- Provider tokens, API keys, credential files, and raw API error bodies are not
+  sent to the renderer.
+- DeepSeek keys are never written to the cache. Windows Credential Manager is
+  preferred over environment variables and plaintext configuration.
+- `%LOCALAPPDATA%\AiUsageDashboard\state.json` stores sanitized usage and
+  balance data for graceful degradation. It can still contain private account
+  information and should be treated as sensitive.
+- Malformed configuration and invalid mock modes fail closed and do not contact
+  live provider services.
+
+See [SECURITY.md](SECURITY.md) before reporting a vulnerability or suspected
+credential exposure.
+
+## Requirements
+
+- Windows 10 or Windows 11.
+- Node.js 18 or later.
+- Rust 1.88 or later with the `x86_64-pc-windows-msvc` toolchain.
+- Visual Studio Build Tools with **Desktop development with C++**.
+- Microsoft Edge WebView2 Runtime. It is normally present on Windows 11.
+
+Build from Windows PowerShell, not inside WSL. A WSL build produces a Linux
+binary and cannot integrate with Windows Credential Manager, Task Scheduler, or
+screensaver settings. The Windows application can still read Claude credentials
+from WSL through `wsl.exe`.
+
+## Build and run
 
 ```powershell
+git clone https://github.com/neyham/ai-usage-dashboard.git
 cd ai-usage-dashboard
-npm install
-npm run app:dev      # dev build with hot-reload (tauri dev)
+npm ci
+npm run app:dev
 ```
 
-Production bundle:
+Build the executable and Windows installers:
 
 ```powershell
-npm run app:build    # tauri build -> installers + AiUsageDashboard.exe
+npm run app:build
 ```
 
-If you'd rather regenerate icons from a custom source image:
+The main output is
+`src-tauri\target\release\ai-usage-dashboard.exe`. Installer bundles are placed
+under `src-tauri\target\release\bundle\`.
 
-```powershell
-node scripts/make-icons.mjs              # the bundled generator, or:
-npm run tauri icon path\to\your-1024.png # Tauri's own generator
-```
+## Provider setup
 
-## Mock mode (verify the three required states first)
+The application checks all three providers on every refresh. There is currently
+no per-provider enable or disable switch.
 
-Set `"mockMode"` in `%APPDATA%\AiUsageDashboard\config.json` to one of:
+| Provider | Default credential source | Override |
+| --- | --- | --- |
+| Claude | `%USERPROFILE%\.claude\.credentials.json`, then `credentials.json`, then the same files in the `Ubuntu` WSL home | `claudeCredentialsPath` |
+| Codex | `%USERPROFILE%\.codex\auth.json` | `codexAuthPath` |
+| DeepSeek | Windows Credential Manager target `AiUsageDashboard/DeepSeekApiKey`, then `DEEPSEEK_API_KEY` | `deepSeekCredentialTarget` or `deepSeekApiKey` |
 
-| value        | what it shows                                              |
-|--------------|-----------------------------------------------------------|
-| `normal`     | all three services healthy                                |
-| `claude429`  | Claude rate-limited → cached data + cooldown chip         |
-| `failures`   | Codex + DeepSeek failed → cached data, UI does not blank  |
+Sign in with the official Claude Code and Codex clients before launching the
+dashboard. To store a DeepSeek key without placing it in a file, open Windows
+Credential Manager, add a **Generic credential** with
+`AiUsageDashboard/DeepSeekApiKey` as the network address, and enter the API key
+as its password. The user-name field is not used by the application.
 
-Leave it `""` for live data. Mock payloads live in `mocks/` and are embedded
-into the binary, so mock mode needs no network.
-
-## Live data sources
-
-| Service  | Endpoint                                             | Credential source |
-|----------|------------------------------------------------------|-------------------|
-| Claude   | `GET api.anthropic.com/api/oauth/usage`              | `%USERPROFILE%\.claude\.credentials.json`, else a configured WSL Claude credential file via `wsl.exe`. Refreshes on 401; 429 → cooldown (`retry-after` + 30s, else 30 min). If Claude's web OAuth refresh is blocked, the UI reports `REFRESH BLOCKED`; an optional Claude Code fallback can be enabled in config. |
-| Codex    | `GET chatgpt.com/backend-api/wham/usage`             | `%USERPROFILE%\.codex\auth.json` → `tokens.access_token` \| `id_token` |
-| DeepSeek | `GET api.deepseek.com/user/balance`                  | Windows Credential Manager target `AiUsageDashboard/DeepSeekApiKey`, else `DEEPSEEK_API_KEY` env, else config |
-
-Refresh: every `refreshIntervalMinutes` (default 30, min 15). Network timeout
-15s, one retry on 408/5xx. Each service keeps last-known-good; data older than
-6h is marked possibly stale.
-
-## Launch modes (fullscreen / screensaver)
-
-The exe parses the same flags as the WinForms prototype:
-
-| flag           | behavior |
-|----------------|----------|
-| _(none)_       | normal resizable window |
-| `--fullscreen` | borderless fullscreen, cursor hidden; **Esc** quits |
-| `/s` or `-s`   | screensaver: fullscreen + always-on-top; **any real input** quits (after a ~1.2s arm delay) |
-| `--config` / `/c` | opens `config.json` in the editor and exits |
-| `/p <HWND>`    | screensaver preview — intentionally no-ops (does not crash) |
-
-Idle auto-launch (Task Scheduler, recommended over `.scr`):
-
-```powershell
-# after npm run app:build
-.\install-idle-task.ps1 -IdleMinutes 10
-# remove: schtasks.exe /Delete /TN "AI Usage Dashboard Idle" /F
-```
-
-Real Windows screensaver (`.scr`, experimental — copies the exe to a `.scr`):
-
-```powershell
-.\install-screensaver.ps1 -TimeoutSeconds 900
-```
-
-Both scripts default to `src-tauri\target\release\ai-usage-dashboard.exe`; pass
-`-ExePath` to point at an installed location instead.
-
-## Config (`%APPDATA%\AiUsageDashboard\config.json`)
+For a WSL distribution other than `Ubuntu`, configure an explicit Claude path
+such as:
 
 ```json
 {
-  "refreshIntervalMinutes": 30,
+  "claudeCredentialsPath": "wsl:Ubuntu-24.04:/home/your-user/.claude/.credentials.json"
+}
+```
+
+An explicit path is fail closed. If it cannot be read, the dashboard reports an
+authentication or data error instead of silently selecting another account.
+
+### Claude token renewal
+
+Native Windows Claude credential files are read-only to the dashboard. Direct
+OAuth renewal is intentionally disabled for those files because the dashboard
+cannot participate in every lock used by Claude Code. If the native token has
+expired, refresh it with Claude Code or opt into the bounded CLI fallback in
+configuration.
+
+For explicit `wsl:<distro>:<absolute-path>` credentials, direct renewal uses
+Claude Code-compatible lock directories, reloads the file while holding the
+locks, merges only rotated OAuth fields, and writes atomically.
+
+The optional Claude Code fallback is off by default because its recovery command
+may consume a small amount of usage. When enabled, it is limited to selected
+authentication failures, clamped to a maximum timeout and budget, and throttled
+across dashboard processes to one attempt per 30 minutes.
+
+## Configuration
+
+Run the following to create or open the configuration file:
+
+```powershell
+.\src-tauri\target\release\ai-usage-dashboard.exe --config
+```
+
+The file is `%APPDATA%\AiUsageDashboard\config.json`:
+
+```json
+{
+  "refreshIntervalMinutes": 5,
   "networkTimeoutSeconds": 15,
   "deepSeekApiKey": "",
   "deepSeekCredentialTarget": "AiUsageDashboard/DeepSeekApiKey",
@@ -136,27 +161,121 @@ Both scripts default to `src-tauri\target\release\ai-usage-dashboard.exe`; pass
 }
 ```
 
-`claudeCredentialsPath` accepts a normal path or a `wsl:<distro>:<path>` spec,
-e.g. `wsl:Ubuntu:/home/your-user/.claude/.credentials.json`.
+Restart the application after editing the file. Timing and CLI recovery values
+are clamped to safe bounds:
 
-`claudeCodeRefreshEnabled` is off by default because it may spend a small amount
-of Claude Code usage. When enabled, the backend uses Claude Code as a last-resort
-credential refresher after direct OAuth refresh fails, then reloads the refreshed
-credential file and retries the usage request. On Windows, WSL-backed credential
-paths run the command through `wsl.exe -d <distro> --`.
+| Setting | Allowed range |
+| --- | --- |
+| `refreshIntervalMinutes` | 5 to 1,440 minutes |
+| `claudeCodeRefreshTimeoutSeconds` | 5 to 120 seconds |
+| `claudeCodeRefreshMaxBudgetUsd` | USD 0.001 to USD 0.10 |
 
-## Status — what's done vs. next
+Avoid `deepSeekApiKey` unless no safer storage option is available; it stores
+the key as plaintext in `config.json`.
 
-**Scaffolded & implemented:** full project structure, the dark dashboard UI,
-config/cache/secrets, all three live fetchers, Claude refresh + cooldown, mock
-mode, the background refresh loop, the icon set, **and the launch modes**
-(`--fullscreen` / `/s` screensaver with exit-on-input / `/c` config / `/p`
-preview) plus the idle-task and screensaver install scripts.
+## Refresh and cache behavior
 
-**Verified locally:** TypeScript type-checking and Rust `cargo check` pass on
-the source tree. Windows installer packaging still needs to be rebuilt on a
-Windows host before publishing binaries.
+- A refresh starts immediately at launch, then repeats every five minutes by
+  default. Normal mode can be configured from 5 minutes to 24 hours.
+- Screensaver mode enforces a 15-minute minimum interval to avoid unnecessary
+  idle-time traffic.
+- Press `F5` or use the refresh button for an on-demand refresh in normal or
+  fullscreen mode.
+- Provider usage and balance requests receive one retry after transport
+  failures, HTTP 408, or HTTP 5xx responses. Claude OAuth renewal is not
+  automatically replayed after an ambiguous transport failure because refresh
+  tokens can rotate.
+- Claude HTTP 429 responses honor `Retry-After` plus a 30-second buffer. If no
+  usable value is returned, the cooldown defaults to 30 minutes.
+- A successful response is cached per provider. Cached data older than six
+  hours is marked as possibly stale.
 
-**Then:** rebuild the Windows app bundle, walk the three mock states, then verify
-live credential reads (Claude via WSL, Codex `auth.json`, DeepSeek Credential
-Manager).
+## Understanding status warnings
+
+`SYSTEM NOMINAL` means all three checks returned fresh, healthy data. `WARNING -
+SERVICE DEGRADED` means at least one provider is cached, unavailable, rate
+limited, unauthenticated, or reporting a non-nominal balance. `SERVICE FAILURE`
+means all three checks failed or only fallback data was available.
+
+If every panel fails:
+
+1. Confirm that Claude Code and Codex are signed in and that a DeepSeek key is
+   available through one of the documented sources.
+2. Open `config.json` and check for invalid JSON or an incorrect explicit path.
+3. Restart after changing configuration, then trigger one manual refresh.
+4. Check the providers' official status pages. A provider outage should not be
+   repaired by deleting credentials.
+5. Use mock mode to separate a local UI problem from a credential or provider
+   problem.
+
+Deleting `%LOCALAPPDATA%\AiUsageDashboard\state.json` only clears cached display
+data; it does not repair authentication.
+
+## Launch modes
+
+| Argument | Behavior |
+| --- | --- |
+| none | Normal resizable window |
+| `--fullscreen` | Borderless fullscreen; `Esc` exits |
+| `/s` or `-s` | Fullscreen, always on top, and exits on real input after a short arming delay |
+| `--config` or `/c` | Opens `config.json` and exits |
+| `/p <HWND>` | Windows screensaver preview; intentionally exits without rendering |
+
+Task Scheduler is the recommended idle-launch method:
+
+```powershell
+.\install-idle-task.ps1 -IdleMinutes 10
+.\install-idle-task.ps1 -Remove
+```
+
+The script prefers an installed executable under `%LOCALAPPDATA%`, then falls
+back to the release build. Use `-ExePath` when the executable lives elsewhere.
+
+The `.scr` integration is experimental because WebView2 is not embedded in the
+small Windows Settings preview pane:
+
+```powershell
+.\install-screensaver.ps1 -TimeoutSeconds 900
+.\install-screensaver.ps1 -Remove
+```
+
+The installer backs up the current user's screensaver registry values and only
+restores them if AI Usage Dashboard is still the selected screensaver when it is
+removed.
+
+## Tests
+
+Install the Playwright browser once, then run the renderer and Rust suites:
+
+```powershell
+npx playwright install chromium
+npm test
+npm run test:rust
+cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
+```
+
+The UI suite exercises healthy, rate-limited, partial-failure, and
+insufficient-balance states across seven viewports, including Surface 200%
+landscape, portrait, and half-Snap layouts. It also checks overflow, touch
+targets, refresh state, keyboard behavior, and screensaver input exit.
+
+Set `mockMode` to `normal`, `claude429`, or `failures` to exercise the embedded
+provider fixtures without network access. An unknown value displays `INVALID
+MOCK MODE` and remains offline.
+
+## Repository layout
+
+```text
+src/                         React and TypeScript renderer
+scripts/viewport-check.mjs   Playwright viewport and interaction suite
+mocks/                       Embedded provider response fixtures
+src-tauri/src/               Rust backend, cache, fetchers, and launch modes
+install-idle-task.ps1        Scheduled idle-mode install and removal
+install-screensaver.ps1      Experimental .scr install and safe restoration
+```
+
+## License
+
+AI Usage Dashboard is licensed under the [MIT License](LICENSE). Embedded font
+software keeps its separate OFL-1.1 terms; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

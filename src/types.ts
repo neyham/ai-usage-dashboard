@@ -4,6 +4,8 @@
 
 export type SummaryStatus = "idle" | "ok" | "refreshing" | "partial" | "error";
 
+export type LaunchMode = "normal" | "fullscreen" | "screensaver";
+
 export interface ClaudeService {
   status: string;
   fromCache: boolean;
