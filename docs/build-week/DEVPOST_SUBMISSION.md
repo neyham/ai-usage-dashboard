@@ -99,8 +99,8 @@ live provider authentication, endpoint availability, or real quota accuracy.
 ## Links
 
 - Public repository: https://github.com/neyham/ai-usage-dashboard
-- Public v0.3.0 NSIS installer: `[ADD PUBLIC INSTALLER URL BEFORE SUBMISSION]`
-- Public SHA-256 checksum: `[ADD PUBLIC SHA256SUMS URL BEFORE SUBMISSION]`
+- Public v0.3.0 NSIS installer: https://github.com/neyham/ai-usage-dashboard/releases/download/v0.3.0/AI-Usage-Dashboard_0.3.0_x64-setup.exe
+- Public SHA-256 checksum: https://github.com/neyham/ai-usage-dashboard/releases/download/v0.3.0/AI-Usage-Dashboard_0.3.0_SHA256SUMS.txt
 - Devpost project URL: `[ADD DEVPOST PROJECT URL BEFORE SUBMISSION]`
 
 ## Video storyboard (2:40 maximum)
