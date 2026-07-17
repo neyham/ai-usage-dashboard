@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AI Usage Dashboard",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "com.neyha.aiusagedashboard",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -36,6 +36,11 @@
     "resources": {
       "../LICENSE": "LICENSE",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "nsis-hooks.nsh"
+      }
     },
     "icon": [
       "icons/32x32.png",

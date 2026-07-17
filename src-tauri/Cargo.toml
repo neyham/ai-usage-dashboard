@@ -1,6 +1,6 @@
 [package]
 name = "ai-usage-dashboard"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local Windows desktop dashboard for Codex and Claude usage limits and DeepSeek API balance"
 authors = ["neyham"]
 license = "MIT"

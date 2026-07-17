@@ -1,3 +1,4 @@
+import { RefreshCw, Settings } from "lucide-react";
 import type { SummaryStatus } from "../types";
 
 // Bottom telemetry strip — mostly ambient, but carries the real "last refresh"
@@ -14,12 +15,16 @@ export function TelemetryBar({
   refreshedLabel,
   status,
   errorMessage,
+  judgeDemo,
   onRefresh,
+  onSettings,
 }: {
   refreshedLabel: string;
   status: SummaryStatus;
   errorMessage?: string | null;
+  judgeDemo?: boolean;
   onRefresh: () => void;
+  onSettings?: () => void;
 }) {
   const [netClass, netLabel] = NET_STATE[status] ?? NET_STATE.idle;
   const refreshing = status === "refreshing";
@@ -38,16 +43,31 @@ export function TelemetryBar({
       <span className="tm-hex tm-ambient" aria-hidden />
       <span className="tm-grow" aria-hidden />
       <span className="tm-item tm-mark">AI USAGE · LAST SYNC {refreshedLabel}</span>
+      {judgeDemo && <span className="tm-demo">SYNTHETIC DEMO · OFFLINE</span>}
       {errorMessage && <span className="tm-error">{errorMessage}</span>}
-      <button
-        type="button"
-        className="tm-refresh"
-        onClick={onRefresh}
-        disabled={refreshing}
-        aria-busy={refreshing}
-      >
-        {refreshing ? "SYNCING" : "REFRESH [F5]"}
-      </button>
+      <span className="tm-actions">
+        {onSettings && (
+          <button
+            type="button"
+            className="icon-button tm-settings"
+            onClick={onSettings}
+            aria-label="Provider settings"
+            title="Provider settings"
+          >
+            <Settings size={19} aria-hidden />
+          </button>
+        )}
+        <button
+          type="button"
+          className="tm-refresh"
+          onClick={onRefresh}
+          disabled={refreshing}
+          aria-busy={refreshing}
+        >
+          <RefreshCw className={refreshing ? "tm-refresh-icon is-spinning" : "tm-refresh-icon"} size={16} aria-hidden />
+          {refreshing ? "SYNCING" : "REFRESH"}
+        </button>
+      </span>
     </footer>
   );
 }
