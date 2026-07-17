@@ -1,8 +1,11 @@
 //! App config from %APPDATA%\AiUsageDashboard\config.json (Roaming on Windows,
 //! XDG config dir elsewhere). Mirrors the WinForms prototype's config schema.
 
+use crate::fs_util::atomic_write;
+use crate::models::EnabledProviders;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 
 pub const DEFAULT_REFRESH_INTERVAL_MINUTES: u64 = 5;
 pub const MIN_REFRESH_INTERVAL_MINUTES: u64 = 5;
@@ -22,6 +25,8 @@ pub struct Config {
     pub load_error: bool,
     pub refresh_interval_minutes: u64,
     pub network_timeout_seconds: u64,
+    /// Providers displayed and refreshed by the dashboard.
+    pub enabled_providers: EnabledProviders,
     /// Optional plaintext fallback for the DeepSeek key (lowest priority).
     pub deep_seek_api_key: String,
     /// Credential Manager target name (Windows) / keyring service tag.
@@ -46,6 +51,7 @@ impl Default for Config {
             load_error: false,
             refresh_interval_minutes: DEFAULT_REFRESH_INTERVAL_MINUTES,
             network_timeout_seconds: 15,
+            enabled_providers: EnabledProviders::default(),
             deep_seek_api_key: String::new(),
             deep_seek_credential_target: "AiUsageDashboard/DeepSeekApiKey".into(),
             claude_credentials_path: String::new(),
@@ -107,9 +113,18 @@ pub fn config_path() -> PathBuf {
     config_dir().join("config.json")
 }
 
+pub fn judge_demo_config_path() -> PathBuf {
+    config_dir().join("judge-demo.json")
+}
+
 const DEFAULT_CONFIG_JSON: &str = r#"{
   "refreshIntervalMinutes": 5,
   "networkTimeoutSeconds": 15,
+  "enabledProviders": {
+    "codex": true,
+    "claude": true,
+    "deepseek": true
+  },
   "deepSeekApiKey": "",
   "deepSeekCredentialTarget": "AiUsageDashboard/DeepSeekApiKey",
   "claudeCredentialsPath": "",
@@ -142,13 +157,40 @@ pub fn load_or_create() -> Config {
     }
 }
 
+pub fn save(config: &Config) -> io::Result<()> {
+    let mut text = serde_json::to_vec_pretty(config).map_err(io::Error::other)?;
+    text.push(b'\n');
+    atomic_write(&config_path(), &text)
+}
+
+pub fn load_judge_demo_selection() -> EnabledProviders {
+    std::fs::read_to_string(judge_demo_config_path())
+        .ok()
+        .and_then(|text| serde_json::from_str(text.trim_start_matches('\u{feff}')).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_judge_demo_selection(enabled: EnabledProviders) -> io::Result<()> {
+    save_judge_demo_selection_to(&judge_demo_config_path(), enabled)
+}
+
+fn save_judge_demo_selection_to(path: &Path, enabled: EnabledProviders) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut text = serde_json::to_vec_pretty(&enabled).map_err(io::Error::other)?;
+    text.push(b'\n');
+    atomic_write(path, &text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Config, DEFAULT_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD, DEFAULT_REFRESH_INTERVAL_MINUTES,
-        MAX_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD, MAX_CLAUDE_CODE_REFRESH_TIMEOUT_SECONDS,
-        MAX_REFRESH_INTERVAL_MINUTES, MIN_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD,
-        MIN_CLAUDE_CODE_REFRESH_TIMEOUT_SECONDS, MIN_REFRESH_INTERVAL_MINUTES,
+        save_judge_demo_selection_to, Config, DEFAULT_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD,
+        DEFAULT_REFRESH_INTERVAL_MINUTES, MAX_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD,
+        MAX_CLAUDE_CODE_REFRESH_TIMEOUT_SECONDS, MAX_REFRESH_INTERVAL_MINUTES,
+        MIN_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD, MIN_CLAUDE_CODE_REFRESH_TIMEOUT_SECONDS,
+        MIN_REFRESH_INTERVAL_MINUTES,
     };
 
     #[test]
@@ -167,10 +209,61 @@ mod tests {
 
         assert!(!config.load_error);
         assert_eq!(config.mock_mode, "normal");
+        assert!(config.enabled_providers.codex);
+        assert!(config.enabled_providers.claude);
+        assert!(config.enabled_providers.deepseek);
         assert_eq!(
             config.refresh_interval_minutes,
             DEFAULT_REFRESH_INTERVAL_MINUTES
         );
+    }
+
+    #[test]
+    fn provider_selection_accepts_partial_nested_config() {
+        let config: Config =
+            serde_json::from_str(r#"{"enabledProviders":{"claude":false,"deepseek":false}}"#)
+                .expect("valid provider selection");
+
+        assert!(config.enabled_providers.codex);
+        assert!(!config.enabled_providers.claude);
+        assert!(!config.enabled_providers.deepseek);
+    }
+
+    #[test]
+    fn standalone_judge_selection_uses_safe_defaults() {
+        let selection: crate::models::EnabledProviders =
+            serde_json::from_str(r#"{"claude":false}"#).expect("valid demo selection");
+
+        assert!(selection.codex);
+        assert!(!selection.claude);
+        assert!(selection.deepseek);
+    }
+
+    #[test]
+    fn judge_selection_save_creates_its_isolated_directory() {
+        let unique = format!(
+            "ai-usage-dashboard-judge-demo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock after Unix epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let path = root.join("nested").join("judge-demo.json");
+        let selection = crate::models::EnabledProviders {
+            codex: true,
+            claude: false,
+            deepseek: true,
+        };
+
+        save_judge_demo_selection_to(&path, selection).expect("save demo selection");
+        let saved: crate::models::EnabledProviders =
+            serde_json::from_slice(&std::fs::read(&path).expect("read saved demo selection"))
+                .expect("parse saved demo selection");
+
+        assert_eq!(saved, selection);
+        std::fs::remove_dir_all(root).expect("remove isolated test directory");
     }
 
     #[test]
