@@ -27,15 +27,34 @@ one provider does not erase last-known-good data for the other providers.
 
 ## Project status
 
-Version `0.2.0` is a Windows-first release. The responsive UI, native build, and
-installer flow are exercised on Windows 11 and Surface-sized viewports. The
-installers published on the GitHub Releases page are not code-signed, so Windows
-SmartScreen may require explicit confirmation before installation.
+Version `0.3.0` is an uncommitted OpenAI Build Week release candidate. It adds
+provider selection and an isolated Judge Demo to the published Windows-first
+`0.2.0` foundation. The responsive UI, native build, and installer flow are
+exercised on Windows 11 and Surface-sized viewports. Published and candidate
+installers are not code-signed, so Windows SmartScreen may require explicit
+confirmation before installation.
 
 This project reads credential formats and usage endpoints used by provider CLI
 tools. Some of those interfaces are undocumented and can change without notice.
 The project is not affiliated with, endorsed by, or supported by Anthropic,
 OpenAI, or DeepSeek.
+
+## OpenAI Build Week Extension
+
+This entry is an extension of an existing open-source project, not a claim that
+the entire application was created during Build Week.
+
+**Before the event:** AI Usage Dashboard already had the Tauri/Rust/React
+desktop architecture, Claude/Codex/DeepSeek integrations, sanitized IPC,
+last-known-good caching, failure states, fullscreen and screensaver modes,
+Surface-responsive UI, automated tests, and a public `0.2.0` Windows release.
+The Codex single-window response compatibility fix also predates this extension.
+
+**Built on 2026-07-17 with Codex and GPT-5.6:** the end-to-end provider-selection
+workflow, atomic persistence, disabled-provider refresh isolation, retained
+caches, zero/one/two/three-panel layouts, concurrency-safe preference changes,
+expanded Surface validation, isolated Judge Demo, NSIS demo shortcut, and Build
+Week judging documentation.
 
 ## Privacy and security
 
@@ -59,6 +78,19 @@ credential exposure.
 
 ## Install
 
+### Build Week judge candidate
+
+The `0.3.0` NSIS candidate is ready for direct installation; no source build,
+Node.js, Rust, provider login, or API key is required for judging.
+
+**Public candidate installer:** `[ADD PUBLIC v0.3.0 NSIS URL BEFORE SUBMISSION]`
+
+After installation, open **AI Usage Dashboard (Judge Demo)** from the Windows
+Start menu. The shortcut launches bundled synthetic data and is the recommended
+evaluation path.
+
+### Stable public release
+
 Download the latest Windows installer from
 [GitHub Releases](https://github.com/neyham/ai-usage-dashboard/releases/latest):
 
@@ -72,13 +104,41 @@ Review the source and release checksums before accepting a SmartScreen prompt.
 The WinGet package is planned but should not be considered available until its
 manifest is accepted into `microsoft/winget-pkgs`.
 
-## Requirements
+## Judge Demo
+
+Judge Demo reuses the existing production mock parsers and embedded fixtures,
+but adds a dedicated safety boundary around them:
+
+- it starts with `--judge-demo` and displays `SYNTHETIC DEMO · OFFLINE`;
+- it does not load normal `config.json`, provider credentials, or the normal
+  cache;
+- refresh actions always regenerate embedded fixture data and never construct a
+  live provider request;
+- provider selections persist separately in
+  `%APPDATA%\AiUsageDashboard\judge-demo.json` and cannot alter live settings;
+- settings can exercise all zero, one, two, and three-panel layouts.
+
+The demo validates the UI, selection workflow, parser-to-renderer boundary,
+status presentation, and responsive layouts. It intentionally does not validate
+provider authentication, endpoint availability, or the accuracy of live quota
+data.
+
+Command-line fallback for an installed current-user build:
+
+```powershell
+& "$env:LOCALAPPDATA\AI Usage Dashboard\ai-usage-dashboard.exe" --judge-demo
+```
+
+## Runtime requirements
 
 - Windows 10 or Windows 11.
+- Microsoft Edge WebView2 Runtime. It is normally present on Windows 11.
+
+## Source build requirements
+
 - Node.js 18 or later.
 - Rust 1.88 or later with the `x86_64-pc-windows-msvc` toolchain.
 - Visual Studio Build Tools with **Desktop development with C++**.
-- Microsoft Edge WebView2 Runtime. It is normally present on Windows 11.
 
 Build from Windows PowerShell, not inside WSL. A WSL build produces a Linux
 binary and cannot integrate with Windows Credential Manager, Task Scheduler, or
@@ -106,8 +166,10 @@ under `src-tauri\target\release\bundle\`.
 
 ## Provider setup
 
-The application checks all three providers on every refresh. There is currently
-no per-provider enable or disable switch.
+Use the settings button in the bottom toolbar to choose which providers appear
+on the home screen. Disabled providers are excluded from automatic and manual
+refresh cycles, including credential reads and network requests. Changes apply
+immediately and persist in `config.json`.
 
 | Provider | Default credential source | Override |
 | --- | --- | --- |
@@ -164,6 +226,11 @@ The file is `%APPDATA%\AiUsageDashboard\config.json`:
 {
   "refreshIntervalMinutes": 5,
   "networkTimeoutSeconds": 15,
+  "enabledProviders": {
+    "codex": true,
+    "claude": true,
+    "deepseek": true
+  },
   "deepSeekApiKey": "",
   "deepSeekCredentialTarget": "AiUsageDashboard/DeepSeekApiKey",
   "claudeCredentialsPath": "",
@@ -176,8 +243,9 @@ The file is `%APPDATA%\AiUsageDashboard\config.json`:
 }
 ```
 
-Restart the application after editing the file. Timing and CLI recovery values
-are clamped to safe bounds:
+Settings changed in the application apply immediately. Restart the application
+after editing the JSON file directly. Timing and CLI recovery values are
+clamped to safe bounds:
 
 | Setting | Allowed range |
 | --- | --- |
@@ -190,8 +258,11 @@ the key as plaintext in `config.json`.
 
 ## Refresh and cache behavior
 
-- A refresh starts immediately at launch, then repeats every five minutes by
-  default. Normal mode can be configured from 5 minutes to 24 hours.
+- Enabled providers refresh immediately at launch, then repeat every five
+  minutes by default. Normal mode can be configured from 5 minutes to 24 hours.
+- Disabled providers are not displayed, do not read credentials, and do not
+  receive background or manual refresh requests. Their last-known cache remains
+  available if they are enabled again later.
 - Screensaver mode enforces a 15-minute minimum interval to avoid unnecessary
   idle-time traffic.
 - Press `F5` or use the refresh button for an on-demand refresh in normal or
@@ -207,17 +278,18 @@ the key as plaintext in `config.json`.
 
 ## Understanding status warnings
 
-`SYSTEM NOMINAL` means all three checks returned fresh, healthy data. `WARNING -
-SERVICE DEGRADED` means at least one provider is cached, unavailable, rate
-limited, unauthenticated, or reporting a non-nominal balance. `SERVICE FAILURE`
-means all three checks failed or only fallback data was available.
+`SYSTEM NOMINAL` means every enabled provider returned fresh, healthy data.
+`WARNING - SERVICE DEGRADED` means at least one enabled provider is cached,
+unavailable, rate limited, unauthenticated, or reporting a non-nominal balance.
+`SERVICE FAILURE` means every enabled check failed or only fallback data was
+available. With no providers selected, the dashboard remains in standby.
 
-If every panel fails:
+If every enabled panel fails:
 
 1. Confirm that Claude Code and Codex are signed in and that a DeepSeek key is
    available through one of the documented sources.
 2. Open `config.json` and check for invalid JSON or an incorrect explicit path.
-3. Restart after changing configuration, then trigger one manual refresh.
+3. Restart after editing the JSON directly, then trigger one manual refresh.
 4. Check the providers' official status pages. A provider outage should not be
    repaired by deleting credentials.
 5. Use mock mode to separate a local UI problem from a credential or provider
@@ -232,6 +304,7 @@ data; it does not repair authentication.
 | --- | --- |
 | none | Normal resizable window |
 | `--fullscreen` | Borderless fullscreen; `Esc` exits |
+| `--judge-demo` | Isolated synthetic demo; no normal config, credential, cache, or provider access |
 | `/s` or `-s` | Fullscreen, always on top, and exits on real input after a short arming delay |
 | `--config` or `/c` | Opens `config.json` and exits |
 | `/p <HWND>` | Windows screensaver preview; intentionally exits without rendering |
@@ -272,11 +345,13 @@ cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D w
 The UI suite exercises healthy, rate-limited, partial-failure, and
 insufficient-balance states across seven viewports, including Surface 200%
 landscape, portrait, and half-Snap layouts. It also checks overflow, touch
-targets, refresh state, keyboard behavior, and screensaver input exit.
+targets, refresh state, keyboard behavior, screensaver input exit, isolated
+Judge Demo disclosure, and zero/one/two/three-panel selection layouts.
 
 Set `mockMode` to `normal`, `claude429`, or `failures` to exercise the embedded
 provider fixtures without network access. An unknown value displays `INVALID
-MOCK MODE` and remains offline.
+MOCK MODE` and remains offline. `--judge-demo` is the safer judging entrypoint
+because it ignores normal configuration and cache files entirely.
 
 ## Repository layout
 
@@ -285,6 +360,8 @@ src/                         React and TypeScript renderer
 scripts/viewport-check.mjs   Playwright viewport and interaction suite
 mocks/                       Embedded provider response fixtures
 src-tauri/src/               Rust backend, cache, fetchers, and launch modes
+src-tauri/nsis-hooks.nsh     One-click Judge Demo Start menu shortcut
+docs/build-week/             Build Week submission draft and judging notes
 install-idle-task.ps1        Scheduled idle-mode install and removal
 install-screensaver.ps1      Experimental .scr install and safe restoration
 ```

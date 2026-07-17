@@ -1,7 +1,7 @@
 {
   "name": "ai-usage-dashboard",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "MIT",
   "description": "Local Windows desktop dashboard for Codex and Claude usage limits and DeepSeek API balance",
   "type": "module",
@@ -31,6 +31,7 @@
     "@fontsource/jetbrains-mono": "^5.2.8",
     "@fontsource/rajdhani": "^5.2.7",
     "@tauri-apps/api": "^2.1.1",
+    "lucide-react": "1.24.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

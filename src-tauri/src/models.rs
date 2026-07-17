@@ -3,6 +3,33 @@
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EnabledProviders {
+    pub codex: bool,
+    pub claude: bool,
+    pub deepseek: bool,
+}
+
+impl Default for EnabledProviders {
+    fn default() -> Self {
+        Self {
+            codex: true,
+            claude: true,
+            deepseek: true,
+        }
+    }
+}
+
+impl EnabledProviders {
+    pub fn count(self) -> usize {
+        [self.codex, self.claude, self.deepseek]
+            .into_iter()
+            .filter(|enabled| *enabled)
+            .count()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeService {
@@ -107,6 +134,7 @@ pub struct UsageSummary {
     pub refreshed_at: Option<String>,
     /// "idle" | "ok" | "refreshing" | "partial" | "error"
     pub status: String,
+    pub enabled_providers: EnabledProviders,
     pub services: Services,
 }
 
@@ -116,6 +144,7 @@ impl UsageSummary {
         Self {
             refreshed_at: None,
             status: "idle".into(),
+            enabled_providers: EnabledProviders::default(),
             services: Services::default(),
         }
     }

@@ -12,7 +12,7 @@ mod util;
 
 use cache::CacheState;
 use config::Config;
-use models::UsageSummary;
+use models::{EnabledProviders, UsageSummary};
 use std::time::Duration as StdDuration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
@@ -20,12 +20,14 @@ use tokio::sync::Mutex;
 const SCREENSAVER_REFRESH_INTERVAL_MINUTES: u64 = 15;
 
 pub struct AppState {
-    config: Config,
+    config: Mutex<Config>,
     /// "normal" | "fullscreen" | "screensaver" — drives how the UI exits.
     mode: String,
+    judge_demo: bool,
     summary: Mutex<UsageSummary>,
     cache: Mutex<CacheState>,
     refreshing: Mutex<bool>,
+    refresh_pending: Mutex<bool>,
 }
 
 struct RefreshFlagGuard {
@@ -66,6 +68,7 @@ struct AppOptions {
     screensaver: bool,
     open_config: bool,
     preview: bool,
+    judge_demo: bool,
 }
 
 impl AppOptions {
@@ -81,6 +84,7 @@ impl AppOptions {
                 }
                 "--fullscreen" => o.fullscreen = true,
                 "--config" | "/c" => o.open_config = true,
+                "--judge-demo" => o.judge_demo = true,
                 "/p" => {
                     o.preview = true;
                     it.next(); // consume the following HWND argument
@@ -122,6 +126,49 @@ async fn refresh_now(app: AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Persist the home-screen selection without exposing the rest of config.json.
+#[tauri::command]
+async fn save_enabled_providers(
+    app: AppHandle,
+    enabled_providers: EnabledProviders,
+) -> Result<EnabledProviders, String> {
+    let state = app.state::<AppState>();
+    {
+        let mut current = state.config.lock().await;
+        if current.load_error {
+            return Err("CONFIG FILE IS INVALID".into());
+        }
+        let mut next = current.clone();
+        next.enabled_providers = enabled_providers;
+        if state.judge_demo {
+            config::save_judge_demo_selection(enabled_providers)
+                .map_err(|_| "DEMO SETTINGS SAVE FAILED".to_string())?;
+        } else {
+            config::save(&next).map_err(|_| "CONFIG SAVE FAILED".to_string())?;
+        }
+        *current = next;
+    }
+
+    let summary = if state.judge_demo {
+        mock::summary("normal", enabled_providers)
+            .expect("judge demo mock mode is always available")
+    } else {
+        let cache = state.cache.lock().await;
+        fetchers::summary_from_cache(&cache, enabled_providers)
+    };
+    *state.summary.lock().await = summary.clone();
+    let _ = app.emit("summary", &summary);
+
+    if queue_refresh(&app).await {
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            run_refresh(&handle).await;
+        });
+    }
+
+    Ok(enabled_providers)
+}
+
 /// Quit (Esc from fullscreen / screensaver, or input in screensaver mode).
 #[tauri::command]
 fn exit_app(app: AppHandle) {
@@ -132,6 +179,12 @@ fn exit_app(app: AppHandle) {
 #[tauri::command]
 fn launch_mode(state: State<'_, AppState>) -> String {
     state.mode.clone()
+}
+
+/// True only for the isolated, synthetic Build Week judge experience.
+#[tauri::command]
+fn judge_demo(state: State<'_, AppState>) -> bool {
+    state.judge_demo
 }
 
 /// Open a path in the platform's default editor (used for `--config`).
@@ -162,31 +215,84 @@ async fn try_begin_refresh(app: &AppHandle) -> bool {
 }
 
 async fn run_refresh(app: &AppHandle) {
-    let refresh_flag = RefreshFlagGuard::new(app);
-    let state = app.state::<AppState>();
+    loop {
+        let refresh_flag = RefreshFlagGuard::new(app);
+        let state = app.state::<AppState>();
+        let config = state.config.lock().await.clone();
 
-    let summary = if state.config.load_error {
-        config_error_summary()
-    } else if let Some(summary) = mock::summary(&state.config.mock_mode) {
-        summary
-    } else {
-        let mut cache = state.cache.lock().await;
-        let s = fetchers::collect_summary(&state.config, &mut cache).await;
-        if let Err(err) = cache.save() {
-            eprintln!("failed to persist dashboard cache: {err}");
+        let summary = if state.judge_demo {
+            mock::summary("normal", config.enabled_providers)
+                .expect("judge demo mock mode is always available")
+        } else if config.load_error {
+            config_error_summary(config.enabled_providers)
+        } else if let Some(summary) = mock::summary(&config.mock_mode, config.enabled_providers) {
+            summary
+        } else {
+            let mut cache = state.cache.lock().await;
+            let s = fetchers::collect_summary(&config, &mut cache).await;
+            if config.enabled_providers.count() > 0 {
+                if let Err(err) = cache.save() {
+                    eprintln!("failed to persist dashboard cache: {err}");
+                }
+            }
+            s
+        };
+
+        // A settings change can land while a network cycle is in flight.
+        // Publish only the latest selection; the pending cycle below fetches it.
+        let latest_enabled = state.config.lock().await.enabled_providers;
+        let selection_changed = latest_enabled != config.enabled_providers;
+        let summary = if selection_changed && state.judge_demo {
+            mock::summary("normal", latest_enabled)
+                .expect("judge demo mock mode is always available")
+        } else if selection_changed {
+            let cache = state.cache.lock().await;
+            fetchers::summary_from_cache(&cache, latest_enabled)
+        } else {
+            summary
+        };
+
+        *state.summary.lock().await = summary.clone();
+        let _ = app.emit("summary", &summary);
+
+        refresh_flag.release().await;
+
+        if !begin_pending_refresh(app).await {
+            break;
         }
-        s
-    };
-
-    *state.summary.lock().await = summary.clone();
-    let _ = app.emit("summary", &summary);
-
-    refresh_flag.release().await;
+    }
 }
 
-fn config_error_summary() -> UsageSummary {
+async fn queue_refresh(app: &AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    let mut pending = state.refresh_pending.lock().await;
+    *pending = true;
+    if try_begin_refresh(app).await {
+        *pending = false;
+        true
+    } else {
+        false
+    }
+}
+
+async fn begin_pending_refresh(app: &AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    let mut pending = state.refresh_pending.lock().await;
+    if !*pending || !try_begin_refresh(app).await {
+        return false;
+    }
+    *pending = false;
+    true
+}
+
+fn config_error_summary(enabled: EnabledProviders) -> UsageSummary {
     let mut summary = UsageSummary::empty();
-    summary.status = "error".into();
+    summary.status = if enabled.count() == 0 {
+        "idle".into()
+    } else {
+        "error".into()
+    };
+    summary.enabled_providers = enabled;
     summary.services.codex.status = "CONFIG ERROR".into();
     summary.services.claude.status = "CONFIG ERROR".into();
     summary.services.deepseek.status = "CONFIG ERROR".into();
@@ -227,28 +333,41 @@ pub fn run() {
         return;
     }
 
-    let config = config::load_or_create();
-    let cache = CacheState::load();
-
-    // Seed from cache so the dashboard is never blank on startup.
-    let initial = fetchers::summary_from_cache(&cache);
+    let (mut config, cache) = if options.judge_demo {
+        (Config::default(), CacheState::default())
+    } else {
+        (config::load_or_create(), CacheState::load())
+    };
+    let initial = if options.judge_demo {
+        config.enabled_providers = config::load_judge_demo_selection();
+        config.mock_mode = "normal".into();
+        mock::summary(&config.mock_mode, config.enabled_providers)
+            .expect("judge demo mock mode is always available")
+    } else {
+        // Seed from cache so the dashboard is never blank on startup.
+        fetchers::summary_from_cache(&cache, config.enabled_providers)
+    };
     let interval_minutes =
         effective_refresh_interval_minutes(config.refresh_interval_minutes, options.screensaver);
     let mode = options.mode();
 
     tauri::Builder::default()
         .manage(AppState {
-            config,
+            config: Mutex::new(config),
             mode,
+            judge_demo: options.judge_demo,
             summary: Mutex::new(initial),
             cache: Mutex::new(cache),
             refreshing: Mutex::new(false),
+            refresh_pending: Mutex::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             get_summary,
             refresh_now,
+            save_enabled_providers,
             exit_app,
-            launch_mode
+            launch_mode,
+            judge_demo
         ])
         .setup(move |app| {
             // Apply fullscreen / screensaver window state.
@@ -280,12 +399,20 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::effective_refresh_interval_minutes;
+    use super::{effective_refresh_interval_minutes, AppOptions};
 
     #[test]
     fn screensaver_uses_a_quieter_refresh_floor() {
         assert_eq!(effective_refresh_interval_minutes(5, false), 5);
         assert_eq!(effective_refresh_interval_minutes(5, true), 15);
         assert_eq!(effective_refresh_interval_minutes(30, true), 30);
+    }
+
+    #[test]
+    fn judge_demo_argument_is_recognized_without_changing_window_mode() {
+        let options = AppOptions::parse(["--judge-demo".to_string()].into_iter());
+
+        assert!(options.judge_demo);
+        assert_eq!(options.mode(), "normal");
     }
 }

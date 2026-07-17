@@ -6,6 +6,12 @@ export type SummaryStatus = "idle" | "ok" | "refreshing" | "partial" | "error";
 
 export type LaunchMode = "normal" | "fullscreen" | "screensaver";
 
+export interface EnabledProviders {
+  codex: boolean;
+  claude: boolean;
+  deepseek: boolean;
+}
+
 export interface ClaudeService {
   status: string;
   fromCache: boolean;
@@ -45,5 +51,6 @@ export interface Services {
 export interface UsageSummary {
   refreshedAt: string | null;
   status: SummaryStatus;
+  enabledProviders: EnabledProviders;
   services: Services;
 }

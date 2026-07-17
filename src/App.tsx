@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { LaunchMode, SummaryStatus, UsageSummary } from "./types";
+import type { EnabledProviders, LaunchMode, SummaryStatus, UsageSummary } from "./types";
 import { ClockHeader } from "./components/ClockHeader";
 import { ServicePanel } from "./components/ServicePanel";
 import { SystemStrip } from "./components/SystemStrip";
 import { SideRail } from "./components/SideRail";
 import { TelemetryBar } from "./components/TelemetryBar";
+import { ProviderSettings } from "./components/ProviderSettings";
 
 const EMPTY: UsageSummary = {
   refreshedAt: null,
   status: "idle",
+  enabledProviders: { codex: true, claude: true, deepseek: true },
   services: {
     codex: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
     claude: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
@@ -36,6 +38,8 @@ export default function App() {
   const [launchMode, setLaunchMode] = useState<LaunchMode>("normal");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [judgeDemo, setJudgeDemo] = useState(false);
   const refreshPendingRef = useRef(false);
   const refreshTimerRef = useRef<number | null>(null);
 
@@ -83,7 +87,11 @@ export default function App() {
           receivedLiveSummary = true;
           setSummary(event.payload);
           setUiError(null);
-          if (event.payload.status !== "refreshing") finishRefresh();
+          if (event.payload.status === "refreshing") {
+            setIsRefreshing(true);
+          } else {
+            finishRefresh();
+          }
         });
         if (disposed) {
           stopListening();
@@ -130,7 +138,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    invoke<boolean>("judge_demo")
+      .then((enabled) => {
+        if (!disposed) setJudgeDemo(enabled);
+      })
+      .catch((err) => console.error("judge_demo failed", err));
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && settingsOpen) {
+        event.preventDefault();
+        setSettingsOpen(false);
+        return;
+      }
       if (event.key === "Escape" && launchMode !== "normal") {
         event.preventDefault();
         void invoke("exit_app").catch(() => {});
@@ -143,7 +168,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [launchMode, refresh]);
+  }, [launchMode, refresh, settingsOpen]);
 
   // Screensaver mode: exit on any real input after a short arming delay.
   useEffect(() => {
@@ -202,6 +227,14 @@ export default function App() {
       ? "error"
       : summary.status;
   const linkLabel = LINK_LABEL[displayStatus] ?? LINK_LABEL.error;
+  const enabledCount = Object.values(summary.enabledProviders).filter(Boolean).length;
+
+  const saveEnabledProviders = useCallback(async (enabledProviders: EnabledProviders) => {
+    const saved = await invoke<EnabledProviders>("save_enabled_providers", {
+      enabledProviders,
+    });
+    setSummary((current) => ({ ...current, enabledProviders: saved }));
+  }, []);
 
   return (
     <div className={`dashboard mode-${launchMode}`}>
@@ -221,24 +254,47 @@ export default function App() {
           <ClockHeader />
         </header>
 
-        <main className="panels" aria-busy={isRefreshing}>
-          <ServicePanel kind="codex" title="CODEX" code="SYS-01" service={summary.services.codex} />
-          <ServicePanel kind="claude" title="CLAUDE" code="SYS-02" service={summary.services.claude} />
-          <ServicePanel
-            kind="deepseek"
-            title="DEEPSEEK"
-            code="SYS-03"
-            service={summary.services.deepseek}
-          />
+        <main className="panels" data-count={enabledCount} aria-busy={isRefreshing}>
+          {summary.enabledProviders.codex && (
+            <ServicePanel kind="codex" title="CODEX" code="SYS-01" service={summary.services.codex} />
+          )}
+          {summary.enabledProviders.claude && (
+            <ServicePanel kind="claude" title="CLAUDE" code="SYS-02" service={summary.services.claude} />
+          )}
+          {summary.enabledProviders.deepseek && (
+            <ServicePanel
+              kind="deepseek"
+              title="DEEPSEEK"
+              code="SYS-03"
+              service={summary.services.deepseek}
+            />
+          )}
+          {enabledCount === 0 && (
+            <div className="panels-empty" role="status">
+              <span>NO PROVIDERS SELECTED</span>
+              <button type="button" onClick={() => setSettingsOpen(true)}>
+                OPEN SETTINGS
+              </button>
+            </div>
+          )}
         </main>
 
         <TelemetryBar
           refreshedLabel={refreshedLabel}
           status={displayStatus}
           errorMessage={uiError}
+          judgeDemo={judgeDemo}
           onRefresh={refresh}
+          onSettings={launchMode === "screensaver" ? undefined : () => setSettingsOpen(true)}
         />
       </div>
+      {settingsOpen && launchMode !== "screensaver" && (
+        <ProviderSettings
+          value={summary.enabledProviders}
+          onClose={() => setSettingsOpen(false)}
+          onSave={saveEnabledProviders}
+        />
+      )}
     </div>
   );
 }

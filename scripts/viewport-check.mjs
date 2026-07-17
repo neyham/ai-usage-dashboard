@@ -25,6 +25,7 @@ const viewports = [
 const baseSummary = {
   refreshedAt: "2026-07-10T04:30:00Z",
   status: "ok",
+  enabledProviders: { codex: true, claude: true, deepseek: true },
   services: {
     codex: {
       status: "NOMINAL",
@@ -135,15 +136,16 @@ async function waitForServer(server) {
   throw new Error(`Timed out waiting for ${baseUrl}:\n${server.output()}`);
 }
 
-async function installTauriMock(page, summary, launchMode = "normal") {
+async function installTauriMock(page, summary, launchMode = "normal", judgeDemo = false) {
   await page.addInitScript(
-    ({ initialSummary, mode }) => {
+    ({ initialSummary, mode, demo }) => {
+      let currentSummary = structuredClone(initialSummary);
       let nextCallbackId = 1;
       let nextEventId = 1;
       const callbacks = new Map();
       const listeners = new Map();
       let refreshPending = false;
-      const stats = { exits: 0, refreshes: 0, completeRefresh() {} };
+      const stats = { exits: 0, refreshes: 0, savedSelections: [], completeRefresh() {} };
 
       const unregisterListener = (event, eventId) => {
         const eventListeners = listeners.get(event);
@@ -161,7 +163,7 @@ async function installTauriMock(page, summary, launchMode = "normal") {
       stats.completeRefresh = () => {
         if (!refreshPending) return;
         refreshPending = false;
-        emit("summary", structuredClone(initialSummary));
+        emit("summary", structuredClone(currentSummary));
       };
 
       window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener };
@@ -189,12 +191,22 @@ async function installTauriMock(page, summary, launchMode = "normal") {
             unregisterListener(args.event, args.eventId);
             return null;
           }
-          if (command === "get_summary") return structuredClone(initialSummary);
+          if (command === "get_summary") return structuredClone(currentSummary);
           if (command === "launch_mode") return mode;
+          if (command === "judge_demo") return demo;
           if (command === "refresh_now") {
             stats.refreshes += 1;
             refreshPending = true;
             return true;
+          }
+          if (command === "save_enabled_providers") {
+            currentSummary = {
+              ...currentSummary,
+              enabledProviders: structuredClone(args.enabledProviders),
+            };
+            stats.savedSelections.push(structuredClone(args.enabledProviders));
+            emit("summary", structuredClone(currentSummary));
+            return structuredClone(args.enabledProviders);
           }
           if (command === "exit_app") {
             stats.exits += 1;
@@ -205,7 +217,7 @@ async function installTauriMock(page, summary, launchMode = "normal") {
       };
       window.__DASHBOARD_TEST__ = stats;
     },
-    { initialSummary: summary, mode: launchMode },
+    { initialSummary: summary, mode: launchMode, demo: judgeDemo },
   );
 }
 
@@ -231,6 +243,7 @@ async function inspectLayout(page, viewport) {
       ".balance-number",
       ".telemetry",
       ".tm-refresh",
+      ".tm-settings",
     ];
     for (const selector of selectors) {
       for (const [index, element] of [...document.querySelectorAll(selector)].entries()) {
@@ -272,6 +285,11 @@ async function inspectLayout(page, viewport) {
     }
     if (refresh && getComputedStyle(refresh).cursor !== "pointer") {
       issues.push(`normal-mode refresh cursor is ${getComputedStyle(refresh).cursor}`);
+    }
+    const settings = document.querySelector(".tm-settings");
+    const settingsRect = settings?.getBoundingClientRect();
+    if (!settingsRect || settingsRect.height < 44 || settingsRect.width < 44) {
+      issues.push(`settings touch target is ${settingsRect?.width ?? 0}x${settingsRect?.height ?? 0}`);
     }
     if (getComputedStyle(document.body).cursor === "none") {
       issues.push("normal-mode body cursor is hidden");
@@ -332,6 +350,10 @@ async function checkKeyboardAndScreensaver(browser) {
   await installTauriMock(normalPage, summaries.normal);
   await normalPage.goto(baseUrl, { waitUntil: "networkidle" });
   await normalPage.locator(".panel").first().waitFor();
+  await normalPage.locator(".tm-settings").click();
+  await normalPage.locator(".settings-dialog").waitFor();
+  await normalPage.keyboard.press("Escape");
+  assert.equal(await normalPage.locator(".settings-dialog").count(), 0);
   await normalPage.keyboard.press("Escape");
   assert.equal(await normalPage.evaluate(() => window.__DASHBOARD_TEST__.exits), 0);
   await normalPage.keyboard.press("F5");
@@ -352,7 +374,89 @@ async function checkKeyboardAndScreensaver(browser) {
     await saverPage.locator(".dashboard").evaluate((element) => getComputedStyle(element).cursor),
     "none",
   );
+  assert.equal(await saverPage.locator(".tm-settings").count(), 0);
   await saverContext.close();
+}
+
+async function checkProviderSelection(browser) {
+  const context = await browser.newContext({
+    viewport: { width: 1368, height: 912 },
+    hasTouch: true,
+    reducedMotion: "reduce",
+    colorScheme: "dark",
+  });
+  const page = await context.newPage();
+  await installTauriMock(page, summaries.normal);
+  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.locator(".panel").first().waitFor();
+  assert.equal(await page.locator(".panel").count(), 3);
+
+  await page.locator(".tm-settings").click();
+  await page.locator(".settings-dialog").waitFor();
+  assert.equal(await page.locator('.provider-option input[type="checkbox"]:checked').count(), 3);
+  await page.screenshot({ path: join(artifactDir, "provider-settings.png"), fullPage: true });
+  await page.locator(".provider-option.provider-claude").click();
+  await page.locator(".settings-save").click();
+  await page.locator(".settings-dialog").waitFor({ state: "detached" });
+  assert.equal(await page.locator(".panel").count(), 2);
+  assert.equal(await page.locator(".panel-claude").count(), 0);
+  assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
+  await page.screenshot({ path: join(artifactDir, "provider-selection-two.png"), fullPage: true });
+
+  await page.locator(".tm-settings").click();
+  await page.locator(".provider-option.provider-codex").click();
+  await page.locator(".provider-option.provider-deepseek").click();
+  await page.locator(".settings-save").click();
+  await page.locator(".panels-empty").waitFor();
+  assert.equal(await page.locator(".panel").count(), 0);
+
+  await page.locator(".panels-empty button").click();
+  await page.locator(".provider-option.provider-codex").click();
+  await page.locator(".settings-save").click();
+  await page.locator(".panel-codex").waitFor();
+  assert.equal(await page.locator(".panel").count(), 1);
+  assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
+
+  const saves = await page.evaluate(() => window.__DASHBOARD_TEST__.savedSelections);
+  assert.deepEqual(saves, [
+    { codex: true, claude: false, deepseek: true },
+    { codex: false, claude: false, deepseek: false },
+    { codex: true, claude: false, deepseek: false },
+  ]);
+  await page.screenshot({ path: join(artifactDir, "provider-selection.png"), fullPage: true });
+  await context.close();
+}
+
+async function checkJudgeDemo(browser) {
+  const judgeViewports = [
+    { name: "surface", width: 1368, height: 912 },
+    { name: "compact", width: 960, height: 540 },
+    { name: "snap", width: 684, height: 912 },
+  ];
+
+  for (const viewport of judgeViewports) {
+    const context = await browser.newContext({
+      viewport,
+      hasTouch: true,
+      reducedMotion: "reduce",
+      colorScheme: "dark",
+    });
+    const page = await context.newPage();
+    await installTauriMock(page, summaries.normal, "normal", true);
+    await page.goto(baseUrl, { waitUntil: "networkidle" });
+    await page.locator(".tm-demo", { hasText: "SYNTHETIC DEMO" }).waitFor();
+    assert.deepEqual(await inspectLayout(page, viewport), []);
+
+    const refresh = page.locator(".tm-refresh");
+    await refresh.click();
+    await page.evaluate(() => window.__DASHBOARD_TEST__.completeRefresh());
+    await page.locator(".tm-refresh:not(:disabled)").waitFor();
+
+    if (viewport.name === "surface") {
+      await page.screenshot({ path: join(artifactDir, "judge-demo.png"), fullPage: true });
+    }
+    await context.close();
+  }
 }
 
 async function launchTestBrowser() {
@@ -378,6 +482,10 @@ try {
       process.stdout.write(`PASS ${stateName.padEnd(10)} ${viewport.width}x${viewport.height}\n`);
     }
   }
+  await checkProviderSelection(browser);
+  process.stdout.write(`PASS provider selection and 0/1/2/3-panel layouts\n`);
+  await checkJudgeDemo(browser);
+  process.stdout.write(`PASS isolated judge demo across Surface/compact/Snap layouts\n`);
   await checkKeyboardAndScreensaver(browser);
   process.stdout.write(`PASS keyboard and screensaver input\nScreenshots: ${artifactDir}\n`);
 } finally {
