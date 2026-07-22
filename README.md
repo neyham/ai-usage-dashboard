@@ -13,9 +13,10 @@ built with Tauri, Rust, React, and TypeScript.
 
 ## What it shows
 
-- Claude five-hour and seven-day utilization, reset times, cooldowns, and cache
-  state.
-- Codex five-hour and seven-day utilization, reset times, and plan label.
+- Claude utilization for the available session, weekly, or monthly extra-usage
+  window, plus reset times, cooldowns, and cache state.
+- Codex utilization for the available rate-limit windows, reset times, plan
+  label, and banked-reset count with the earliest known expiry.
 - DeepSeek API balance and insufficient-balance state.
 - A combined health state that distinguishes fresh data, partial degradation,
   total failure, and an in-progress refresh.

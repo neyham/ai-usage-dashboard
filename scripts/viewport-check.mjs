@@ -32,10 +32,10 @@ const baseSummary = {
       fromCache: false,
       dataMayBeStale: false,
       plan: "pro",
-      fiveHourPercent: 34,
       sevenDayPercent: 61,
-      fiveHourResetLocal: "07-10 17:30",
-      sevenDayResetLocal: "07-14 08:00",
+      sevenDayResetLocal: "07-29 01:02",
+      resetCreditsAvailable: 3,
+      resetCreditsExpireLocal: "08-15 12:00",
     },
     claude: {
       status: "NOMINAL",
@@ -427,6 +427,73 @@ async function checkProviderSelection(browser) {
   await context.close();
 }
 
+async function checkUsageVariants(browser) {
+  const variants = [
+    {
+      name: "claude-weekly-only",
+      summary: {
+        ...baseSummary,
+        services: {
+          ...baseSummary.services,
+          claude: {
+            status: "NOMINAL",
+            fromCache: false,
+            dataMayBeStale: false,
+            sevenDayPercent: 28,
+            sevenDayResetLocal: "07-29 09:30",
+          },
+        },
+      },
+      claudeLabels: ["7D"],
+    },
+    {
+      name: "claude-extra-only",
+      summary: {
+        ...baseSummary,
+        services: {
+          ...baseSummary.services,
+          claude: {
+            status: "NOMINAL",
+            fromCache: false,
+            dataMayBeStale: false,
+            extraUsagePercent: 12.5,
+          },
+        },
+      },
+      claudeLabels: ["EXTRA"],
+    },
+  ];
+
+  for (const variant of variants) {
+    const viewport = { width: 1368, height: 912 };
+    const context = await browser.newContext({
+      viewport,
+      hasTouch: true,
+      reducedMotion: "reduce",
+      colorScheme: "dark",
+    });
+    const page = await context.newPage();
+    const pageErrors = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await installTauriMock(page, variant.summary);
+    await page.goto(baseUrl, { waitUntil: "networkidle" });
+    await page.locator(".panel").first().waitFor();
+
+    assert.deepEqual(await page.locator(".panel-codex .meter-label").allTextContents(), ["7D"]);
+    assert.equal(await page.locator(".panel-codex .reset-credits").count(), 1);
+    await page.locator(".panel-codex .reset-credits", { hasText: "3 AVAILABLE" }).waitFor();
+    await page.locator(".panel-codex .reset-credits", { hasText: "FIRST EXP" }).waitFor();
+    assert.deepEqual(
+      await page.locator(".panel-claude .meter-label").allTextContents(),
+      variant.claudeLabels,
+    );
+    assert.deepEqual(await inspectLayout(page, viewport), []);
+    assert.deepEqual(pageErrors, [], `${variant.name} page errors`);
+    await page.screenshot({ path: join(artifactDir, `${variant.name}.png`), fullPage: true });
+    await context.close();
+  }
+}
+
 async function checkJudgeDemo(browser) {
   const judgeViewports = [
     { name: "surface", width: 1368, height: 912 },
@@ -484,6 +551,8 @@ try {
   }
   await checkProviderSelection(browser);
   process.stdout.write(`PASS provider selection and 0/1/2/3-panel layouts\n`);
+  await checkUsageVariants(browser);
+  process.stdout.write(`PASS dynamic Codex and Claude usage-window variants\n`);
   await checkJudgeDemo(browser);
   process.stdout.write(`PASS isolated judge demo across Surface/compact/Snap layouts\n`);
   await checkKeyboardAndScreensaver(browser);

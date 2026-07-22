@@ -46,6 +46,9 @@ fn summary_from_payloads(
     else {
         return mock_data_error_summary(enabled);
     };
+    if codex.reset_credits_available.unwrap_or(0) > 0 {
+        codex.reset_credits_expire_local = Some(fmt_local(Utc::now() + Duration::days(21)));
+    }
 
     match mode {
         "claude429" => {
@@ -128,6 +131,10 @@ mod tests {
         assert_eq!(summary.status, "ok");
         assert_eq!(summary.services.claude.five_hour_percent, Some(42.0));
         assert_eq!(summary.services.claude.seven_day_percent, Some(73.0));
+        assert_eq!(summary.services.codex.five_hour_percent, None);
+        assert_eq!(summary.services.codex.seven_day_percent, Some(64.0));
+        assert_eq!(summary.services.codex.reset_credits_available, Some(3));
+        assert!(summary.services.codex.reset_credits_expire_local.is_some());
     }
 
     #[test]

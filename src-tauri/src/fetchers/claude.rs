@@ -199,35 +199,110 @@ fn is_invalid_grant(body: &str) -> bool {
 
 pub(crate) fn parse_usage(body: &str) -> anyhow::Result<ClaudeService> {
     let root: Value = serde_json::from_str(body).context("parse Claude usage body")?;
-    let five = root
-        .get("five_hour")
-        .and_then(Value::as_object)
-        .context("Claude usage missing five_hour window")?;
-    let seven = root
-        .get("seven_day")
-        .and_then(Value::as_object)
-        .context("Claude usage missing seven_day window")?;
-    let five_hour_percent = five
-        .get("utilization")
-        .and_then(Value::as_f64)
-        .map(clamp_percent)
-        .context("Claude usage missing five_hour utilization")?;
-    let seven_day_percent = seven
-        .get("utilization")
-        .and_then(Value::as_f64)
-        .map(clamp_percent)
-        .context("Claude usage missing seven_day utilization")?;
+    let five = usage_window(&root, "five_hour");
+    let seven = weekly_usage_window(&root);
+    let extra_usage_percent = extra_usage_percent(&root);
+
+    if five.is_none() && seven.is_none() && extra_usage_percent.is_none() {
+        bail!("Claude usage has no usable windows");
+    }
 
     Ok(ClaudeService {
         status: "NOMINAL".into(),
         from_cache: false,
         data_may_be_stale: false,
         cooldown_until_local: None,
-        five_hour_percent: Some(five_hour_percent),
-        seven_day_percent: Some(seven_day_percent),
-        five_hour_reset_local: five.get("resets_at").and_then(local_label),
-        seven_day_reset_local: seven.get("resets_at").and_then(local_label),
+        five_hour_percent: five.as_ref().map(|window| window.0),
+        seven_day_percent: seven.as_ref().map(|window| window.0),
+        five_hour_reset_local: five.and_then(|window| window.1),
+        seven_day_reset_local: seven.and_then(|window| window.1),
+        extra_usage_percent,
     })
+}
+
+fn usage_window(root: &Value, key: &str) -> Option<(f64, Option<String>)> {
+    let window = root.get(key)?.as_object()?;
+    let percent = flexible_number(window.get("utilization")?).map(clamp_percent)?;
+    let reset = window.get("resets_at").and_then(local_label);
+    Some((percent, reset))
+}
+
+fn weekly_usage_window(root: &Value) -> Option<(f64, Option<String>)> {
+    for key in [
+        "seven_day",
+        "seven_day_oauth_apps",
+        "seven_day_sonnet",
+        "seven_day_opus",
+    ] {
+        if let Some(window) = usage_window(root, key) {
+            return Some(window);
+        }
+    }
+    weekly_limit_window(root)
+}
+
+fn weekly_limit_window(root: &Value) -> Option<(f64, Option<String>)> {
+    let weekly = root
+        .get("limits")?
+        .as_array()?
+        .iter()
+        .filter(|entry| {
+            entry
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.contains("weekly"))
+                || entry
+                    .get("group")
+                    .and_then(Value::as_str)
+                    .is_some_and(|group| group.eq_ignore_ascii_case("weekly"))
+        })
+        .filter(|entry| entry.get("percent").and_then(flexible_number).is_some())
+        .collect::<Vec<_>>();
+    let entry = weekly
+        .iter()
+        .find(|entry| is_all_models_limit(entry))
+        .copied()
+        .or_else(|| weekly.first().copied())?;
+    let percent = flexible_number(entry.get("percent")?).map(clamp_percent)?;
+    let reset = entry.get("resets_at").and_then(local_label);
+    Some((percent, reset))
+}
+
+fn is_all_models_limit(entry: &Value) -> bool {
+    let Some(model) = entry.get("scope").and_then(|scope| scope.get("model")) else {
+        return true;
+    };
+    if model.is_null() {
+        return true;
+    }
+    model
+        .get("display_name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("all models"))
+}
+
+fn extra_usage_percent(root: &Value) -> Option<f64> {
+    let extra = root.get("extra_usage")?.as_object()?;
+    if extra.get("is_enabled").and_then(Value::as_bool) == Some(false) {
+        return None;
+    }
+
+    extra
+        .get("utilization")
+        .and_then(flexible_number)
+        .or_else(|| {
+            let used = flexible_number(extra.get("used_credits")?)?;
+            let limit = flexible_number(extra.get("monthly_limit")?)?;
+            (limit > 0.0).then_some(used / limit * 100.0)
+        })
+        .map(clamp_percent)
+}
+
+fn flexible_number(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str()?.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite())
 }
 
 // ---------- Credentials ----------
@@ -1768,14 +1843,65 @@ mod tests {
 
         assert_eq!(service.five_hour_percent, Some(0.42));
         assert_eq!(service.seven_day_percent, Some(1.0));
+        assert_eq!(service.extra_usage_percent, None);
     }
 
     #[test]
-    fn claude_usage_requires_both_windows_and_utilization() {
+    fn claude_usage_accepts_either_standard_window() {
+        let weekly = parse_usage(
+            r#"{"five_hour":null,"seven_day":{"utilization":"37.5","resets_at":"2026-07-29T08:30:00Z"}}"#,
+        )
+        .expect("valid weekly-only Claude usage");
+        assert_eq!(weekly.five_hour_percent, None);
+        assert_eq!(weekly.seven_day_percent, Some(37.5));
+        assert!(weekly.seven_day_reset_local.is_some());
+
+        let session = parse_usage(r#"{"five_hour":{"utilization":12},"seven_day":null}"#)
+            .expect("valid session-only Claude usage");
+        assert_eq!(session.five_hour_percent, Some(12.0));
+        assert_eq!(session.seven_day_percent, None);
+    }
+
+    #[test]
+    fn claude_usage_falls_back_to_scoped_weekly_windows() {
+        let legacy = parse_usage(
+            r#"{"seven_day":null,"seven_day_sonnet":{"utilization":44,"resets_at":"2026-07-29T08:30:00Z"}}"#,
+        )
+        .expect("valid model-specific weekly Claude response");
+        assert_eq!(legacy.seven_day_percent, Some(44.0));
+
+        let limits = parse_usage(
+            r#"{
+                "limits":[
+                    {"kind":"weekly_scoped","percent":66,"scope":{"model":{"display_name":"Fable"}}},
+                    {"group":"weekly","percent":"31","resets_at":"2026-07-29T08:30:00Z","scope":{"model":{"display_name":"All models"}}}
+                ]
+            }"#,
+        )
+        .expect("valid limits-array Claude response");
+        assert_eq!(limits.seven_day_percent, Some(31.0));
+        assert!(limits.seven_day_reset_local.is_some());
+    }
+
+    #[test]
+    fn claude_usage_accepts_extra_usage_only_accounts() {
+        let service = parse_usage(
+            r#"{"extra_usage":{"is_enabled":true,"used_credits":"25","monthly_limit":"200"}}"#,
+        )
+        .expect("valid extra-usage-only Claude response");
+
+        assert_eq!(service.five_hour_percent, None);
+        assert_eq!(service.seven_day_percent, None);
+        assert_eq!(service.extra_usage_percent, Some(12.5));
+    }
+
+    #[test]
+    fn claude_usage_rejects_responses_without_usable_usage() {
         for body in [
             r#"{}"#,
-            r#"{"five_hour":{"utilization":1}}"#,
-            r#"{"five_hour":{"utilization":1},"seven_day":{}}"#,
+            r#"{"five_hour":{}}"#,
+            r#"{"extra_usage":{"is_enabled":false,"utilization":10}}"#,
+            r#"{"extra_usage":{"used_credits":1,"monthly_limit":0}}"#,
         ] {
             assert!(parse_usage(body).is_err(), "unexpectedly accepted {body}");
         }
