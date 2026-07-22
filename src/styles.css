@@ -484,6 +484,51 @@ body {
   color: var(--muted-dim);
 }
 .meter-reset { color: var(--muted); }
+.usage-unavailable {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0;
+  color: var(--muted);
+  text-align: center;
+}
+.reset-credits {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 9px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  font-family: var(--mono);
+  letter-spacing: 0;
+}
+.reset-credits-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.reset-credits-meta {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+}
+.reset-credits-meta strong {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.reset-credits-meta small {
+  max-width: 100%;
+  font-size: 9px;
+  color: var(--muted-dim);
+  overflow-wrap: anywhere;
+}
 
 /* Balance (DeepSeek) */
 .balance {
@@ -1044,6 +1089,16 @@ body {
   .meter-foot {
     margin-top: 4px;
     font-size: 10px;
+  }
+  .reset-credits {
+    gap: 8px;
+    padding: 6px 0;
+  }
+  .reset-credits-title {
+    font-size: 10px;
+  }
+  .reset-credits-meta strong {
+    font-size: 11px;
   }
   .balance {
     gap: 8px;

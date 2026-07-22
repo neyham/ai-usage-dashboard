@@ -21,6 +21,7 @@ export interface ClaudeService {
   sevenDayPercent?: number;
   fiveHourResetLocal?: string;
   sevenDayResetLocal?: string;
+  extraUsagePercent?: number;
 }
 
 export interface CodexService {
@@ -32,6 +33,8 @@ export interface CodexService {
   sevenDayPercent?: number;
   fiveHourResetLocal?: string;
   sevenDayResetLocal?: string;
+  resetCreditsAvailable?: number;
+  resetCreditsExpireLocal?: string;
 }
 
 export interface DeepSeekService {

@@ -3,11 +3,12 @@
   "rate_limit": {
     "primary_window": {
       "used_percent": 64,
-      "reset_at": 1780813800
+      "limit_window_seconds": 604800,
+      "reset_at": "2026-07-29T17:02:00Z"
     },
-    "secondary_window": {
-      "used_percent": 86,
-      "reset_at": 1781121600
-    }
+    "secondary_window": null
+  },
+  "rate_limit_reset_credits": {
+    "available_count": 3
   }
 }

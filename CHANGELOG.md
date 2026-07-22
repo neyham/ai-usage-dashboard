@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Show the available Codex banked-reset count and the earliest known expiry.
+
+### Changed
+
+- Render only rate-limit windows returned by a provider, so accounts without a
+  Codex five-hour window no longer show an empty legacy row.
+
+### Fixed
+
+- Accept Claude responses with only one standard usage window or only the
+  enterprise extra-usage budget instead of degrading the entire provider, and
+  fall back to legacy or `limits[]` scoped weekly windows when necessary.
+
 ## [0.3.0] - 2026-07-17 (release candidate)
 
 ### Added

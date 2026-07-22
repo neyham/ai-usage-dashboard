@@ -13,6 +13,9 @@ type AnyService = (CodexService | ClaudeService | DeepSeekService) & {
   sevenDayPercent?: number;
   fiveHourResetLocal?: string;
   sevenDayResetLocal?: string;
+  extraUsagePercent?: number;
+  resetCreditsAvailable?: number;
+  resetCreditsExpireLocal?: string;
   currency?: string;
   balance?: string;
 };
@@ -32,6 +35,15 @@ export function ServicePanel({
   service: AnyService;
 }) {
   const titleId = `panel-${kind}-title`;
+  const hasFiveHour = typeof service.fiveHourPercent === "number";
+  const hasSevenDay = typeof service.sevenDayPercent === "number";
+  const showClaudeExtra =
+    kind === "claude" &&
+    !hasFiveHour &&
+    !hasSevenDay &&
+    typeof service.extraUsagePercent === "number";
+  const hasUsage = hasFiveHour || hasSevenDay || showClaudeExtra;
+  const resetCredits = service.resetCreditsAvailable;
 
   return (
     <section className={`panel panel-${kind}`} aria-labelledby={titleId}>
@@ -81,18 +93,49 @@ export function ServicePanel({
           </div>
         ) : (
           <>
-            <ProgressMeter
-              label="5H"
-              sub="PRIMARY WINDOW"
-              percent={service.fiveHourPercent}
-              resetLabel={service.fiveHourResetLocal}
-            />
-            <ProgressMeter
-              label="7D"
-              sub="SECONDARY WINDOW"
-              percent={service.sevenDayPercent}
-              resetLabel={service.sevenDayResetLocal}
-            />
+            {hasFiveHour && (
+              <ProgressMeter
+                label="5H"
+                sub="SESSION WINDOW"
+                percent={service.fiveHourPercent}
+                resetLabel={service.fiveHourResetLocal}
+              />
+            )}
+            {hasSevenDay && (
+              <ProgressMeter
+                label="7D"
+                sub="WEEKLY WINDOW"
+                percent={service.sevenDayPercent}
+                resetLabel={service.sevenDayResetLocal}
+              />
+            )}
+            {showClaudeExtra && (
+              <ProgressMeter
+                label="EXTRA"
+                sub="MONTHLY SPEND"
+                percent={service.extraUsagePercent}
+              />
+            )}
+            {!hasUsage && <div className="usage-unavailable">USAGE DATA UNAVAILABLE</div>}
+            {kind === "codex" && typeof resetCredits === "number" && resetCredits > 0 && (
+              <div
+                className="reset-credits"
+                role="status"
+                aria-label={`${resetCredits} banked resets available${
+                  service.resetCreditsExpireLocal
+                    ? `, first expires ${service.resetCreditsExpireLocal}`
+                    : ""
+                }`}
+              >
+                <span className="reset-credits-title">BANKED RESETS</span>
+                <span className="reset-credits-meta">
+                  <strong>{resetCredits} AVAILABLE</strong>
+                  {service.resetCreditsExpireLocal && (
+                    <small>FIRST EXP {service.resetCreditsExpireLocal}</small>
+                  )}
+                </span>
+              </div>
+            )}
           </>
         )}
       </div>
