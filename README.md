@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/neyham/ai-usage-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/neyham/ai-usage-dashboard/actions/workflows/ci.yml)
 
-A local-first Windows dashboard and screensaver for viewing Claude Code and
-Codex usage limits alongside a DeepSeek API balance. The desktop application is
-built with Tauri, Rust, React, and TypeScript.
+A local-first Windows dashboard and screensaver for viewing Claude Code, Codex,
+and Grok Build usage alongside a DeepSeek API balance. The desktop application
+is built with Tauri, Rust, React, and TypeScript.
 
 ![AI Usage Dashboard showing synthetic mock data](docs/assets/dashboard.png)
 
@@ -17,6 +17,8 @@ built with Tauri, Rust, React, and TypeScript.
   window, plus reset times, cooldowns, and cache state.
 - Codex utilization for the available rate-limit windows, reset times, plan
   label, and banked-reset count with the earliest known expiry.
+- Grok Build utilization for the server-reported credit period and reset time,
+  subscription tier, and optional monthly billing allowance.
 - DeepSeek API balance and insufficient-balance state.
 - A combined health state that distinguishes fresh data, partial degradation,
   total failure, and an in-progress refresh.
@@ -38,7 +40,7 @@ confirmation before installation.
 This project reads credential formats and usage endpoints used by provider CLI
 tools. Some of those interfaces are undocumented and can change without notice.
 The project is not affiliated with, endorsed by, or supported by Anthropic,
-OpenAI, or DeepSeek.
+OpenAI, xAI, or DeepSeek.
 
 ## OpenAI Build Week Extension
 
@@ -57,6 +59,9 @@ caches, zero/one/two/three-panel layouts, concurrency-safe preference changes,
 expanded Surface validation, isolated Judge Demo, NSIS demo shortcut, and Build
 Week judging documentation.
 
+The Grok Build provider was added after the Build Week work described above and
+is not part of the claimed 2026-07-17 extension.
+
 ## Privacy and security
 
 The Rust backend owns credentials and network requests. The React renderer only
@@ -68,6 +73,8 @@ balances, timestamps, and status text.
   sent to the renderer.
 - DeepSeek keys are never written to the cache. Windows Credential Manager is
   preferred over environment variables and plaintext configuration.
+- Grok Build credentials are read from the official CLI login and are never
+  refreshed or written by the dashboard.
 - `%LOCALAPPDATA%\AiUsageDashboard\state.json` stores sanitized usage and
   balance data for graceful degradation. It can still contain private account
   information and should be treated as sensitive.
@@ -117,7 +124,7 @@ but adds a dedicated safety boundary around them:
   live provider request;
 - provider selections persist separately in
   `%APPDATA%\AiUsageDashboard\judge-demo.json` and cannot alter live settings;
-- settings can exercise all zero, one, two, and three-panel layouts.
+- settings can exercise all zero, one, two, three, and four-panel layouts.
 
 The demo validates the UI, selection workflow, parser-to-renderer boundary,
 status presentation, and responsive layouts. It intentionally does not validate
@@ -143,8 +150,8 @@ Command-line fallback for an installed current-user build:
 
 Build from Windows PowerShell, not inside WSL. A WSL build produces a Linux
 binary and cannot integrate with Windows Credential Manager, Task Scheduler, or
-screensaver settings. The Windows application can still read Claude credentials
-from WSL through `wsl.exe`.
+screensaver settings. The Windows application can still read Claude and Grok
+credentials from WSL.
 
 ## Build and run
 
@@ -177,10 +184,13 @@ immediately and persist in `config.json`.
 | Claude | `%USERPROFILE%\.claude\.credentials.json`, then `credentials.json`, then the same files in the `Ubuntu` WSL home | `claudeCredentialsPath` |
 | Codex | `%USERPROFILE%\.codex\auth.json` | `codexAuthPath` |
 | DeepSeek | Windows Credential Manager target `AiUsageDashboard/DeepSeekApiKey`, then `DEEPSEEK_API_KEY` | `deepSeekCredentialTarget` or `deepSeekApiKey` |
+| Grok Build | `%USERPROFILE%\.grok\auth.json`, then the `Ubuntu` WSL home | `grokCredentialsPath`, including `wsl:<distro>:<absolute-path>` or a `\\wsl.localhost\...` UNC path |
 
-Sign in with the official Claude Code and Codex clients before launching the
-dashboard. To store a DeepSeek key without placing it in a file, open Windows
-Credential Manager, add a **Generic credential** with
+Sign in with the official Claude Code, Codex, and Grok Build clients before
+enabling their panels. Grok is disabled by default so an upgrade never starts
+reading a newly introduced credential source without an explicit selection. To
+store a DeepSeek key without placing it in a file, open Windows Credential
+Manager, add a **Generic credential** with
 `AiUsageDashboard/DeepSeekApiKey` as the network address, and enter the API key
 as its password. The user-name field is not used by the application.
 
@@ -193,8 +203,29 @@ such as:
 }
 ```
 
+For Grok Build installed in WSL, prefer the bounded `wsl:` reader:
+
+```json
+{
+  "grokCredentialsPath": "wsl:Ubuntu:/home/your-user/.grok/auth.json"
+}
+```
+
+The dashboard invokes `wsl.exe` without interpolating the configured path into
+a shell command, caps credential input at 64 KiB, and stops the reader after
+15 seconds. A `\\wsl.localhost\...` UNC path remains supported when preferred.
 An explicit path is fail closed. If it cannot be read, the dashboard reports an
 authentication or data error instead of silently selecting another account.
+If a Grok access token expires, run the official Grok client again; the
+dashboard deliberately does not use the stored refresh token or rewrite
+`auth.json`.
+
+CodexBar's Grok adapter informed the read-only credential boundary and provider
+selection. Grok Build 0.2.111 currently returns `Method not found` for its
+`x.ai/billing` ACP probe, so this dashboard uses the live-verified read-only
+JSON billing responses that include an explicit period type and Grok Build
+product usage. These are not public APIs; incompatible responses fail closed to
+sanitized last-known-good data.
 
 ### Claude token renewal
 
@@ -230,7 +261,8 @@ The file is `%APPDATA%\AiUsageDashboard\config.json`:
   "enabledProviders": {
     "codex": true,
     "claude": true,
-    "deepseek": true
+    "deepseek": true,
+    "grok": false
   },
   "deepSeekApiKey": "",
   "deepSeekCredentialTarget": "AiUsageDashboard/DeepSeekApiKey",
@@ -240,6 +272,7 @@ The file is `%APPDATA%\AiUsageDashboard\config.json`:
   "claudeCodeRefreshTimeoutSeconds": 30,
   "claudeCodeRefreshMaxBudgetUsd": 0.03,
   "codexAuthPath": "",
+  "grokCredentialsPath": "",
   "mockMode": ""
 }
 ```
@@ -287,8 +320,9 @@ available. With no providers selected, the dashboard remains in standby.
 
 If every enabled panel fails:
 
-1. Confirm that Claude Code and Codex are signed in and that a DeepSeek key is
-   available through one of the documented sources.
+1. Confirm that Claude Code, Codex, and any enabled Grok Build provider are
+   signed in and that a DeepSeek key is available through one of the documented
+   sources.
 2. Open `config.json` and check for invalid JSON or an incorrect explicit path.
 3. Restart after editing the JSON directly, then trigger one manual refresh.
 4. Check the providers' official status pages. A provider outage should not be
@@ -347,7 +381,7 @@ The UI suite exercises healthy, rate-limited, partial-failure, and
 insufficient-balance states across seven viewports, including Surface 200%
 landscape, portrait, and half-Snap layouts. It also checks overflow, touch
 targets, refresh state, keyboard behavior, screensaver input exit, isolated
-Judge Demo disclosure, and zero/one/two/three-panel selection layouts.
+Judge Demo disclosure, and zero/one/two/three/four-panel selection layouts.
 
 Set `mockMode` to `normal`, `claude429`, or `failures` to exercise the embedded
 provider fixtures without network access. An unknown value displays `INVALID

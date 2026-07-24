@@ -10,6 +10,7 @@ export interface EnabledProviders {
   codex: boolean;
   claude: boolean;
   deepseek: boolean;
+  grok: boolean;
 }
 
 export interface ClaudeService {
@@ -45,10 +46,24 @@ export interface DeepSeekService {
   balance?: string;
 }
 
+export interface GrokService {
+  status: string;
+  fromCache: boolean;
+  dataMayBeStale: boolean;
+  plan?: string;
+  usagePercent?: number;
+  periodLabel?: string;
+  periodCaption?: string;
+  usageResetLocal?: string;
+  monthlyPercent?: number;
+  monthlyResetLocal?: string;
+}
+
 export interface Services {
   codex: CodexService;
   claude: ClaudeService;
   deepseek: DeepSeekService;
+  grok: GrokService;
 }
 
 export interface UsageSummary {

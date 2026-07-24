@@ -14,9 +14,11 @@ HANDOFF.md
 /state.json
 .claude/
 .codex/
+.grok/
 **/.claude/.credentials.json
 **/.claude/credentials.json
 **/.codex/auth.json
+**/.grok/auth.json
 credentials.json
 .credentials.json
 auth.json

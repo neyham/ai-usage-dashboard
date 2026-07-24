@@ -1,12 +1,12 @@
-import type { ClaudeService, CodexService, DeepSeekService } from "../types";
+import type { ClaudeService, CodexService, DeepSeekService, GrokService } from "../types";
 import { ProgressMeter } from "./ProgressMeter";
 import { StatusChip } from "./StatusChip";
 import { CornerBrackets } from "./CornerBrackets";
 import { Reticle } from "./Reticle";
 
-type Kind = "codex" | "claude" | "deepseek";
+type Kind = "codex" | "claude" | "deepseek" | "grok";
 
-type AnyService = (CodexService | ClaudeService | DeepSeekService) & {
+type AnyService = (CodexService | ClaudeService | DeepSeekService | GrokService) & {
   plan?: string;
   cooldownUntilLocal?: string;
   fiveHourPercent?: number;
@@ -18,6 +18,12 @@ type AnyService = (CodexService | ClaudeService | DeepSeekService) & {
   resetCreditsExpireLocal?: string;
   currency?: string;
   balance?: string;
+  usagePercent?: number;
+  periodLabel?: string;
+  periodCaption?: string;
+  usageResetLocal?: string;
+  monthlyPercent?: number;
+  monthlyResetLocal?: string;
 };
 
 // Static ambient histogram for the balance panel (decorative).
@@ -42,7 +48,10 @@ export function ServicePanel({
     !hasFiveHour &&
     !hasSevenDay &&
     typeof service.extraUsagePercent === "number";
-  const hasUsage = hasFiveHour || hasSevenDay || showClaudeExtra;
+  const showGrokPeriod = kind === "grok" && typeof service.usagePercent === "number";
+  const showGrokMonthly = kind === "grok" && typeof service.monthlyPercent === "number";
+  const hasUsage =
+    hasFiveHour || hasSevenDay || showClaudeExtra || showGrokPeriod || showGrokMonthly;
   const resetCredits = service.resetCreditsAvailable;
 
   return (
@@ -64,7 +73,7 @@ export function ServicePanel({
           </span>
         </div>
         <div className="panel-head-right">
-          {kind === "codex" && service.plan && (
+          {(kind === "codex" || kind === "grok") && service.plan && (
             <span className="panel-plan">{service.plan.toUpperCase()}</span>
           )}
           <span className="panel-code">{code}</span>
@@ -78,7 +87,13 @@ export function ServicePanel({
               {service.balance ? (
                 <>
                   <span className="balance-currency">{service.currency ?? ""}</span>
-                  <span className="balance-number">{service.balance}</span>
+                  <span
+                    className={`balance-number${
+                      service.balance.length > 12 ? " balance-number-long" : ""
+                    }`}
+                  >
+                    {service.balance}
+                  </span>
                 </>
               ) : (
                 <span className="balance-number">--</span>
@@ -114,6 +129,22 @@ export function ServicePanel({
                 label="EXTRA"
                 sub="MONTHLY SPEND"
                 percent={service.extraUsagePercent}
+              />
+            )}
+            {showGrokPeriod && (
+              <ProgressMeter
+                label={service.periodLabel ?? "PERIOD"}
+                sub={service.periodCaption ?? "CREDIT WINDOW"}
+                percent={service.usagePercent}
+                resetLabel={service.usageResetLocal}
+              />
+            )}
+            {showGrokMonthly && (
+              <ProgressMeter
+                label="MONTH"
+                sub="BILLING ALLOWANCE"
+                percent={service.monthlyPercent}
+                resetLabel={service.monthlyResetLocal}
               />
             )}
             {!hasUsage && <div className="usage-unavailable">USAGE DATA UNAVAILABLE</div>}

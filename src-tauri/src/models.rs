@@ -9,6 +9,7 @@ pub struct EnabledProviders {
     pub codex: bool,
     pub claude: bool,
     pub deepseek: bool,
+    pub grok: bool,
 }
 
 impl Default for EnabledProviders {
@@ -17,13 +18,14 @@ impl Default for EnabledProviders {
             codex: true,
             claude: true,
             deepseek: true,
+            grok: false,
         }
     }
 }
 
 impl EnabledProviders {
     pub fn count(self) -> usize {
-        [self.codex, self.claude, self.deepseek]
+        [self.codex, self.claude, self.deepseek, self.grok]
             .into_iter()
             .filter(|enabled| *enabled)
             .count()
@@ -129,12 +131,52 @@ impl Default for DeepSeekService {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrokService {
+    pub status: String,
+    pub from_cache: bool,
+    pub data_may_be_stale: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub usage_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub period_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub period_caption: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub usage_reset_local: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub monthly_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub monthly_reset_local: Option<String>,
+}
+
+impl Default for GrokService {
+    fn default() -> Self {
+        Self {
+            status: "AWAITING DATA".into(),
+            from_cache: false,
+            data_may_be_stale: false,
+            plan: None,
+            usage_percent: None,
+            period_label: None,
+            period_caption: None,
+            usage_reset_local: None,
+            monthly_percent: None,
+            monthly_reset_local: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Services {
     pub codex: CodexService,
     pub claude: ClaudeService,
     pub deepseek: DeepSeekService,
+    pub grok: GrokService,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

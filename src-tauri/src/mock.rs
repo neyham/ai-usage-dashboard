@@ -1,10 +1,10 @@
 //! Mock mode — produces deterministic summaries from the bundled mock payloads
-//! so the three required states can be verified without network access:
+//! so required states can be verified without network access:
 //!   "normal"    — all services healthy
 //!   "claude429" — Claude rate-limited, showing cached data + cooldown
-//!   "failures"  — Codex + DeepSeek failed, showing cached data; UI stays up
+//!   "failures"  — Codex + DeepSeek + Grok failed, showing cached data; UI stays up
 
-use crate::fetchers::{claude, codex, deepseek};
+use crate::fetchers::{claude, codex, deepseek, grok};
 use crate::models::{EnabledProviders, Services, UsageSummary};
 use crate::util::fmt_local;
 use chrono::{Duration, Utc};
@@ -12,6 +12,8 @@ use chrono::{Duration, Utc};
 const CLAUDE_JSON: &str = include_str!("../../mocks/claude_normal.json");
 const CODEX_JSON: &str = include_str!("../../mocks/codex_normal.json");
 const DEEPSEEK_JSON: &str = include_str!("../../mocks/deepseek_normal.json");
+const GROK_CREDITS_JSON: &str = include_str!("../../mocks/grok_credits_normal.json");
+const GROK_MONTHLY_JSON: &str = include_str!("../../mocks/grok_monthly_normal.json");
 
 pub fn summary(mode: &str, enabled: EnabledProviders) -> Option<UsageSummary> {
     let mode = mode.trim().to_lowercase();
@@ -27,6 +29,8 @@ pub fn summary(mode: &str, enabled: EnabledProviders) -> Option<UsageSummary> {
         CLAUDE_JSON,
         CODEX_JSON,
         DEEPSEEK_JSON,
+        GROK_CREDITS_JSON,
+        GROK_MONTHLY_JSON,
         enabled,
     ))
 }
@@ -36,19 +40,23 @@ fn summary_from_payloads(
     claude_json: &str,
     codex_json: &str,
     deepseek_json: &str,
+    grok_credits_json: &str,
+    grok_monthly_json: &str,
     enabled: EnabledProviders,
 ) -> UsageSummary {
-    let Some((mut claude, mut codex, mut deepseek)) = claude::parse_usage(claude_json)
+    let Some((mut claude, mut codex, mut deepseek, mut grok)) = claude::parse_usage(claude_json)
         .ok()
         .zip(codex::parse_usage(codex_json).ok())
         .zip(deepseek::parse_balance(deepseek_json).ok())
-        .map(|((claude, codex), deepseek)| (claude, codex, deepseek))
+        .zip(grok::parse_usage(grok_credits_json, grok_monthly_json).ok())
+        .map(|(((claude, codex), deepseek), grok)| (claude, codex, deepseek, grok))
     else {
         return mock_data_error_summary(enabled);
     };
     if codex.reset_credits_available.unwrap_or(0) > 0 {
         codex.reset_credits_expire_local = Some(fmt_local(Utc::now() + Duration::days(21)));
     }
+    grok.plan = Some("SuperGrok Heavy".into());
 
     match mode {
         "claude429" => {
@@ -61,18 +69,26 @@ fn summary_from_payloads(
             codex.status = "API ERROR".into();
             deepseek.from_cache = true;
             deepseek.status = "API ERROR".into();
+            grok.from_cache = true;
+            grok.status = "API ERROR".into();
         }
         "normal" => {}
         _ => return invalid_mode_summary(enabled),
     }
 
     crate::fetchers::assemble(
-        claude,
-        codex,
-        deepseek,
-        mode == "claude429",
-        mode == "failures",
-        mode == "failures",
+        Services {
+            codex,
+            claude,
+            deepseek,
+            grok,
+        },
+        EnabledProviders {
+            codex: mode == "failures",
+            claude: mode == "claude429",
+            deepseek: mode == "failures",
+            grok: mode == "failures",
+        },
         enabled,
     )
 }
@@ -90,9 +106,11 @@ fn error_summary(message: &str, enabled: EnabledProviders) -> UsageSummary {
     services.codex.status = message.into();
     services.claude.status = message.into();
     services.deepseek.status = message.into();
+    services.grok.status = message.into();
     services.codex.data_may_be_stale = true;
     services.claude.data_may_be_stale = true;
     services.deepseek.data_may_be_stale = true;
+    services.grok.data_may_be_stale = true;
 
     UsageSummary {
         refreshed_at: None,
@@ -108,7 +126,10 @@ fn error_summary(message: &str, enabled: EnabledProviders) -> UsageSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::{summary, summary_from_payloads, CODEX_JSON, DEEPSEEK_JSON};
+    use super::{
+        summary, summary_from_payloads, CODEX_JSON, DEEPSEEK_JSON, GROK_CREDITS_JSON,
+        GROK_MONTHLY_JSON,
+    };
     use crate::models::EnabledProviders;
 
     #[test]
@@ -135,6 +156,13 @@ mod tests {
         assert_eq!(summary.services.codex.seven_day_percent, Some(64.0));
         assert_eq!(summary.services.codex.reset_credits_available, Some(3));
         assert!(summary.services.codex.reset_credits_expire_local.is_some());
+        assert_eq!(summary.services.grok.usage_percent, Some(36.0));
+        assert_eq!(summary.services.grok.period_label.as_deref(), Some("7D"));
+        assert_eq!(
+            summary.services.grok.plan.as_deref(),
+            Some("SuperGrok Heavy")
+        );
+        assert!((summary.services.grok.monthly_percent.unwrap_or_default() - 28.0).abs() < 1e-9);
     }
 
     #[test]
@@ -144,6 +172,8 @@ mod tests {
             "{}",
             CODEX_JSON,
             DEEPSEEK_JSON,
+            GROK_CREDITS_JSON,
+            GROK_MONTHLY_JSON,
             EnabledProviders::default(),
         );
 
@@ -151,6 +181,7 @@ mod tests {
         assert_eq!(summary.services.codex.status, "MOCK DATA ERROR");
         assert_eq!(summary.services.claude.status, "MOCK DATA ERROR");
         assert_eq!(summary.services.deepseek.status, "MOCK DATA ERROR");
+        assert_eq!(summary.services.grok.status, "MOCK DATA ERROR");
 
         assert!(super::summary("", EnabledProviders::default()).is_none());
         assert!(super::summary("normal", EnabledProviders::default()).is_some());
@@ -165,6 +196,7 @@ mod tests {
                 codex: true,
                 claude: false,
                 deepseek: true,
+                grok: false,
             },
         )
         .expect("known mock mode");

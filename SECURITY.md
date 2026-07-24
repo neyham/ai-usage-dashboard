@@ -37,6 +37,7 @@ Never attach or paste any of the following:
 - Claude credential files, access tokens, refresh tokens, or raw OAuth
   responses;
 - Codex `auth.json`, authorization headers, cookies, or account identifiers;
+- Grok Build `auth.json`, access or refresh tokens, or account/team identifiers;
 - DeepSeek API keys;
 - a dashboard `config.json` containing `deepSeekApiKey`;
 - signing keys or certificate passwords; or

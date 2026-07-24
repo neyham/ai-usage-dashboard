@@ -6,6 +6,7 @@ const PROVIDERS: Array<{ key: keyof EnabledProviders; label: string; code: strin
   { key: "codex", label: "CODEX", code: "SYS-01" },
   { key: "claude", label: "CLAUDE", code: "SYS-02" },
   { key: "deepseek", label: "DEEPSEEK", code: "SYS-03" },
+  { key: "grok", label: "GROK", code: "SYS-04" },
 ];
 
 export function ProviderSettings({

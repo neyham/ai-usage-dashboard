@@ -296,9 +296,11 @@ fn config_error_summary(enabled: EnabledProviders) -> UsageSummary {
     summary.services.codex.status = "CONFIG ERROR".into();
     summary.services.claude.status = "CONFIG ERROR".into();
     summary.services.deepseek.status = "CONFIG ERROR".into();
+    summary.services.grok.status = "CONFIG ERROR".into();
     summary.services.codex.data_may_be_stale = true;
     summary.services.claude.data_may_be_stale = true;
     summary.services.deepseek.data_may_be_stale = true;
+    summary.services.grok.data_may_be_stale = true;
     summary
 }
 
