@@ -25,7 +25,7 @@ const viewports = [
 const baseSummary = {
   refreshedAt: "2026-07-10T04:30:00Z",
   status: "ok",
-  enabledProviders: { codex: true, claude: true, deepseek: true },
+  enabledProviders: { codex: true, claude: true, deepseek: true, grok: true },
   services: {
     codex: {
       status: "NOMINAL",
@@ -52,6 +52,18 @@ const baseSummary = {
       dataMayBeStale: false,
       currency: "CNY",
       balance: "17.80",
+    },
+    grok: {
+      status: "NOMINAL",
+      fromCache: false,
+      dataMayBeStale: false,
+      plan: "SuperGrok Heavy",
+      usagePercent: 36,
+      periodLabel: "7D",
+      periodCaption: "WEEKLY WINDOW",
+      usageResetLocal: "08-11 08:00",
+      monthlyPercent: 28,
+      monthlyResetLocal: "09-01 08:00",
     },
   },
 };
@@ -221,8 +233,8 @@ async function installTauriMock(page, summary, launchMode = "normal", judgeDemo 
   );
 }
 
-async function inspectLayout(page, viewport) {
-  return page.evaluate(({ width, height }) => {
+async function inspectLayout(page, viewport, { expectHiddenCursor = false } = {}) {
+  return page.evaluate(({ width, height, expectHiddenCursor }) => {
     const issues = [];
     const root = document.documentElement;
     const tolerance = 1.5;
@@ -283,15 +295,23 @@ async function inspectLayout(page, viewport) {
     if (!refreshRect || refreshRect.height < 44 || refreshRect.width < 44) {
       issues.push(`refresh touch target is ${refreshRect?.width ?? 0}x${refreshRect?.height ?? 0}`);
     }
-    if (refresh && getComputedStyle(refresh).cursor !== "pointer") {
-      issues.push(`normal-mode refresh cursor is ${getComputedStyle(refresh).cursor}`);
+    const refreshCursor = refresh ? getComputedStyle(refresh).cursor : "";
+    if (refresh && expectHiddenCursor && refreshCursor !== "none") {
+      issues.push(`fullscreen refresh cursor is ${refreshCursor}`);
+    } else if (refresh && !expectHiddenCursor && refreshCursor !== "pointer") {
+      issues.push(`normal-mode refresh cursor is ${refreshCursor}`);
     }
     const settings = document.querySelector(".tm-settings");
     const settingsRect = settings?.getBoundingClientRect();
     if (!settingsRect || settingsRect.height < 44 || settingsRect.width < 44) {
       issues.push(`settings touch target is ${settingsRect?.width ?? 0}x${settingsRect?.height ?? 0}`);
     }
-    if (getComputedStyle(document.body).cursor === "none") {
+    const bodyCursor = getComputedStyle(document.body).cursor;
+    const dashboard = document.querySelector(".dashboard");
+    const dashboardCursor = dashboard ? getComputedStyle(dashboard).cursor : "";
+    if (expectHiddenCursor && dashboardCursor !== "none") {
+      issues.push(`fullscreen dashboard cursor is ${dashboardCursor}`);
+    } else if (!expectHiddenCursor && bodyCursor === "none") {
       issues.push("normal-mode body cursor is hidden");
     }
 
@@ -300,7 +320,7 @@ async function inspectLayout(page, viewport) {
     }
 
     return issues;
-  }, viewport);
+  }, { ...viewport, expectHiddenCursor });
 }
 
 async function checkScenario(browser, stateName, summary, viewport) {
@@ -389,23 +409,41 @@ async function checkProviderSelection(browser) {
   await installTauriMock(page, summaries.normal);
   await page.goto(baseUrl, { waitUntil: "networkidle" });
   await page.locator(".panel").first().waitFor();
-  assert.equal(await page.locator(".panel").count(), 3);
+  assert.equal(await page.locator(".panel").count(), 4);
+  assert.deepEqual(await page.locator(".panel-grok .meter-label").allTextContents(), [
+    "7D",
+    "MONTH",
+  ]);
+  assert.equal(await page.locator(".panel-grok .panel-plan").textContent(), "SUPERGROK HEAVY");
 
   await page.locator(".tm-settings").click();
   await page.locator(".settings-dialog").waitFor();
-  assert.equal(await page.locator('.provider-option input[type="checkbox"]:checked').count(), 3);
+  assert.equal(await page.locator('.provider-option input[type="checkbox"]:checked').count(), 4);
   await page.screenshot({ path: join(artifactDir, "provider-settings.png"), fullPage: true });
   await page.locator(".provider-option.provider-claude").click();
   await page.locator(".settings-save").click();
   await page.locator(".settings-dialog").waitFor({ state: "detached" });
-  assert.equal(await page.locator(".panel").count(), 2);
+  assert.equal(await page.locator(".panel").count(), 3);
   assert.equal(await page.locator(".panel-claude").count(), 0);
+  assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
+  await page.screenshot({ path: join(artifactDir, "provider-selection-three.png"), fullPage: true });
+
+  await page.locator(".tm-settings").click();
+  await page.locator(".provider-option.provider-deepseek").click();
+  await page.locator(".settings-save").click();
+  assert.equal(await page.locator(".panel").count(), 2);
   assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
   await page.screenshot({ path: join(artifactDir, "provider-selection-two.png"), fullPage: true });
 
   await page.locator(".tm-settings").click();
   await page.locator(".provider-option.provider-codex").click();
-  await page.locator(".provider-option.provider-deepseek").click();
+  await page.locator(".settings-save").click();
+  await page.locator(".panel-grok").waitFor();
+  assert.equal(await page.locator(".panel").count(), 1);
+  assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
+
+  await page.locator(".tm-settings").click();
+  await page.locator(".provider-option.provider-grok").click();
   await page.locator(".settings-save").click();
   await page.locator(".panels-empty").waitFor();
   assert.equal(await page.locator(".panel").count(), 0);
@@ -417,14 +455,97 @@ async function checkProviderSelection(browser) {
   assert.equal(await page.locator(".panel").count(), 1);
   assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
 
+  await page.locator(".tm-settings").click();
+  await page.locator(".provider-option.provider-claude").click();
+  await page.locator(".provider-option.provider-deepseek").click();
+  await page.locator(".provider-option.provider-grok").click();
+  await page.locator(".settings-save").click();
+  assert.equal(await page.locator(".panel").count(), 4);
+  assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
+
   const saves = await page.evaluate(() => window.__DASHBOARD_TEST__.savedSelections);
   assert.deepEqual(saves, [
-    { codex: true, claude: false, deepseek: true },
-    { codex: false, claude: false, deepseek: false },
-    { codex: true, claude: false, deepseek: false },
+    { codex: true, claude: false, deepseek: true, grok: true },
+    { codex: true, claude: false, deepseek: false, grok: true },
+    { codex: false, claude: false, deepseek: false, grok: true },
+    { codex: false, claude: false, deepseek: false, grok: false },
+    { codex: true, claude: false, deepseek: false, grok: false },
+    { codex: true, claude: true, deepseek: true, grok: true },
   ]);
   await page.screenshot({ path: join(artifactDir, "provider-selection.png"), fullPage: true });
   await context.close();
+}
+
+async function checkFullscreenThreeColumns(browser) {
+  const summary = {
+    ...baseSummary,
+    enabledProviders: {
+      ...baseSummary.enabledProviders,
+      claude: false,
+    },
+  };
+  const fullscreenViewports = [
+    { name: "surface-200", width: 1368, height: 912, deviceScaleFactor: 2 },
+    { name: "surface-150", width: 1824, height: 1216, deviceScaleFactor: 1.5 },
+    { name: "full-hd", width: 1920, height: 1080, deviceScaleFactor: 1 },
+  ];
+
+  for (const viewport of fullscreenViewports) {
+    const context = await browser.newContext({
+      viewport: { width: viewport.width, height: viewport.height },
+      deviceScaleFactor: viewport.deviceScaleFactor,
+      hasTouch: true,
+      reducedMotion: "reduce",
+      colorScheme: "dark",
+    });
+    const page = await context.newPage();
+    const pageErrors = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await installTauriMock(page, summary, "fullscreen");
+    await page.goto(baseUrl, { waitUntil: "networkidle" });
+    await page.locator(".dashboard.mode-fullscreen").waitFor();
+    assert.equal(await page.locator(".panel").count(), 3);
+
+    const grid = await page.locator(".panels").evaluate((element) => {
+      const panels = [...element.querySelectorAll(".panel")].map((panel) =>
+        panel.getBoundingClientRect(),
+      );
+      return {
+        columns: getComputedStyle(element).gridTemplateColumns
+          .split(/\s+/)
+          .filter(Boolean).length,
+        lefts: panels.map((panel) => panel.left),
+        tops: panels.map((panel) => panel.top),
+      };
+    });
+    assert.equal(grid.columns, 3, `${viewport.name} fullscreen column count`);
+    assert.equal(
+      new Set(grid.lefts.map((left) => Math.round(left))).size,
+      3,
+      `${viewport.name} fullscreen panel columns`,
+    );
+    assert.ok(
+      Math.max(...grid.tops) - Math.min(...grid.tops) <= 1,
+      `${viewport.name} fullscreen panels must share one row`,
+    );
+    assert.deepEqual(
+      await inspectLayout(
+        page,
+        { width: viewport.width, height: viewport.height },
+        { expectHiddenCursor: true },
+      ),
+      [],
+    );
+    assert.deepEqual(pageErrors, [], `${viewport.name} fullscreen page errors`);
+
+    if (viewport.name === "surface-200") {
+      await page.screenshot({
+        path: join(artifactDir, "fullscreen-three-columns.png"),
+        fullPage: true,
+      });
+    }
+    await context.close();
+  }
 }
 
 async function checkUsageVariants(browser) {
@@ -487,6 +608,10 @@ async function checkUsageVariants(browser) {
       await page.locator(".panel-claude .meter-label").allTextContents(),
       variant.claudeLabels,
     );
+    assert.deepEqual(await page.locator(".panel-grok .meter-label").allTextContents(), [
+      "7D",
+      "MONTH",
+    ]);
     assert.deepEqual(await inspectLayout(page, viewport), []);
     assert.deepEqual(pageErrors, [], `${variant.name} page errors`);
     await page.screenshot({ path: join(artifactDir, `${variant.name}.png`), fullPage: true });
@@ -512,6 +637,7 @@ async function checkJudgeDemo(browser) {
     await installTauriMock(page, summaries.normal, "normal", true);
     await page.goto(baseUrl, { waitUntil: "networkidle" });
     await page.locator(".tm-demo", { hasText: "SYNTHETIC DEMO" }).waitFor();
+    assert.equal(await page.locator(".panel").count(), 4);
     assert.deepEqual(await inspectLayout(page, viewport), []);
 
     const refresh = page.locator(".tm-refresh");
@@ -550,7 +676,9 @@ try {
     }
   }
   await checkProviderSelection(browser);
-  process.stdout.write(`PASS provider selection and 0/1/2/3-panel layouts\n`);
+  process.stdout.write(`PASS provider selection and 0/1/2/3/4-panel layouts\n`);
+  await checkFullscreenThreeColumns(browser);
+  process.stdout.write(`PASS fullscreen three-column layout across Surface/Full HD sizes\n`);
   await checkUsageVariants(browser);
   process.stdout.write(`PASS dynamic Codex and Claude usage-window variants\n`);
   await checkJudgeDemo(browser);

@@ -12,11 +12,12 @@ import { ProviderSettings } from "./components/ProviderSettings";
 const EMPTY: UsageSummary = {
   refreshedAt: null,
   status: "idle",
-  enabledProviders: { codex: true, claude: true, deepseek: true },
+  enabledProviders: { codex: true, claude: true, deepseek: true, grok: false },
   services: {
     codex: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
     claude: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
     deepseek: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
+    grok: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
   },
 };
 
@@ -268,6 +269,9 @@ export default function App() {
               code="SYS-03"
               service={summary.services.deepseek}
             />
+          )}
+          {summary.enabledProviders.grok && (
+            <ServicePanel kind="grok" title="GROK" code="SYS-04" service={summary.services.grok} />
           )}
           {enabledCount === 0 && (
             <div className="panels-empty" role="status">

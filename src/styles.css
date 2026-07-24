@@ -10,6 +10,7 @@
   --amber: #ffb949;
   --red: #ff4a55;
   --cyan: #59cdff;
+  --lime: #c9f76f;
   --font: "Rajdhani", "Oswald", "Bahnschrift", "PingFang SC", "Microsoft YaHei",
     system-ui, sans-serif;
   --mono: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
@@ -274,6 +275,9 @@ body {
   gap: clamp(12px, 1.4vw, 22px);
   min-height: 0;
 }
+.panels[data-count="4"] {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
 .panels[data-count="2"] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -322,6 +326,7 @@ body {
 .panel-codex { --accent: var(--green); }
 .panel-claude { --accent: var(--amber); }
 .panel-deepseek { --accent: var(--cyan); }
+.panel-grok { --accent: var(--lime); }
 
 .panel-edge {
   position: absolute;
@@ -566,6 +571,20 @@ body {
   max-width: 100%;
   overflow-wrap: anywhere;
   text-align: center;
+}
+.balance-number-long {
+  font-size: 22px;
+  line-height: 1.1;
+  word-break: break-all;
+}
+.panels[data-count="4"] .balance-currency {
+  font-size: 18px;
+}
+.panels[data-count="4"] .balance-number {
+  font-size: 52px;
+}
+.panels[data-count="4"] .balance-number-long {
+  font-size: 18px;
 }
 .balance-caption {
   font-family: var(--mono);
@@ -873,6 +892,7 @@ body {
 }
 .provider-option.provider-claude { --provider-accent: var(--amber); }
 .provider-option.provider-deepseek { --provider-accent: var(--cyan); }
+.provider-option.provider-grok { --provider-accent: var(--lime); }
 .provider-option:has(input:checked) {
   border-color: color-mix(in srgb, var(--provider-accent) 50%, transparent);
   background: color-mix(in srgb, var(--provider-accent) 7%, transparent);
@@ -1106,6 +1126,18 @@ body {
   .balance-number {
     font-size: 42px;
   }
+  .balance-number-long {
+    font-size: 18px;
+  }
+  .panels[data-count="4"] .balance-currency {
+    font-size: 16px;
+  }
+  .panels[data-count="4"] .balance-number {
+    font-size: 32px;
+  }
+  .panels[data-count="4"] .balance-number-long {
+    font-size: 16px;
+  }
   .balance-caption {
     font-size: 10px;
   }
@@ -1121,6 +1153,12 @@ body {
     gap: 5px;
     padding: 3px 6px;
     font-size: 10px;
+  }
+  .panels[data-count="4"] .chip {
+    padding-inline: 5px;
+  }
+  .panels[data-count="4"] .chip-text {
+    display: none;
   }
   .cooldown {
     font-size: 10px;
@@ -1202,7 +1240,9 @@ body {
     gap: 14px;
   }
   .panels[data-count="1"],
-  .panels[data-count="2"] {
+  .panels[data-count="2"],
+  .panels[data-count="3"],
+  .panels[data-count="4"] {
     grid-template-columns: minmax(0, 1fr);
   }
   .panel {

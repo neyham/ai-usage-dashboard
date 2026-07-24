@@ -7,17 +7,26 @@ All notable changes to this project are documented in this file.
 ### Added
 
 - Show the available Codex banked-reset count and the earliest known expiry.
+- Add opt-in Grok Build tracking for the server-reported usage period, reset
+  time, and optional monthly billing allowance. The integration reuses the
+  official CLI login read-only and supports bounded `wsl:` credential reads or
+  explicit Windows UNC paths into WSL.
 
 ### Changed
 
 - Render only rate-limit windows returned by a provider, so accounts without a
   Codex five-hour window no longer show an empty legacy row.
+- Expand provider selection and responsive validation from zero-to-three to
+  zero-to-four panels.
 
 ### Fixed
 
 - Accept Claude responses with only one standard usage window or only the
   enterprise extra-usage budget instead of degrading the entire provider, and
   fall back to legacy or `limits[]` scoped weekly windows when necessary.
+- Show the allowlisted Grok subscription tier reported by the official service
+  (with the official CLI token claim as a fallback) instead of mislabeling the
+  metered `GrokBuild` product as a `Build` plan.
 
 ## [0.3.0] - 2026-07-17 (release candidate)
 

@@ -1,7 +1,7 @@
 [package]
 name = "ai-usage-dashboard"
 version = "0.3.0"
-description = "Local Windows desktop dashboard for Codex and Claude usage limits and DeepSeek API balance"
+description = "Local Windows desktop dashboard for Codex, Claude, Grok Build, and DeepSeek usage"
 authors = ["neyham"]
 license = "MIT"
 repository = "https://github.com/neyham/ai-usage-dashboard"
@@ -24,6 +24,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1", features = ["time", "rt", "sync"] }
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
+base64 = "0.22"
 dirs = "5"
 
 # Cross-platform secret store (macOS Keychain, Linux Secret Service).

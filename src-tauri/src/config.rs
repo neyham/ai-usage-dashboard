@@ -41,6 +41,10 @@ pub struct Config {
     pub claude_code_refresh_max_budget_usd: f64,
     /// Optional override path for Codex auth.json.
     pub codex_auth_path: String,
+    /// Optional path to Grok Build auth.json, including a bounded
+    /// "wsl:<distro>:<path>" spec or Windows UNC path into WSL. Grok
+    /// credentials are always read-only.
+    pub grok_credentials_path: String,
     /// "" for live; "normal" | "claude429" | "failures" for mock mode.
     pub mock_mode: String,
 }
@@ -60,6 +64,7 @@ impl Default for Config {
             claude_code_refresh_timeout_seconds: DEFAULT_CLAUDE_CODE_REFRESH_TIMEOUT_SECONDS,
             claude_code_refresh_max_budget_usd: DEFAULT_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD,
             codex_auth_path: String::new(),
+            grok_credentials_path: String::new(),
             mock_mode: String::new(),
         }
     }
@@ -123,7 +128,8 @@ const DEFAULT_CONFIG_JSON: &str = r#"{
   "enabledProviders": {
     "codex": true,
     "claude": true,
-    "deepseek": true
+    "deepseek": true,
+    "grok": false
   },
   "deepSeekApiKey": "",
   "deepSeekCredentialTarget": "AiUsageDashboard/DeepSeekApiKey",
@@ -133,6 +139,7 @@ const DEFAULT_CONFIG_JSON: &str = r#"{
   "claudeCodeRefreshTimeoutSeconds": 30,
   "claudeCodeRefreshMaxBudgetUsd": 0.03,
   "codexAuthPath": "",
+  "grokCredentialsPath": "",
   "mockMode": ""
 }
 "#;
@@ -212,6 +219,7 @@ mod tests {
         assert!(config.enabled_providers.codex);
         assert!(config.enabled_providers.claude);
         assert!(config.enabled_providers.deepseek);
+        assert!(!config.enabled_providers.grok);
         assert_eq!(
             config.refresh_interval_minutes,
             DEFAULT_REFRESH_INTERVAL_MINUTES
@@ -227,6 +235,7 @@ mod tests {
         assert!(config.enabled_providers.codex);
         assert!(!config.enabled_providers.claude);
         assert!(!config.enabled_providers.deepseek);
+        assert!(!config.enabled_providers.grok);
     }
 
     #[test]
@@ -237,6 +246,7 @@ mod tests {
         assert!(selection.codex);
         assert!(!selection.claude);
         assert!(selection.deepseek);
+        assert!(!selection.grok);
     }
 
     #[test]
@@ -255,6 +265,7 @@ mod tests {
             codex: true,
             claude: false,
             deepseek: true,
+            grok: true,
         };
 
         save_judge_demo_selection_to(&path, selection).expect("save demo selection");

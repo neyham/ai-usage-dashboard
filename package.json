@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.3.0",
   "license": "MIT",
-  "description": "Local Windows desktop dashboard for Codex and Claude usage limits and DeepSeek API balance",
+  "description": "Local Windows desktop dashboard for Codex, Claude, Grok Build, and DeepSeek usage",
   "type": "module",
   "repository": {
     "type": "git",
