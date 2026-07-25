@@ -73,8 +73,11 @@ balances, timestamps, and status text.
   sent to the renderer.
 - DeepSeek keys are never written to the cache. Windows Credential Manager is
   preferred over environment variables and plaintext configuration.
-- Grok Build credentials are read from the official CLI login and are never
-  refreshed or written by the dashboard.
+- The dashboard only checks whether a Grok refresh token is non-empty. It never
+  extracts that value into app state, sends it, logs it, or passes it to a
+  child process, and it does not write Grok credentials itself. When an access
+  token expires, it can run the official Grok CLI's non-interactive
+  model-discovery command; that CLI owns any update to its `auth.json`.
 - `%LOCALAPPDATA%\AiUsageDashboard\state.json` stores sanitized usage and
   balance data for graceful degradation. It can still contain private account
   information and should be treated as sensitive.
@@ -214,18 +217,30 @@ For Grok Build installed in WSL, prefer the bounded `wsl:` reader:
 The dashboard invokes `wsl.exe` without interpolating the configured path into
 a shell command, caps credential input at 64 KiB, and stops the reader after
 15 seconds. A `\\wsl.localhost\...` UNC path remains supported when preferred.
-An explicit path is fail closed. If it cannot be read, the dashboard reports an
-authentication or data error instead of silently selecting another account.
-If a Grok access token expires, run the official Grok client again; the
-dashboard deliberately does not use the stored refresh token or rewrite
-`auth.json`.
+Automatic CLI renewal requires the native official path or a `wsl:` path; UNC
+paths remain read-only. An explicit path is fail closed. If it cannot be read,
+the dashboard reports an authentication or data error instead of silently
+selecting another account.
+When a recognized Grok access token expires and the login contains a refresh
+token, the dashboard runs
+`grok --no-auto-update models` through the official CLI with no shell
+interpolation, no captured output, and a 20-second timeout. The official CLI
+silently renews its own session, after which the dashboard rereads
+`auth.json`. The dashboard never extracts the refresh-token value into app
+state, sends it, logs it, passes it to the child process, or writes the
+credential file itself. A billing `401` can trigger the same flow once, covering
+clock skew or a token rejected before its local expiry. Attempts are serialized
+across dashboard processes and held per credential source for 15 minutes before
+another background attempt. An unavailable CLI is shown as
+`GROK SESSION EXPIRED` instead of incorrectly claiming that the credential file
+is missing; a `403` is reported separately as `GROK ACCESS UNAVAILABLE`.
 
-CodexBar's Grok adapter informed the read-only credential boundary and provider
-selection. Grok Build 0.2.111 currently returns `Method not found` for its
-`x.ai/billing` ACP probe, so this dashboard uses the live-verified read-only
-JSON billing responses that include an explicit period type and Grok Build
-product usage. These are not public APIs; incompatible responses fail closed to
-sanitized last-known-good data.
+CodexBar's Grok adapter informed the credential boundary, official-CLI renewal,
+and provider selection. Grok Build 0.2.111 currently returns `Method not found`
+for its `x.ai/billing` ACP probe, so this dashboard uses the live-verified
+read-only JSON billing responses that include an explicit period type and Grok
+Build product usage. These are not public APIs; incompatible responses fail
+closed to sanitized last-known-good data.
 
 ### Claude token renewal
 
