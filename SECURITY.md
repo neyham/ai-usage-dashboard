@@ -30,6 +30,21 @@ Appropriate reports include:
 Provider outages, quota discrepancies, and undocumented endpoint changes are
 usually regular bug reports unless they create a security impact.
 
+## Grok credential renewal boundary
+
+The dashboard reads the Grok access token and only checks whether a non-empty
+refresh token exists. It never extracts that value into app state, sends it,
+logs it, passes it to the child process, calls the OAuth refresh endpoint, or
+writes `auth.json` itself. For a recognized expired session, it may run the official
+`grok --no-auto-update models` command with discarded output and a bounded
+timeout. The official CLI remains solely responsible for renewing and writing
+its credentials.
+
+Configured `wsl:` distribution and path values are passed as individual
+process arguments rather than interpolated into a shell. Renewal only accepts
+the official `<home>/.grok/auth.json` layout, is serialized across dashboard
+processes, and uses a per-source retry backoff.
+
 ## Protect credentials when reporting
 
 Never attach or paste any of the following:

@@ -10,15 +10,13 @@ use crate::config::{
     MAX_CLAUDE_CODE_REFRESH_TIMEOUT_SECONDS, MIN_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD,
     MIN_CLAUDE_CODE_REFRESH_TIMEOUT_SECONDS,
 };
-use crate::fs_util::atomic_write;
+use crate::fs_util::{atomic_write, OsFileLock};
 use crate::models::ClaudeService;
 use crate::util::{clamp_percent, local_label, parse_datetime};
 use anyhow::{anyhow, bail, Context};
 use chrono::{DateTime, Duration, Utc};
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::fs::{File, OpenOptions};
-use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration as StdDuration, Instant};
@@ -504,124 +502,6 @@ async fn acquire_refresh_lock(source: &CredSource) -> anyhow::Result<ClaudeRefre
     tokio::task::spawn_blocking(move || ClaudeRefreshLock::acquire(&source))
         .await
         .context("join Claude refresh lock acquisition")?
-}
-
-struct OsFileLock {
-    file: File,
-}
-
-impl OsFileLock {
-    fn acquire(path: &Path, timeout: StdDuration) -> anyhow::Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).context("create Claude recovery lock directory")?;
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .with_context(|| format!("open Claude recovery lock at {}", path.display()))?;
-        let start = Instant::now();
-
-        loop {
-            if try_lock_file(&file)? {
-                return Ok(Self { file });
-            }
-            if start.elapsed() >= timeout {
-                bail!("Claude recovery lock timed out");
-            }
-            std::thread::sleep(StdDuration::from_millis(100));
-        }
-    }
-}
-
-impl Drop for OsFileLock {
-    fn drop(&mut self) {
-        let _ = unlock_file(&self.file);
-    }
-}
-
-#[cfg(unix)]
-fn try_lock_file(file: &File) -> io::Result<bool> {
-    use std::os::fd::AsRawFd;
-
-    const LOCK_EX: i32 = 2;
-    const LOCK_NB: i32 = 4;
-    unsafe extern "C" {
-        fn flock(fd: i32, operation: i32) -> i32;
-    }
-
-    if unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } == 0 {
-        return Ok(true);
-    }
-    let err = io::Error::last_os_error();
-    if err.kind() == io::ErrorKind::WouldBlock {
-        Ok(false)
-    } else {
-        Err(err)
-    }
-}
-
-#[cfg(unix)]
-fn unlock_file(file: &File) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
-
-    const LOCK_UN: i32 = 8;
-    unsafe extern "C" {
-        fn flock(fd: i32, operation: i32) -> i32;
-    }
-
-    if unsafe { flock(file.as_raw_fd(), LOCK_UN) } == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-#[cfg(windows)]
-fn try_lock_file(file: &File) -> io::Result<bool> {
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::{
-        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
-    };
-    use windows::Win32::System::IO::OVERLAPPED;
-
-    let handle = HANDLE(file.as_raw_handle());
-    let mut overlapped = OVERLAPPED::default();
-    match unsafe {
-        LockFileEx(
-            handle,
-            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-            0,
-            1,
-            0,
-            &mut overlapped,
-        )
-    } {
-        Ok(()) => Ok(true),
-        Err(err) => {
-            let err = io::Error::from(err);
-            if err.raw_os_error() == Some(33) {
-                Ok(false)
-            } else {
-                Err(err)
-            }
-        }
-    }
-}
-
-#[cfg(windows)]
-fn unlock_file(file: &File) -> io::Result<()> {
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::UnlockFileEx;
-    use windows::Win32::System::IO::OVERLAPPED;
-
-    let handle = HANDLE(file.as_raw_handle());
-    let mut overlapped = OVERLAPPED::default();
-    unsafe { UnlockFileEx(handle, 0, 1, 0, &mut overlapped) }.map_err(io::Error::from)
 }
 
 #[cfg(windows)]

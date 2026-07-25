@@ -1,26 +1,31 @@
 //! Grok Build usage fetcher. Credentials are read from the official CLI's
-//! `auth.json` and are never refreshed, rewritten, cached, or sent to the
-//! renderer. The billing endpoints are not public APIs, so any incompatible
-//! response degrades to last-known-good sanitized data.
+//! `auth.json` and are never cached or sent to the renderer. When an access
+//! token expires, the dashboard may ask the official CLI to renew its own
+//! session; the dashboard only checks that a refresh token is non-empty and
+//! never extracts it into app state, sends it, logs it, or passes it to the
+//! child process. It does not write the credential file itself. The billing
+//! endpoints are not public APIs, so any incompatible response degrades to
+//! last-known-good sanitized data.
 
 use super::{send, send_with_one_retry, FetchError, Resp};
+use crate::cache::cache_dir;
 use crate::config::Config;
+use crate::fs_util::{atomic_write, OsFileLock};
 use crate::models::GrokService;
 use crate::util::{clamp_percent, local_label, parse_datetime_str};
 use anyhow::{anyhow, bail, Context};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use reqwest::{Client, RequestBuilder};
 use serde_json::Value;
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
 use std::future::Future;
+use std::hash::{Hash, Hasher};
 use std::io::Read;
-use std::path::Path;
-use std::time::Duration as StdDuration;
-
-#[cfg(windows)]
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-#[cfg(windows)]
+use std::time::Duration as StdDuration;
 use std::time::Instant;
 
 // Current Grok Build 0.2.111 returns Method not found for CodexBar's
@@ -32,8 +37,15 @@ const CREDITS_URL: &str = "https://cli-chat-proxy.grok.com/v1/billing?format=cre
 const SETTINGS_URL: &str = "https://cli-chat-proxy.grok.com/v1/settings";
 const GROK_CLIENT_SURFACE: &str = "grok-build";
 const LOGIN_REQUIRED: &str = "GROK LOGIN REQUIRED";
+const SESSION_EXPIRED: &str = "GROK SESSION EXPIRED";
+const ACCESS_UNAVAILABLE: &str = "GROK ACCESS UNAVAILABLE";
 const TEAM_UNAVAILABLE: &str = "TEAM USAGE UNAVAILABLE";
 const AUTH_READ_TIMEOUT: StdDuration = StdDuration::from_secs(16);
+const AUTH_REFRESH_TIMEOUT: StdDuration = StdDuration::from_secs(20);
+const AUTH_REFRESH_BACKOFF: Duration = Duration::minutes(15);
+const AUTH_REFRESH_STATE_FILE: &str = "grok-auth-refresh-attempt";
+const AUTH_REFRESH_LOCK_FILE: &str = "grok-auth-refresh.lock";
+const AUTH_REFRESH_LOCK_WAIT: StdDuration = StdDuration::from_secs(30);
 const SETTINGS_TIMEOUT: StdDuration = StdDuration::from_secs(2);
 const MAX_AUTH_BYTES: usize = 64 * 1024;
 const MAX_JWT_PAYLOAD_BYTES: usize = 16 * 1024;
@@ -44,6 +56,17 @@ struct GrokAuth {
     token: String,
     principal_is_team: bool,
     plan: Option<String>,
+    can_refresh: bool,
+}
+
+enum AuthState {
+    Active(GrokAuth),
+    Expired { refreshable: bool },
+}
+
+struct AuthRenewal {
+    state: AuthState,
+    cli_attempted: bool,
 }
 
 struct AuthCandidate {
@@ -52,6 +75,7 @@ struct AuthCandidate {
     scope_rank: u8,
     created_at: Option<DateTime<Utc>>,
     expires_at: Option<DateTime<Utc>>,
+    has_refresh_token: bool,
 }
 
 struct PeriodUsage {
@@ -67,10 +91,44 @@ struct MonthlyUsage {
 }
 
 pub async fn fetch(config: &Config, client: &Client) -> Result<GrokService, FetchError> {
-    let auth = read_auth(config).await.map_err(|_| FetchError::Auth {
-        message: LOGIN_REQUIRED,
-    })?;
+    let mut auth = match read_auth(config).await {
+        Ok(AuthState::Active(auth)) => auth,
+        Ok(AuthState::Expired { .. }) => {
+            return Err(FetchError::Auth {
+                message: SESSION_EXPIRED,
+            });
+        }
+        Err(_) => {
+            return Err(FetchError::Auth {
+                message: LOGIN_REQUIRED,
+            });
+        }
+    };
 
+    let (first_result, unauthorized) = fetch_for_auth(&auth, client)
+        .await
+        .map_err(FetchError::Other)?;
+    if unauthorized && auth.can_refresh {
+        if let Some(renewal) = renew_auth(config, cache_dir(), true).await {
+            if let AuthState::Active(refreshed) = renewal.state {
+                let token_changed = refreshed.token != auth.token;
+                if renewal.cli_attempted || token_changed {
+                    auth = refreshed;
+                    return fetch_for_auth(&auth, client)
+                        .await
+                        .map_err(FetchError::Other)?
+                        .0;
+                }
+            }
+        }
+    }
+    first_result
+}
+
+async fn fetch_for_auth(
+    auth: &GrokAuth,
+    client: &Client,
+) -> anyhow::Result<(Result<GrokService, FetchError>, bool)> {
     let credits_task = tokio::spawn(request_grok_api(
         client.clone(),
         auth.token.clone(),
@@ -95,13 +153,18 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<GrokService, Fetc
         .await
         .map_err(|err| anyhow!("join Grok settings request: {err}"))?;
 
-    service_from_responses(
-        auth.principal_is_team,
-        auth.plan.as_deref(),
-        &credits_result,
-        &monthly_result,
-        &settings_result,
-    )
+    let unauthorized =
+        response_has_status(&credits_result, 401) || response_has_status(&monthly_result, 401);
+    Ok((
+        service_from_responses(
+            auth.principal_is_team,
+            auth.plan.as_deref(),
+            &credits_result,
+            &monthly_result,
+            &settings_result,
+        ),
+        unauthorized,
+    ))
 }
 
 fn service_from_responses(
@@ -127,12 +190,21 @@ fn service_from_responses(
         .or_else(|| fallback_plan.map(str::to_string));
 
     if period.is_none() && monthly.is_none() {
-        if response_is_auth_failure(credits_result) || response_is_auth_failure(monthly_result) {
+        if response_has_status(credits_result, 401) || response_has_status(monthly_result, 401) {
             return Err(FetchError::Auth {
                 message: if principal_is_team {
                     TEAM_UNAVAILABLE
                 } else {
                     LOGIN_REQUIRED
+                },
+            });
+        }
+        if response_has_status(credits_result, 403) || response_has_status(monthly_result, 403) {
+            return Err(FetchError::Auth {
+                message: if principal_is_team {
+                    TEAM_UNAVAILABLE
+                } else {
+                    ACCESS_UNAVAILABLE
                 },
             });
         }
@@ -217,8 +289,8 @@ fn service_from_usage(
     }
 }
 
-fn response_is_auth_failure(result: &anyhow::Result<Resp>) -> bool {
-    matches!(result, Ok(resp) if resp.status == 401 || resp.status == 403)
+fn response_has_status(result: &anyhow::Result<Resp>, status: u16) -> bool {
+    matches!(result, Ok(resp) if resp.status == status)
 }
 
 fn response_retry_after(result: &anyhow::Result<Resp>) -> Option<Option<u64>> {
@@ -393,8 +465,27 @@ fn number_value(value: &Value) -> Option<f64> {
         .filter(|number| number.is_finite())
 }
 
-async fn read_auth(config: &Config) -> anyhow::Result<GrokAuth> {
-    let configured = config.grok_credentials_path.trim().to_string();
+async fn read_auth(config: &Config) -> anyhow::Result<AuthState> {
+    read_auth_with_refresh_dir(config, cache_dir()).await
+}
+
+async fn read_auth_with_refresh_dir(
+    config: &Config,
+    refresh_state_dir: PathBuf,
+) -> anyhow::Result<AuthState> {
+    let initial = read_auth_state(config.grok_credentials_path.trim()).await?;
+    if !matches!(&initial, AuthState::Expired { refreshable: true }) {
+        return Ok(initial);
+    }
+
+    Ok(renew_auth(config, refresh_state_dir, false)
+        .await
+        .map(|renewal| renewal.state)
+        .unwrap_or(initial))
+}
+
+async fn read_auth_state(configured: &str) -> anyhow::Result<AuthState> {
+    let configured = configured.to_string();
     let text = tokio::time::timeout(
         AUTH_READ_TIMEOUT,
         tokio::task::spawn_blocking(move || read_auth_text(&configured)),
@@ -402,8 +493,272 @@ async fn read_auth(config: &Config) -> anyhow::Result<GrokAuth> {
     .await
     .context("Grok credential read timed out")?
     .context("join Grok credential reader")??;
-    parse_auth_at(&text, Utc::now())
+    parse_auth_state_at(&text, Utc::now())
 }
+
+async fn renew_auth(
+    config: &Config,
+    refresh_state_dir: PathBuf,
+    force: bool,
+) -> Option<AuthRenewal> {
+    let configured = config.grok_credentials_path.trim().to_string();
+    tokio::task::spawn_blocking(move || {
+        renew_auth_with_official_cli(&configured, &refresh_state_dir, force)
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+}
+
+fn renew_auth_with_official_cli(
+    configured: &str,
+    refresh_state_dir: &Path,
+    force: bool,
+) -> anyhow::Result<AuthRenewal> {
+    std::fs::create_dir_all(refresh_state_dir).context("create Grok refresh state directory")?;
+    let (lock_path, state_path) = auth_refresh_state_paths(refresh_state_dir, configured);
+    let _lock = OsFileLock::acquire(&lock_path, AUTH_REFRESH_LOCK_WAIT)
+        .context("acquire Grok refresh state lock")?;
+
+    // Another dashboard process may have renewed the same source while this
+    // process waited for the lock. Always trust the latest bounded reread.
+    let current = parse_auth_state_at(&read_auth_text(configured)?, Utc::now())?;
+    let can_attempt = match &current {
+        AuthState::Active(auth) => force && auth.can_refresh,
+        AuthState::Expired { refreshable } => *refreshable,
+    };
+    if !can_attempt || !auth_refresh_allowed_at(&state_path, Utc::now()) {
+        return Ok(AuthRenewal {
+            state: current,
+            cli_attempted: false,
+        });
+    }
+
+    mark_auth_refresh_attempt(&state_path, Utc::now())?;
+    let command = build_auth_refresh_command(configured)?;
+    let _ = run_auth_refresh_command(command, AUTH_REFRESH_TIMEOUT);
+
+    // The official CLI can update auth.json before a later models request
+    // fails. Accept a fresh file regardless of the process exit status.
+    let state = read_auth_text(configured)
+        .and_then(|text| parse_auth_state_at(&text, Utc::now()))
+        .unwrap_or(current);
+    Ok(AuthRenewal {
+        state,
+        cli_attempted: true,
+    })
+}
+
+fn auth_refresh_state_paths(dir: &Path, configured: &str) -> (PathBuf, PathBuf) {
+    let mut hasher = DefaultHasher::new();
+    configured.hash(&mut hasher);
+    let key = hasher.finish();
+    (
+        dir.join(format!("{AUTH_REFRESH_LOCK_FILE}-{key:016x}")),
+        dir.join(format!("{AUTH_REFRESH_STATE_FILE}-{key:016x}")),
+    )
+}
+
+fn auth_refresh_allowed_at(state_path: &Path, now: DateTime<Utc>) -> bool {
+    let last_attempt = std::fs::read_to_string(state_path)
+        .ok()
+        .and_then(|text| DateTime::parse_from_rfc3339(text.trim()).ok())
+        .map(|timestamp| timestamp.with_timezone(&Utc));
+    last_attempt.is_none_or(|timestamp| now - timestamp >= AUTH_REFRESH_BACKOFF)
+}
+
+fn mark_auth_refresh_attempt(state_path: &Path, now: DateTime<Utc>) -> anyhow::Result<()> {
+    atomic_write(state_path, now.to_rfc3339().as_bytes()).context("persist Grok refresh attempt")
+}
+
+#[cfg(test)]
+fn reserve_auth_refresh_at(
+    dir: &Path,
+    configured: &str,
+    now: DateTime<Utc>,
+) -> anyhow::Result<bool> {
+    std::fs::create_dir_all(dir).context("create Grok refresh state directory")?;
+    let (lock_path, state_path) = auth_refresh_state_paths(dir, configured);
+    let _lock = OsFileLock::acquire(&lock_path, AUTH_REFRESH_LOCK_WAIT)
+        .context("acquire Grok refresh state lock")?;
+    if !auth_refresh_allowed_at(&state_path, now) {
+        return Ok(false);
+    }
+
+    mark_auth_refresh_attempt(&state_path, now)?;
+    Ok(true)
+}
+
+fn build_auth_refresh_command(configured: &str) -> anyhow::Result<Command> {
+    if !configured.is_empty() {
+        if let Some(spec) = parse_wsl_spec(configured)? {
+            #[cfg(windows)]
+            {
+                return build_wsl_auth_refresh_command(&spec);
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = spec;
+                bail!("Grok wsl: credential paths require Windows");
+            }
+        }
+
+        #[cfg(windows)]
+        if configured.starts_with(r"\\") {
+            bail!("Grok UNC credentials require an explicit wsl: path for renewal");
+        }
+        return build_native_auth_refresh_command(Path::new(configured));
+    }
+
+    let path = default_auth_path()?;
+    #[cfg(windows)]
+    {
+        match std::fs::metadata(&path) {
+            Ok(_) => build_native_auth_refresh_command(&path),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Ok(build_default_wsl_auth_refresh_command())
+            }
+            Err(err) => {
+                Err(err).with_context(|| format!("inspect Grok auth at {}", path.display()))
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        build_native_auth_refresh_command(&path)
+    }
+}
+
+fn default_auth_path() -> anyhow::Result<PathBuf> {
+    Ok(dirs::home_dir()
+        .ok_or_else(|| anyhow!("no home directory"))?
+        .join(".grok")
+        .join("auth.json"))
+}
+
+fn grok_home_from_auth_path(path: &Path) -> anyhow::Result<&Path> {
+    let grok_dir = path
+        .parent()
+        .filter(|parent| parent.file_name().is_some_and(|name| name == ".grok"))
+        .context("Grok auth path is not the official .grok/auth.json location")?;
+    if path.file_name().is_none_or(|name| name != "auth.json") {
+        bail!("Grok auth path is not the official .grok/auth.json location");
+    }
+    grok_dir
+        .parent()
+        .context("Grok auth path has no home directory")
+}
+
+fn build_native_auth_refresh_command(auth_path: &Path) -> anyhow::Result<Command> {
+    let home = grok_home_from_auth_path(auth_path)?;
+    let cli_name = if cfg!(windows) { "grok.exe" } else { "grok" };
+    let cli = home.join(".grok").join("bin").join(cli_name);
+    if !cli.is_file() {
+        bail!("official Grok CLI is unavailable");
+    }
+
+    let mut command = Command::new(cli);
+    command.env("HOME", home);
+    #[cfg(windows)]
+    command.env("USERPROFILE", home);
+    add_auth_refresh_args(&mut command);
+    Ok(command)
+}
+
+#[cfg(any(windows, test))]
+fn wsl_home_and_cli(auth_path: &str) -> anyhow::Result<(String, String)> {
+    let Some(home) = auth_path.strip_suffix("/.grok/auth.json") else {
+        bail!("Grok WSL auth path is not the official .grok/auth.json location");
+    };
+    let home = if home.is_empty() { "/" } else { home };
+    let cli = if home == "/" {
+        "/.grok/bin/grok".to_string()
+    } else {
+        format!("{home}/.grok/bin/grok")
+    };
+    Ok((home.to_string(), cli))
+}
+
+#[cfg(windows)]
+fn build_wsl_auth_refresh_command(spec: &WslSpec) -> anyhow::Result<Command> {
+    let (home, cli) = wsl_home_and_cli(&spec.path)?;
+    let mut command = Command::new("wsl.exe");
+    command
+        .arg("-d")
+        .arg(&spec.distro)
+        .arg("--")
+        .arg("env")
+        .arg(format!("HOME={home}"))
+        .arg("timeout")
+        .arg("--kill-after=1s")
+        .arg("19s")
+        .arg(cli);
+    add_auth_refresh_args(&mut command);
+    Ok(command)
+}
+
+#[cfg(windows)]
+fn build_default_wsl_auth_refresh_command() -> Command {
+    let mut command = Command::new("wsl.exe");
+    command.args([
+        "-d",
+        "Ubuntu",
+        "--",
+        "sh",
+        "-lc",
+        "exec timeout --kill-after=1s 19s \"$HOME/.grok/bin/grok\" --no-auto-update models",
+    ]);
+    command
+}
+
+fn add_auth_refresh_args(command: &mut Command) {
+    command.args(["--no-auto-update", "models"]);
+}
+
+fn run_auth_refresh_command(mut command: Command, timeout: StdDuration) -> anyhow::Result<()> {
+    hide_command_window(&mut command);
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("start official Grok credential renewal")?;
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(err).context("poll official Grok credential renewal");
+            }
+        };
+        if let Some(status) = status {
+            if status.success() {
+                return Ok(());
+            }
+            bail!("official Grok credential renewal failed");
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("official Grok credential renewal timed out");
+        }
+        std::thread::sleep(StdDuration::from_millis(50));
+    }
+}
+
+#[cfg(windows)]
+fn hide_command_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_command_window(_command: &mut Command) {}
 
 fn read_auth_text(configured: &str) -> anyhow::Result<String> {
     if !configured.is_empty() {
@@ -421,10 +776,7 @@ fn read_auth_text(configured: &str) -> anyhow::Result<String> {
         return read_file_limited(Path::new(configured));
     }
 
-    let path = dirs::home_dir()
-        .ok_or_else(|| anyhow!("no home directory"))?
-        .join(".grok")
-        .join("auth.json");
+    let path = default_auth_path()?;
     #[cfg(windows)]
     {
         match std::fs::metadata(&path) {
@@ -547,27 +899,56 @@ fn read_wsl_command(mut command: Command) -> anyhow::Result<String> {
     Ok(text)
 }
 
+#[cfg(test)]
 fn parse_auth_at(text: &str, now: DateTime<Utc>) -> anyhow::Result<GrokAuth> {
+    match parse_auth_state_at(text, now)? {
+        AuthState::Active(auth) => Ok(auth),
+        AuthState::Expired { .. } => bail!("Grok session expired"),
+    }
+}
+
+fn parse_auth_state_at(text: &str, now: DateTime<Utc>) -> anyhow::Result<AuthState> {
     let root: Value = serde_json::from_str(text).context("parse Grok auth.json")?;
     let entries = root
         .as_object()
         .context("Grok auth.json must contain an account map")?;
 
-    let selected = entries
+    let mut candidates = entries
         .iter()
-        .filter_map(|(scope, value)| auth_candidate(scope, value, now))
-        .max_by(compare_candidates)
-        .context("Grok auth.json has no usable login")?;
+        .filter_map(|(scope, value)| auth_candidate(scope, value))
+        .collect::<Vec<_>>();
+    let active_index = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| candidate.expires_at.is_none_or(|expires| expires > now))
+        .max_by(|left, right| compare_candidates(left.1, right.1))
+        .map(|(index, _)| index);
+    let Some(active_index) = active_index else {
+        let has_expired = candidates
+            .iter()
+            .any(|candidate| candidate.expires_at.is_some_and(|expires| expires <= now));
+        if has_expired {
+            return Ok(AuthState::Expired {
+                refreshable: candidates.iter().any(|candidate| {
+                    candidate.has_refresh_token
+                        && candidate.expires_at.is_some_and(|expires| expires <= now)
+                }),
+            });
+        }
+        bail!("Grok auth.json has no usable login");
+    };
+    let selected = candidates.swap_remove(active_index);
     let plan = plan_from_access_token(&selected.token);
 
-    Ok(GrokAuth {
+    Ok(AuthState::Active(GrokAuth {
         token: selected.token,
         principal_is_team: selected.principal_is_team,
         plan,
-    })
+        can_refresh: selected.has_refresh_token,
+    }))
 }
 
-fn auth_candidate(scope: &str, value: &Value, now: DateTime<Utc>) -> Option<AuthCandidate> {
+fn auth_candidate(scope: &str, value: &Value) -> Option<AuthCandidate> {
     let scope_rank = if scope.starts_with("https://auth.x.ai::") {
         2
     } else if scope == "https://accounts.x.ai/sign-in" || scope.contains("/sign-in") {
@@ -585,9 +966,6 @@ fn auth_candidate(scope: &str, value: &Value, now: DateTime<Utc>) -> Option<Auth
         .get("expires_at")
         .and_then(Value::as_str)
         .and_then(parse_datetime_str);
-    if expires_at.is_some_and(|expires| expires <= now) {
-        return None;
-    }
     let created_at = value
         .get("create_time")
         .and_then(Value::as_str)
@@ -596,6 +974,10 @@ fn auth_candidate(scope: &str, value: &Value, now: DateTime<Utc>) -> Option<Auth
         .get("principal_type")
         .and_then(Value::as_str)
         .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("team"));
+    let has_refresh_token = value
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .is_some_and(|token| !token.trim().is_empty());
 
     Some(AuthCandidate {
         token,
@@ -603,6 +985,7 @@ fn auth_candidate(scope: &str, value: &Value, now: DateTime<Utc>) -> Option<Auth
         scope_rank,
         created_at,
         expires_at,
+        has_refresh_token,
     })
 }
 
@@ -615,18 +998,24 @@ fn compare_candidates(left: &AuthCandidate, right: &AuthCandidate) -> Ordering {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::{build_default_wsl_auth_refresh_command, build_wsl_auth_refresh_command};
     use super::{
-        finish_optional_settings, grok_api_request, parse_auth_at, parse_credits, parse_monthly,
-        parse_settings_plan, parse_wsl_spec, plan_from_access_token, read_bounded_utf8,
-        service_from_responses, WslSpec, BILLING_URL, CREDITS_URL, GROK_CLIENT_SURFACE,
-        LOGIN_REQUIRED, MAX_AUTH_BYTES, SETTINGS_URL,
+        finish_optional_settings, grok_api_request, grok_home_from_auth_path, parse_auth_at,
+        parse_auth_state_at, parse_credits, parse_monthly, parse_settings_plan, parse_wsl_spec,
+        plan_from_access_token, read_bounded_utf8, reserve_auth_refresh_at, service_from_responses,
+        wsl_home_and_cli, AuthState, WslSpec, ACCESS_UNAVAILABLE, BILLING_URL, CREDITS_URL,
+        GROK_CLIENT_SURFACE, LOGIN_REQUIRED, MAX_AUTH_BYTES, SETTINGS_URL,
     };
+    #[cfg(unix)]
+    use super::{read_auth_with_refresh_dir, renew_auth_with_official_cli};
     use crate::config::Config;
     use crate::fetchers::{build_client, FetchError, Resp};
-    use chrono::{TimeZone, Utc};
+    use chrono::{Duration as ChronoDuration, TimeZone, Utc};
     use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
     use std::io::Cursor;
-    use std::time::{Duration, Instant};
+    use std::path::Path;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn auth_prefers_newest_active_oidc_then_legacy() {
@@ -701,6 +1090,389 @@ mod tests {
 
         assert_eq!(auth.token, "legacy-team");
         assert!(auth.principal_is_team);
+    }
+
+    #[test]
+    fn expired_auth_is_distinct_and_refreshable_without_exposing_its_token() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 7, 25, 1, 0, 0)
+            .single()
+            .expect("valid test time");
+        let state = parse_auth_state_at(
+            r#"{
+                "https://auth.x.ai::current": {
+                    "key":"expired-access",
+                    "refresh_token":"fake-refresh-value",
+                    "expires_at":"2026-07-25T00:00:00Z"
+                }
+            }"#,
+            now,
+        )
+        .expect("recognized expired Grok session");
+
+        assert!(matches!(state, AuthState::Expired { refreshable: true }));
+        assert!(parse_auth_at(
+            r#"{
+                "https://auth.x.ai::current": {
+                    "key":"expired-access",
+                    "refresh_token":"fake-refresh-value",
+                    "expires_at":"2026-07-25T00:00:00Z"
+                }
+            }"#,
+            now
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn expired_auth_without_refresh_token_is_not_refreshable() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 7, 25, 1, 0, 0)
+            .single()
+            .expect("valid test time");
+        let state = parse_auth_state_at(
+            r#"{
+                "https://auth.x.ai::current": {
+                    "key":"expired-access",
+                    "expires_at":"2026-07-25T00:00:00Z"
+                }
+            }"#,
+            now,
+        )
+        .expect("recognized expired Grok session");
+
+        assert!(matches!(state, AuthState::Expired { refreshable: false }));
+    }
+
+    #[test]
+    fn auth_refresh_attempts_are_throttled_for_fifteen_minutes() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ai-usage-dashboard-grok-refresh-{}-{unique}",
+            std::process::id()
+        ));
+        let now = Utc
+            .with_ymd_and_hms(2026, 7, 25, 1, 0, 0)
+            .single()
+            .expect("valid test time");
+        let source = "wsl:TestDistro:/home/test-user/.grok/auth.json";
+
+        assert!(reserve_auth_refresh_at(&dir, source, now).expect("reserve first Grok refresh"));
+        assert!(
+            !reserve_auth_refresh_at(&dir, source, now + ChronoDuration::minutes(14))
+                .expect("throttle early Grok refresh")
+        );
+        assert!(
+            reserve_auth_refresh_at(&dir, source, now + ChronoDuration::minutes(15))
+                .expect("reserve Grok refresh after backoff")
+        );
+        assert!(
+            reserve_auth_refresh_at(&dir, "wsl:OtherDistro:/home/other/.grok/auth.json", now)
+                .expect("different Grok source has an independent backoff")
+        );
+
+        std::fs::remove_dir_all(dir).expect("remove Grok refresh throttle test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn expired_native_auth_is_renewed_by_the_official_cli_helper() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::{Arc, Barrier};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!(
+            "ai-usage-dashboard-grok-renew-{}-{unique}",
+            std::process::id()
+        ));
+        let grok_dir = home.join(".grok");
+        let bin_dir = grok_dir.join("bin");
+        let auth_path = grok_dir.join("auth.json");
+        let cli_path = bin_dir.join("grok");
+        let refresh_state_dir = home.join("dashboard-state");
+        std::fs::create_dir_all(&bin_dir).expect("create fake Grok home");
+        std::fs::write(
+            &auth_path,
+            r#"{
+                "https://auth.x.ai::current": {
+                    "key":"expired-access",
+                    "refresh_token":"fake-refresh-token",
+                    "expires_at":"2020-01-01T00:00:00Z"
+                }
+            }"#,
+        )
+        .expect("write expired fake Grok auth");
+        std::fs::write(
+            &cli_path,
+            r#"#!/bin/sh
+test "$1" = "--no-auto-update" || exit 2
+test "$2" = "models" || exit 3
+printf 'run\n' >> "$HOME/cli-runs"
+printf 'fake-cli-output-secret\n'
+printf 'fake-cli-error-secret\n' >&2
+sleep 0.2
+cat > "$HOME/.grok/auth.json" <<'EOF'
+{
+  "https://auth.x.ai::current": {
+    "key": "e30.eyJ0aWVyIjo1fQ.sig",
+    "refresh_token": "fake-refreshed-token",
+    "expires_at": "2099-01-01T00:00:00Z"
+  }
+}
+EOF
+exit 7
+"#,
+        )
+        .expect("write fake official Grok helper");
+        let mut permissions = std::fs::metadata(&cli_path)
+            .expect("inspect fake official Grok helper")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&cli_path, permissions)
+            .expect("make fake official Grok helper executable");
+        let config = Config {
+            grok_credentials_path: auth_path.to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = (0..2)
+            .map(|_| {
+                let config = config.clone();
+                let refresh_state_dir = refresh_state_dir.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("test runtime");
+                    barrier.wait();
+                    runtime
+                        .block_on(read_auth_with_refresh_dir(&config, refresh_state_dir))
+                        .expect("renew expired Grok auth")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            let state = handle.join().expect("join concurrent Grok renewal");
+            let AuthState::Active(auth) = state else {
+                panic!("expected active Grok auth after renewal");
+            };
+            assert_eq!(auth.plan.as_deref(), Some("SuperGrok Heavy"));
+        }
+        let invocations = std::fs::read_to_string(home.join("cli-runs"))
+            .expect("read fake Grok helper invocation count");
+        assert_eq!(invocations.lines().count(), 1);
+        for entry in
+            std::fs::read_dir(&refresh_state_dir).expect("read Grok refresh state directory")
+        {
+            let contents = std::fs::read_to_string(entry.expect("refresh state entry").path())
+                .unwrap_or_default();
+            assert!(!contents.contains("fake-cli-output-secret"));
+            assert!(!contents.contains("fake-cli-error-secret"));
+        }
+
+        std::fs::remove_dir_all(home).expect("remove fake Grok renewal home");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn active_auth_can_force_one_cli_renewal_after_unauthorized_response() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!(
+            "ai-usage-dashboard-grok-force-renew-{}-{unique}",
+            std::process::id()
+        ));
+        let grok_dir = home.join(".grok");
+        let bin_dir = grok_dir.join("bin");
+        let auth_path = grok_dir.join("auth.json");
+        let cli_path = bin_dir.join("grok");
+        let refresh_state_dir = home.join("dashboard-state");
+        std::fs::create_dir_all(&bin_dir).expect("create fake Grok home");
+        std::fs::write(
+            &auth_path,
+            r#"{
+                "https://auth.x.ai::current": {
+                    "key":"active-but-rejected",
+                    "refresh_token":"fake-refresh-token",
+                    "expires_at":"2099-01-01T00:00:00Z"
+                }
+            }"#,
+        )
+        .expect("write active fake Grok auth");
+        std::fs::write(
+            &cli_path,
+            r#"#!/bin/sh
+test "$1" = "--no-auto-update" || exit 2
+test "$2" = "models" || exit 3
+printf 'run\n' >> "$HOME/cli-runs"
+cat > "$HOME/.grok/auth.json" <<'EOF'
+{
+  "https://auth.x.ai::current": {
+    "key": "e30.eyJ0aWVyIjo1fQ.sig",
+    "refresh_token": "fake-refreshed-token",
+    "expires_at": "2099-02-01T00:00:00Z"
+  }
+}
+EOF
+"#,
+        )
+        .expect("write fake official Grok helper");
+        let mut permissions = std::fs::metadata(&cli_path)
+            .expect("inspect fake official Grok helper")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&cli_path, permissions)
+            .expect("make fake official Grok helper executable");
+        let configured = auth_path.to_string_lossy().into_owned();
+
+        let first = renew_auth_with_official_cli(&configured, &refresh_state_dir, true)
+            .expect("force Grok renewal after 401");
+        assert!(first.cli_attempted);
+        let AuthState::Active(first_auth) = first.state else {
+            panic!("expected active Grok auth after forced renewal");
+        };
+        assert_eq!(first_auth.plan.as_deref(), Some("SuperGrok Heavy"));
+
+        let second = renew_auth_with_official_cli(&configured, &refresh_state_dir, true)
+            .expect("respect Grok renewal backoff");
+        assert!(!second.cli_attempted);
+        assert_eq!(
+            std::fs::read_to_string(home.join("cli-runs"))
+                .expect("read fake Grok helper invocation count")
+                .lines()
+                .count(),
+            1
+        );
+
+        std::fs::remove_dir_all(home).expect("remove fake forced Grok renewal home");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unavailable_cli_still_consumes_the_refresh_backoff() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!(
+            "ai-usage-dashboard-grok-missing-cli-{}-{unique}",
+            std::process::id()
+        ));
+        let grok_dir = home.join(".grok");
+        let auth_path = grok_dir.join("auth.json");
+        let refresh_state_dir = home.join("dashboard-state");
+        std::fs::create_dir_all(&grok_dir).expect("create fake Grok home");
+        std::fs::write(
+            &auth_path,
+            r#"{
+                "https://auth.x.ai::current": {
+                    "key":"expired-access",
+                    "refresh_token":"fake-refresh-token",
+                    "expires_at":"2020-01-01T00:00:00Z"
+                }
+            }"#,
+        )
+        .expect("write expired fake Grok auth");
+        let configured = auth_path.to_string_lossy().into_owned();
+
+        assert!(
+            renew_auth_with_official_cli(&configured, &refresh_state_dir, false).is_err(),
+            "the first renewal should report the missing official CLI"
+        );
+        let second = renew_auth_with_official_cli(&configured, &refresh_state_dir, false)
+            .expect("the second renewal should be throttled before checking the CLI again");
+        assert!(!second.cli_attempted);
+        assert!(matches!(
+            second.state,
+            AuthState::Expired { refreshable: true }
+        ));
+
+        std::fs::remove_dir_all(home).expect("remove missing Grok CLI test home");
+    }
+
+    #[test]
+    fn refresh_helpers_accept_only_official_auth_layouts() {
+        assert_eq!(
+            grok_home_from_auth_path(Path::new("/home/test-user/.grok/auth.json"))
+                .expect("official native Grok path"),
+            Path::new("/home/test-user")
+        );
+        assert!(grok_home_from_auth_path(Path::new("/home/test-user/private/auth.json")).is_err());
+        assert_eq!(
+            wsl_home_and_cli("/home/test-user/.grok/auth.json").expect("official WSL Grok path"),
+            (
+                "/home/test-user".to_string(),
+                "/home/test-user/.grok/bin/grok".to_string()
+            )
+        );
+        assert!(wsl_home_and_cli("/home/test-user/private/auth.json").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wsl_refresh_command_uses_parameterized_arguments_without_a_shell() {
+        let command = build_wsl_auth_refresh_command(&WslSpec {
+            distro: "Test Distro;ignored".into(),
+            path: "/home/test user/.grok/auth.json".into(),
+        })
+        .expect("safe WSL refresh command");
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(command.get_program().to_string_lossy(), "wsl.exe");
+        assert_eq!(
+            args,
+            [
+                "-d",
+                "Test Distro;ignored",
+                "--",
+                "env",
+                "HOME=/home/test user",
+                "timeout",
+                "--kill-after=1s",
+                "19s",
+                "/home/test user/.grok/bin/grok",
+                "--no-auto-update",
+                "models",
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_wsl_refresh_command_contains_only_fixed_shell_text() {
+        let command = build_default_wsl_auth_refresh_command();
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(command.get_program().to_string_lossy(), "wsl.exe");
+        assert_eq!(
+            args,
+            [
+                "-d",
+                "Ubuntu",
+                "--",
+                "sh",
+                "-lc",
+                "exec timeout --kill-after=1s 19s \"$HOME/.grok/bin/grok\" --no-auto-update models",
+            ]
+        );
     }
 
     #[test]
@@ -961,6 +1733,27 @@ mod tests {
             service_from_responses(false, None, &unauthorized, &malformed, &malformed),
             Err(FetchError::Auth {
                 message: LOGIN_REQUIRED
+            })
+        ));
+    }
+
+    #[test]
+    fn forbidden_access_is_not_misreported_as_a_missing_login() {
+        let forbidden = Ok(Resp {
+            status: 403,
+            body: String::new(),
+            retry_after: None,
+        });
+        let malformed = Ok(Resp {
+            status: 200,
+            body: "{}".into(),
+            retry_after: None,
+        });
+
+        assert!(matches!(
+            service_from_responses(false, None, &forbidden, &malformed, &malformed),
+            Err(FetchError::Auth {
+                message: ACCESS_UNAVAILABLE
             })
         ));
     }

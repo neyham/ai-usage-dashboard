@@ -9,8 +9,9 @@ All notable changes to this project are documented in this file.
 - Show the available Codex banked-reset count and the earliest known expiry.
 - Add opt-in Grok Build tracking for the server-reported usage period, reset
   time, and optional monthly billing allowance. The integration reuses the
-  official CLI login read-only and supports bounded `wsl:` credential reads or
-  explicit Windows UNC paths into WSL.
+  official CLI login, never sends or persists refresh-token values separately,
+  and supports bounded `wsl:` credential reads or explicit Windows UNC paths
+  into WSL.
 
 ### Changed
 
@@ -27,6 +28,9 @@ All notable changes to this project are documented in this file.
 - Show the allowlisted Grok subscription tier reported by the official service
   (with the official CLI token claim as a fallback) instead of mislabeling the
   metered `GrokBuild` product as a `Build` plan.
+- Renew an expired Grok access token through the official CLI before reporting
+  `GROK SESSION EXPIRED`, retry one billing `401`, distinguish forbidden
+  access, and serialize bounded renewal with a per-source 15-minute backoff.
 
 ## [0.3.0] - 2026-07-17 (release candidate)
 

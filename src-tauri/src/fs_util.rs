@@ -2,8 +2,129 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) struct OsFileLock {
+    file: fs::File,
+}
+
+impl OsFileLock {
+    pub(crate) fn acquire(path: &Path, timeout: Duration) -> io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        let started = Instant::now();
+
+        loop {
+            if try_lock_file(&file)? {
+                return Ok(Self { file });
+            }
+            if started.elapsed() >= timeout {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "file lock timed out",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+impl Drop for OsFileLock {
+    fn drop(&mut self) {
+        let _ = unlock_file(&self.file);
+    }
+}
+
+#[cfg(unix)]
+fn try_lock_file(file: &fs::File) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
+    unsafe extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+
+    if unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } == 0 {
+        return Ok(true);
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::WouldBlock {
+        Ok(false)
+    } else {
+        Err(err)
+    }
+}
+
+#[cfg(unix)]
+fn unlock_file(file: &fs::File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    const LOCK_UN: i32 = 8;
+    unsafe extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+
+    if unsafe { flock(file.as_raw_fd(), LOCK_UN) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn try_lock_file(file: &fs::File) -> io::Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    use windows::Win32::System::IO::OVERLAPPED;
+
+    let handle = HANDLE(file.as_raw_handle());
+    let mut overlapped = OVERLAPPED::default();
+    match unsafe {
+        LockFileEx(
+            handle,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    } {
+        Ok(()) => Ok(true),
+        Err(err) => {
+            let err = io::Error::from(err);
+            if err.raw_os_error() == Some(33) {
+                Ok(false)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn unlock_file(file: &fs::File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::UnlockFileEx;
+    use windows::Win32::System::IO::OVERLAPPED;
+
+    let handle = HANDLE(file.as_raw_handle());
+    let mut overlapped = OVERLAPPED::default();
+    unsafe { UnlockFileEx(handle, 0, 1, 0, &mut overlapped) }.map_err(io::Error::from)
+}
 
 /// Replace a file without exposing a partially-written destination.
 pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
