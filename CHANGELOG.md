@@ -32,7 +32,7 @@ All notable changes to this project are documented in this file.
   `GROK SESSION EXPIRED`, retry one billing `401`, distinguish forbidden
   access, and serialize bounded renewal with a per-source 15-minute backoff.
 
-## [0.3.0] - 2026-07-17 (release candidate)
+## [0.3.0] - 2026-07-17
 
 ### Added
 
@@ -62,9 +62,10 @@ All notable changes to this project are documented in this file.
 ### Build Week
 
 - The provider-selection workflow, isolated Judge Demo, judging documentation,
-  and 0.3.0 candidate packaging were completed on 2026-07-17 with Codex and
-  GPT-5.6 for OpenAI Build Week. The provider integrations, local-first Tauri
-  architecture, cache, Surface UI, and v0.2.0 release existed before this work.
+  and 0.3.0 packaging and public release were completed on 2026-07-17 with
+  Codex and GPT-5.6 for OpenAI Build Week. The provider integrations,
+  local-first Tauri architecture, cache, Surface UI, and v0.2.0 release existed
+  before this work.
 
 ## [0.2.0] - 2026-07-12
 
