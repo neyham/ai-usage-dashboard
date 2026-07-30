@@ -50,7 +50,7 @@ All notable changes to this project are documented in this file.
   panels across the existing Surface, compact, portrait, and Snap layouts.
 - Preserved disabled-provider cache entries so a later re-enable can show the
   last known value before the next live refresh.
-- Expanded Playwright coverage for provider selection, Judge Demo disclosure,
+- Expanded Playwright coverage for provider selection, offline demo disclosure,
   and dynamic panel counts.
 
 ### Fixed
@@ -58,14 +58,6 @@ All notable changes to this project are documented in this file.
 - Accept Codex usage responses that expose only one duration-labelled rate-limit
   window instead of failing the entire provider card when the legacy secondary
   window is null.
-
-### Build Week
-
-- The provider-selection workflow, isolated Judge Demo, judging documentation,
-  and 0.3.0 packaging and public release were completed on 2026-07-17 with
-  Codex and GPT-5.6 for OpenAI Build Week. The provider integrations,
-  local-first Tauri architecture, cache, Surface UI, and v0.2.0 release existed
-  before this work.
 
 ## [0.2.0] - 2026-07-12
 

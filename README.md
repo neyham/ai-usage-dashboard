@@ -31,9 +31,9 @@ one provider does not erase last-known-good data for the other providers.
 ## Project status
 
 Version `0.3.0` is the latest public release. It adds provider selection and an
-isolated Judge Demo to the Windows-first `0.2.0` foundation. The responsive UI,
-native build, and installer flow are exercised on Windows 11 and Surface-sized
-viewports.
+isolated offline demo mode to the Windows-first `0.2.0` foundation. The
+responsive UI, native build, and installer flow are exercised on Windows 11 and
+Surface-sized viewports.
 
 The current `main` branch also contains unreleased post-`0.3.0` work: adaptive
 usage windows, banked Codex resets, Grok Build tracking, and zero-to-four-panel
@@ -45,26 +45,6 @@ This project reads credential formats and usage endpoints used by provider CLI
 tools. Some of those interfaces are undocumented and can change without notice.
 The project is not affiliated with, endorsed by, or supported by Anthropic,
 OpenAI, xAI, or DeepSeek.
-
-## OpenAI Build Week Extension
-
-This entry is an extension of an existing open-source project, not a claim that
-the entire application was created during Build Week.
-
-**Before the event:** AI Usage Dashboard already had the Tauri/Rust/React
-desktop architecture, Claude/Codex/DeepSeek integrations, sanitized IPC,
-last-known-good caching, failure states, fullscreen and screensaver modes,
-Surface-responsive UI, automated tests, and a public `0.2.0` Windows release.
-The Codex single-window response compatibility fix also predates this extension.
-
-**Built on 2026-07-17 with Codex and GPT-5.6:** the end-to-end provider-selection
-workflow, atomic persistence, disabled-provider refresh isolation, retained
-caches, zero/one/two/three-panel layouts, concurrency-safe preference changes,
-expanded Surface validation, isolated Judge Demo, NSIS demo shortcut, and Build
-Week judging documentation.
-
-The Grok Build provider was added after the Build Week work described above and
-is not part of the claimed 2026-07-17 extension.
 
 ## Privacy and security
 
@@ -101,13 +81,12 @@ Install from the official Windows Package Manager community source:
 winget install --id neyham.AIUsageDashboard --exact --source winget
 ```
 
-The package is live in WinGet. As of 2026-07-30, the public source indexes
-`0.2.0`; the [`0.3.0` update is under review](https://github.com/microsoft/winget-pkgs/pull/409700).
-WinGet indexes each version independently and can briefly lag the latest GitHub
-release while an update is reviewed and propagated. Check the indexed version
-with:
+The package is live in WinGet as `neyham.AIUsageDashboard`. After a new GitHub
+release, community-source indexes can lag briefly while the version manifest is
+reviewed and propagated. Refresh the source and check the indexed version with:
 
 ```powershell
+winget source update
 winget show --id neyham.AIUsageDashboard --exact --source winget
 ```
 
@@ -124,15 +103,16 @@ is built from this repository but is currently unsigned, so review the source
 and checksum before accepting a SmartScreen prompt.
 
 After installation, open **AI Usage Dashboard (Judge Demo)** from the Windows
-Start menu. The shortcut launches bundled synthetic data without provider
-credentials or a source build.
+Start menu for an offline walkthrough with bundled synthetic data. No provider
+credentials or source build are required.
 
-## Judge Demo
+## Offline demo
 
-Judge Demo reuses the existing production mock parsers and embedded fixtures,
-but adds a dedicated safety boundary around them:
+The offline demo reuses the production mock parsers and embedded fixtures, with
+an extra isolation boundary:
 
-- it starts with `--judge-demo` and displays `SYNTHETIC DEMO · OFFLINE`;
+- launch with `--judge-demo` (Start menu shortcut: **AI Usage Dashboard (Judge
+  Demo)**); the UI shows `SYNTHETIC DEMO · OFFLINE`;
 - it does not load normal `config.json`, provider credentials, or the normal
   cache;
 - refresh actions always regenerate embedded fixture data and never construct a
@@ -142,10 +122,10 @@ but adds a dedicated safety boundary around them:
 - settings can exercise every layout supported by that build: zero through
   three panels in `v0.3.0`, and zero through four panels on the current `main`.
 
-The demo validates the UI, selection workflow, parser-to-renderer boundary,
-status presentation, and responsive layouts. It intentionally does not validate
-provider authentication, endpoint availability, or the accuracy of live quota
-data.
+Use it to exercise the UI, selection workflow, parser-to-renderer boundary,
+status presentation, and responsive layouts without touching live accounts. It
+does not validate provider authentication, endpoint availability, or live quota
+accuracy.
 
 Command-line fallback for an installed current-user build:
 
@@ -370,7 +350,7 @@ data; it does not repair authentication.
 | --- | --- |
 | none | Normal resizable window |
 | `--fullscreen` | Borderless fullscreen; `Esc` exits |
-| `--judge-demo` | Isolated synthetic demo; no normal config, credential, cache, or provider access |
+| `--judge-demo` | Offline synthetic demo; no normal config, credential, cache, or provider access |
 | `/s` or `-s` | Fullscreen, always on top, and exits on real input after a short arming delay |
 | `--config` or `/c` | Opens `config.json` and exits |
 | `/p <HWND>` | Windows screensaver preview; intentionally exits without rendering |
@@ -411,12 +391,12 @@ cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D w
 The UI suite exercises healthy, rate-limited, partial-failure, and
 insufficient-balance states across seven viewports, including Surface 200%
 landscape, portrait, and half-Snap layouts. It also checks overflow, touch
-targets, refresh state, keyboard behavior, screensaver input exit, isolated
-Judge Demo disclosure, and zero/one/two/three/four-panel selection layouts.
+targets, refresh state, keyboard behavior, screensaver input exit, offline demo
+disclosure, and zero/one/two/three/four-panel selection layouts.
 
 Set `mockMode` to `normal`, `claude429`, or `failures` to exercise the embedded
 provider fixtures without network access. An unknown value displays `INVALID
-MOCK MODE` and remains offline. `--judge-demo` is the safer judging entrypoint
+MOCK MODE` and remains offline. `--judge-demo` is the safer offline entrypoint
 because it ignores normal configuration and cache files entirely.
 
 ## Repository layout
@@ -426,8 +406,8 @@ src/                         React and TypeScript renderer
 scripts/viewport-check.mjs   Playwright viewport and interaction suite
 mocks/                       Embedded provider response fixtures
 src-tauri/src/               Rust backend, cache, fetchers, and launch modes
-src-tauri/nsis-hooks.nsh     One-click Judge Demo Start menu shortcut
-docs/build-week/             Build Week submission draft and judging notes
+src-tauri/nsis-hooks.nsh     Offline demo Start menu shortcut
+docs/releases/               Per-release notes
 install-idle-task.ps1        Scheduled idle-mode install and removal
 install-screensaver.ps1      Experimental .scr install and safe restoration
 ```

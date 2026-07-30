@@ -181,7 +181,7 @@ fn launch_mode(state: State<'_, AppState>) -> String {
     state.mode.clone()
 }
 
-/// True only for the isolated, synthetic Build Week judge experience.
+/// True only for the isolated offline synthetic demo launch mode.
 #[tauri::command]
 fn judge_demo(state: State<'_, AppState>) -> bool {
     state.judge_demo
