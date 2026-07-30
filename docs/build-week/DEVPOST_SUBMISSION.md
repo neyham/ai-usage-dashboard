@@ -52,7 +52,7 @@ sanitized percentages, reset times, balance values, and status text.
   cache, uses embedded synthetic fixtures through the production parsers, and
   hard-routes every refresh to mock data before any live fetch path. Demo
   selections persist in a separate credential-free file.
-- **Windows packaging:** the NSIS candidate creates an **AI Usage Dashboard
+- **Windows packaging:** the v0.3.0 NSIS release creates an **AI Usage Dashboard
   (Judge Demo)** Start menu shortcut with the isolated launch flag.
 
 ## Impact
@@ -101,7 +101,7 @@ live provider authentication, endpoint availability, or real quota accuracy.
 - Public repository: https://github.com/neyham/ai-usage-dashboard
 - Public v0.3.0 NSIS installer: https://github.com/neyham/ai-usage-dashboard/releases/download/v0.3.0/AI-Usage-Dashboard_0.3.0_x64-setup.exe
 - Public SHA-256 checksum: https://github.com/neyham/ai-usage-dashboard/releases/download/v0.3.0/AI-Usage-Dashboard_0.3.0_SHA256SUMS.txt
-- Devpost project URL: `[ADD DEVPOST PROJECT URL BEFORE SUBMISSION]`
+- Devpost project URL: https://devpost.com/software/ai-usage-dashboard
 
 ## Video storyboard (2:40 maximum)
 
@@ -138,7 +138,7 @@ live provider authentication, endpoint availability, or real quota accuracy.
 - Surface device installation and cache-timestamp validation with Claude
   disabled while Codex and DeepSeek refreshed.
 - Isolated synthetic Judge Demo and one-click NSIS Start menu shortcut.
-- Expanded Playwright/Rust coverage, 0.3.0 candidate packaging, and this
+- Expanded Playwright/Rust coverage, 0.3.0 release packaging, and this
   submission draft.
 
 This extension was developed with Codex and GPT-5.6. Product direction,
@@ -156,5 +156,5 @@ human entrant.
 - The Windows installer is not code-signed and may trigger SmartScreen.
 - Judge Demo uses fixed synthetic fixtures and cannot prove live-provider
   compatibility.
-- The v0.3.0 candidate has not been committed, pushed, released, or uploaded at
-  the time this draft was prepared.
+- The public v0.3.0 installer and checksum are available on GitHub. The demo
+  video upload and final Devpost submission remain separate publication steps.

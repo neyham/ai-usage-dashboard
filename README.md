@@ -30,12 +30,16 @@ one provider does not erase last-known-good data for the other providers.
 
 ## Project status
 
-Version `0.3.0` is an uncommitted OpenAI Build Week release candidate. It adds
-provider selection and an isolated Judge Demo to the published Windows-first
-`0.2.0` foundation. The responsive UI, native build, and installer flow are
-exercised on Windows 11 and Surface-sized viewports. Published and candidate
-installers are not code-signed, so Windows SmartScreen may require explicit
-confirmation before installation.
+Version `0.3.0` is the latest public release. It adds provider selection and an
+isolated Judge Demo to the Windows-first `0.2.0` foundation. The responsive UI,
+native build, and installer flow are exercised on Windows 11 and Surface-sized
+viewports.
+
+The current `main` branch also contains unreleased post-`0.3.0` work: adaptive
+usage windows, banked Codex resets, Grok Build tracking, and zero-to-four-panel
+layouts. The public `0.3.0` installer contains Codex, Claude, and DeepSeek with
+zero-to-three-panel layouts. Published installers are not code-signed, so
+Windows SmartScreen may require explicit confirmation before installation.
 
 This project reads credential formats and usage endpoints used by provider CLI
 tools. Some of those interfaces are undocumented and can change without notice.
@@ -89,31 +93,39 @@ credential exposure.
 
 ## Install
 
-### Build Week judge candidate
+### WinGet
 
-The `0.3.0` NSIS candidate is ready for direct installation; no source build,
-Node.js, Rust, provider login, or API key is required for judging.
+Install from the official Windows Package Manager community source:
 
-**Public candidate installer:** `[ADD PUBLIC v0.3.0 NSIS URL BEFORE SUBMISSION]`
+```powershell
+winget install --id neyham.AIUsageDashboard --exact --source winget
+```
+
+The package is live in WinGet. As of 2026-07-30, the public source indexes
+`0.2.0`; the [`0.3.0` update is under review](https://github.com/microsoft/winget-pkgs/pull/409700).
+WinGet indexes each version independently and can briefly lag the latest GitHub
+release while an update is reviewed and propagated. Check the indexed version
+with:
+
+```powershell
+winget show --id neyham.AIUsageDashboard --exact --source winget
+```
+
+### Direct installer
+
+The latest public release is `v0.3.0`:
+
+- [AI Usage Dashboard v0.3.0 NSIS installer](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.3.0/AI-Usage-Dashboard_0.3.0_x64-setup.exe)
+- [AI Usage Dashboard v0.3.0 SHA-256 checksum](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.3.0/AI-Usage-Dashboard_0.3.0_SHA256SUMS.txt)
+
+The release publishes a current-user NSIS `setup.exe`; no MSI asset is attached.
+Verify the installer against the checksum file before running it. The installer
+is built from this repository but is currently unsigned, so review the source
+and checksum before accepting a SmartScreen prompt.
 
 After installation, open **AI Usage Dashboard (Judge Demo)** from the Windows
-Start menu. The shortcut launches bundled synthetic data and is the recommended
-evaluation path.
-
-### Stable public release
-
-Download the latest Windows installer from
-[GitHub Releases](https://github.com/neyham/ai-usage-dashboard/releases/latest):
-
-- The NSIS `setup.exe` installs for the current user and is the simplest option.
-- The MSI package is available for environments that prefer Windows Installer.
-- Verify the downloaded file against `SHA256SUMS.txt` attached to the same
-  release before running it.
-
-These installers are built from this repository but are currently unsigned.
-Review the source and release checksums before accepting a SmartScreen prompt.
-The WinGet package is planned but should not be considered available until its
-manifest is accepted into `microsoft/winget-pkgs`.
+Start menu. The shortcut launches bundled synthetic data without provider
+credentials or a source build.
 
 ## Judge Demo
 
@@ -127,7 +139,8 @@ but adds a dedicated safety boundary around them:
   live provider request;
 - provider selections persist separately in
   `%APPDATA%\AiUsageDashboard\judge-demo.json` and cannot alter live settings;
-- settings can exercise all zero, one, two, three, and four-panel layouts.
+- settings can exercise every layout supported by that build: zero through
+  three panels in `v0.3.0`, and zero through four panels on the current `main`.
 
 The demo validates the UI, selection workflow, parser-to-renderer boundary,
 status presentation, and responsive layouts. It intentionally does not validate
@@ -176,6 +189,9 @@ The main output is
 under `src-tauri\target\release\bundle\`.
 
 ## Provider setup
+
+This section documents the current `main` branch. The public `v0.3.0` build does
+not include the post-release Grok Build integration.
 
 Use the settings button in the bottom toolbar to choose which providers appear
 on the home screen. Disabled providers are excluded from automatic and manual
