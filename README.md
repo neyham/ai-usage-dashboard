@@ -2,9 +2,10 @@
 
 [![CI](https://github.com/neyham/ai-usage-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/neyham/ai-usage-dashboard/actions/workflows/ci.yml)
 
-A local-first Windows dashboard and screensaver for viewing Claude Code, Codex,
-and Grok Build usage alongside a DeepSeek API balance. The desktop application
-is built with Tauri, Rust, React, and TypeScript.
+A local-first desktop dashboard for viewing Claude Code, Codex, and Grok Build
+usage alongside a DeepSeek API balance. Built with Tauri, Rust, React, and
+TypeScript for Windows, Linux, and macOS. Windows also supports scheduled idle
+launch and a screensaver mode.
 
 ![AI Usage Dashboard showing synthetic mock data](docs/assets/dashboard.png)
 
@@ -22,22 +23,21 @@ is built with Tauri, Rust, React, and TypeScript.
 - DeepSeek API balance and insufficient-balance state.
 - A combined health state that distinguishes fresh data, partial degradation,
   total failure, and an in-progress refresh.
-- Normal window, borderless fullscreen, scheduled idle, and Windows
-  screensaver launch modes.
+- Normal window and borderless fullscreen on all platforms; scheduled idle and
+  screensaver launch modes on Windows.
 
 Each provider is checked independently. A missing credential or an outage for
 one provider does not erase last-known-good data for the other providers.
 
 ## Project status
 
-Version `0.4.0` is the current release line. It keeps the Windows-first
-provider-selection and offline-demo foundation from `0.3.0`, and adds adaptive
+Version `0.4.0` is the current **Windows** release line (WinGet + NSIS). It
+keeps provider selection and the offline demo from `0.3.0`, and adds adaptive
 usage windows, Codex banked resets, optional Grok Build tracking, zero-to-four
 provider layouts, and aligned WSL credential discovery for Claude, Codex, and
-Grok. The responsive UI, native build, and installer flow are exercised on
-Windows 11 and Surface-sized viewports. Published installers are not
-code-signed, so Windows SmartScreen may require explicit confirmation before
-installation.
+Grok on Windows. Multi-platform packaging (Linux `.deb` / AppImage, macOS
+`.dmg`, and one-line install scripts) is in progress on `main` for the next
+release; published installers are not code-signed.
 
 This project reads credential formats and usage endpoints used by provider CLI
 tools. Some of those interfaces are undocumented and can change without notice.
@@ -53,16 +53,19 @@ balances, timestamps, and status text.
 - No project server, analytics, or telemetry is used.
 - Provider tokens, API keys, credential files, and raw API error bodies are not
   sent to the renderer.
-- DeepSeek keys are never written to the cache. Windows Credential Manager is
-  preferred over environment variables and plaintext configuration.
+- DeepSeek keys are never written to the cache. The OS credential store is
+  preferred (Windows Credential Manager, macOS Keychain, Linux Secret Service),
+  then environment variables, then plaintext configuration.
 - The dashboard only checks whether a Grok refresh token is non-empty. It never
   extracts that value into app state, sends it, logs it, or passes it to a
   child process, and it does not write Grok credentials itself. When an access
   token expires, it can run the official Grok CLI's non-interactive
   model-discovery command; that CLI owns any update to its `auth.json`.
-- `%LOCALAPPDATA%\AiUsageDashboard\state.json` stores sanitized usage and
-  balance data for graceful degradation. It can still contain private account
-  information and should be treated as sensitive.
+- Sanitized usage cache is stored under the platform data directory
+  (`%LOCALAPPDATA%\AiUsageDashboard\state.json` on Windows,
+  `~/.local/share/AiUsageDashboard/state.json` on Linux, Application Support on
+  macOS). It can still contain private account information and should be
+  treated as sensitive.
 - Malformed configuration and invalid mock modes fail closed and do not contact
   live provider services.
 
@@ -71,38 +74,53 @@ credential exposure.
 
 ## Install
 
-### WinGet
-
-Install from the official Windows Package Manager community source:
+One-line installs (preferred once multi-platform release assets are published):
 
 ```powershell
+# Windows
 winget install --id neyham.AIUsageDashboard --exact --source winget
 ```
 
+```sh
+# macOS
+curl -fsSL https://github.com/neyham/ai-usage-dashboard/releases/latest/download/install-macos.sh | sh
+```
+
+```sh
+# Linux (Debian/Ubuntu .deb, otherwise AppImage)
+curl -fsSL https://github.com/neyham/ai-usage-dashboard/releases/latest/download/install-linux.sh | sh
+```
+
+Pin a version with `VERSION=0.5.0` before the install script, for example
+`VERSION=0.5.0 sh install-linux.sh`.
+
+### Windows (WinGet and direct installer)
+
 The package is live in WinGet as `neyham.AIUsageDashboard`. After a new GitHub
 release, community-source indexes can lag briefly while the version manifest is
-reviewed and propagated. Refresh the source and check the indexed version with:
+reviewed and propagated:
 
 ```powershell
 winget source update
 winget show --id neyham.AIUsageDashboard --exact --source winget
 ```
 
-### Direct installer
-
-The latest public release is `v0.4.0`:
+The latest public **Windows** release is `v0.4.0`:
 
 - [AI Usage Dashboard v0.4.0 NSIS installer](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.4.0/AI-Usage-Dashboard_0.4.0_x64-setup.exe)
 - [AI Usage Dashboard v0.4.0 SHA-256 checksum](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.4.0/AI-Usage-Dashboard_0.4.0_SHA256SUMS.txt)
 
-The release publishes a current-user NSIS `setup.exe`; no MSI asset is attached.
-Verify the installer against the checksum file before running it. The installer
-is built from this repository but is currently unsigned, so review the source
-and checksum before accepting a SmartScreen prompt.
+The `v0.4.0` release publishes a current-user NSIS `setup.exe` only. Installers
+are unsigned, so Windows SmartScreen may require confirmation. After
+installation, open **AI Usage Dashboard (Judge Demo)** from the Start menu for
+an offline walkthrough with synthetic data.
 
-After installation, open **AI Usage Dashboard (Judge Demo)** from the Windows
-Start menu for an offline walkthrough with bundled synthetic data. No provider
-credentials or source build are required.
+### Linux and macOS status
+
+Linux and macOS install scripts and CI packaging live on `main` and will ship
+with the next multi-platform release tag. Until then, build from source on
+those platforms (see below). Screensaver and scheduled-idle helpers remain
+Windows-only.
 
 ## Offline demo
 
@@ -115,8 +133,8 @@ an extra isolation boundary:
   cache;
 - refresh actions always regenerate embedded fixture data and never construct a
   live provider request;
-- provider selections persist separately in
-  `%APPDATA%\AiUsageDashboard\judge-demo.json` and cannot alter live settings;
+- provider selections persist separately in the platform config directory
+  (`judge-demo.json`) and cannot alter live settings;
 - settings can exercise every layout supported by that build: zero through
   four panels in `v0.4.0`.
 
@@ -125,46 +143,63 @@ status presentation, and responsive layouts without touching live accounts. It
 does not validate provider authentication, endpoint availability, or live quota
 accuracy.
 
-Command-line fallback for an installed current-user build:
+Command-line fallbacks:
 
 ```powershell
+# Windows (current-user install)
 & "$env:LOCALAPPDATA\AI Usage Dashboard\ai-usage-dashboard.exe" --judge-demo
+```
+
+```sh
+# Linux / macOS (from a local build)
+./src-tauri/target/release/ai-usage-dashboard --judge-demo
 ```
 
 ## Runtime requirements
 
-- Windows 10 or Windows 11.
-- Microsoft Edge WebView2 Runtime. It is normally present on Windows 11.
+| Platform | Requirements |
+| --- | --- |
+| Windows 10/11 | WebView2 Runtime (usually present on Windows 11) |
+| Linux | WebKitGTK 4.1, GTK 3 (see [packaging/linux](packaging/linux/README.md)) |
+| macOS | macOS 11+ |
 
 ## Source build requirements
 
 - Node.js 18 or later.
-- Rust 1.88 or later with the `x86_64-pc-windows-msvc` toolchain.
-- Visual Studio Build Tools with **Desktop development with C++**.
+- Rust 1.88 or later.
 
-Build from Windows PowerShell, not inside WSL. A WSL build produces a Linux
-binary and cannot integrate with Windows Credential Manager, Task Scheduler, or
-screensaver settings. The Windows application can still read Claude and Grok
-credentials from WSL.
+**Windows:** `x86_64-pc-windows-msvc` toolchain and Visual Studio Build Tools with
+**Desktop development with C++**. Build from PowerShell for Windows integration
+(Credential Manager, Task Scheduler, screensaver). A WSL build produces a Linux
+binary instead.
+
+**Linux (Ubuntu 24.04 example):**
+
+```sh
+sudo apt-get install -y build-essential curl wget file libssl-dev libgtk-3-dev \
+  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config
+```
+
+**macOS:** Xcode Command Line Tools (`xcode-select --install`).
 
 ## Build and run
 
-```powershell
+```sh
 git clone https://github.com/neyham/ai-usage-dashboard.git
 cd ai-usage-dashboard
 npm ci
 npm run app:dev
 ```
 
-Build the executable and Windows installers:
+Build the native app and platform installers:
 
-```powershell
+```sh
 npm run app:build
 ```
 
-The main output is
-`src-tauri\target\release\ai-usage-dashboard.exe`. Installer bundles are placed
-under `src-tauri\target\release\bundle\`.
+Outputs land under `src-tauri/target/release/` and
+`src-tauri/target/release/bundle/` (NSIS on Windows, `.deb`/AppImage on Linux,
+`.dmg`/`.app` on macOS).
 
 ## Provider setup
 
@@ -175,20 +210,22 @@ immediately and persist in `config.json`.
 
 | Provider | Default credential source | Override |
 | --- | --- | --- |
-| Claude | `%USERPROFILE%\.claude\.credentials.json`, then `credentials.json`, then the same files in the `Ubuntu` WSL home | `claudeCredentialsPath`, including `wsl:<distro>:<absolute-path>` |
-| Codex | `%USERPROFILE%\.codex\auth.json`, then the `Ubuntu` WSL home `~/.codex/auth.json` | `codexAuthPath`, including `wsl:<distro>:<absolute-path>` or a `\\wsl.localhost\...` UNC path |
-| DeepSeek | Windows Credential Manager target `AiUsageDashboard/DeepSeekApiKey`, then `DEEPSEEK_API_KEY` | `deepSeekCredentialTarget` or `deepSeekApiKey` |
-| Grok Build | `%USERPROFILE%\.grok\auth.json`, then the `Ubuntu` WSL home | `grokCredentialsPath`, including `wsl:<distro>:<absolute-path>` or a `\\wsl.localhost\...` UNC path |
+| Claude | `~/.claude/.credentials.json`, then `credentials.json`; on Windows also the `Ubuntu` WSL home | `claudeCredentialsPath` (`wsl:<distro>:<absolute-path>` on Windows only) |
+| Codex | `~/.codex/auth.json`; on Windows also the `Ubuntu` WSL home | `codexAuthPath` (`wsl:` or `\\wsl.localhost\...` on Windows only) |
+| DeepSeek | OS credential store target `AiUsageDashboard/DeepSeekApiKey`, then `DEEPSEEK_API_KEY` | `deepSeekCredentialTarget` or `deepSeekApiKey` |
+| Grok Build | `~/.grok/auth.json`; on Windows also the `Ubuntu` WSL home | `grokCredentialsPath` (`wsl:` or UNC on Windows only) |
 
 Sign in with the official Claude Code, Codex, and Grok Build clients before
 enabling their panels. Grok is disabled by default so an upgrade never starts
-reading a newly introduced credential source without an explicit selection. To
-store a DeepSeek key without placing it in a file, open Windows Credential
-Manager, add a **Generic credential** with
-`AiUsageDashboard/DeepSeekApiKey` as the network address, and enter the API key
-as its password. The user-name field is not used by the application.
+reading a newly introduced credential source without an explicit selection.
 
-For a WSL distribution other than `Ubuntu`, configure an explicit path such as:
+**DeepSeek without a plaintext file:** on Windows, create a Generic credential
+in Credential Manager with network address `AiUsageDashboard/DeepSeekApiKey`
+and the API key as the password. On Linux/macOS, store the same
+service/account pair via the platform keyring, or set `DEEPSEEK_API_KEY`.
+
+For a Windows WSL distribution other than `Ubuntu`, configure an explicit path
+such as:
 
 ```json
 {
@@ -247,11 +284,23 @@ across dashboard processes to one attempt per 30 minutes.
 
 Run the following to create or open the configuration file:
 
-```powershell
+```sh
+# Linux / macOS
+./src-tauri/target/release/ai-usage-dashboard --config
+
+# Windows
 .\src-tauri\target\release\ai-usage-dashboard.exe --config
 ```
 
-The file is `%APPDATA%\AiUsageDashboard\config.json`:
+Config path by platform:
+
+| Platform | Path |
+| --- | --- |
+| Windows | `%APPDATA%\AiUsageDashboard\config.json` |
+| Linux | `~/.config/AiUsageDashboard/config.json` |
+| macOS | `~/Library/Application Support/AiUsageDashboard/config.json` |
+
+Example:
 
 ```json
 {

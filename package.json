@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.4.0",
   "license": "MIT",
-  "description": "Local Windows desktop dashboard for Codex, Claude, Grok Build, and DeepSeek usage",
+  "description": "Local desktop dashboard for Codex, Claude, Grok Build, and DeepSeek usage",
   "type": "module",
   "repository": {
     "type": "git",

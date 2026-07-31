@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   windows:
-    name: Build and publish Windows installers
+    name: Build Windows
     runs-on: windows-latest
     timeout-minutes: 60
 
@@ -60,24 +60,231 @@ jobs:
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version
           New-Item -ItemType Directory -Force release | Out-Null
-          Copy-Item "src-tauri/target/release/bundle/nsis/AI Usage Dashboard_${version}_x64-setup.exe" `
-            "release/AI-Usage-Dashboard_${version}_x64-setup.exe"
-          Copy-Item "src-tauri/target/release/bundle/msi/AI Usage Dashboard_${version}_x64_en-US.msi" `
-            "release/AI-Usage-Dashboard_${version}_x64_en-US.msi"
-          Get-ChildItem release -File | Sort-Object Name | ForEach-Object {
-            $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
-            "$hash  $($_.Name)"
-          } | Set-Content -Encoding ascii release/SHA256SUMS.txt
+          $nsis = "src-tauri/target/release/bundle/nsis/AI Usage Dashboard_${version}_x64-setup.exe"
+          if (-not (Test-Path $nsis)) { throw "NSIS installer missing: $nsis" }
+          Copy-Item $nsis "release/AI-Usage-Dashboard_${version}_x64-setup.exe"
+          $msi = "src-tauri/target/release/bundle/msi/AI Usage Dashboard_${version}_x64_en-US.msi"
+          if (Test-Path $msi) {
+            Copy-Item $msi "release/AI-Usage-Dashboard_${version}_x64_en-US.msi"
+          }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: release/*
+          if-no-files-found: error
+
+  linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Test renderer
+        run: npm test
+
+      - name: Check Rust formatting
+        run: cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Test Rust backend
+        run: cargo test --locked --all-targets --manifest-path src-tauri/Cargo.toml
+
+      - name: Lint Rust targets
+        run: cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Build Linux bundles
+        run: npm run app:build
+
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          mkdir -p release
+          deb="$(find src-tauri/target/release/bundle/deb -name '*.deb' | head -n 1)"
+          appimage="$(find src-tauri/target/release/bundle/appimage -name '*.AppImage' | head -n 1)"
+          test -n "${deb}" || { echo "deb bundle missing"; exit 1; }
+          test -n "${appimage}" || { echo "AppImage bundle missing"; exit 1; }
+          cp "${deb}" "release/AI-Usage-Dashboard_${version}_amd64.deb"
+          cp "${appimage}" "release/AI-Usage-Dashboard_${version}_amd64.AppImage"
+          cp scripts/install-linux.sh release/install-linux.sh
+          chmod 755 release/install-linux.sh release/*.AppImage
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: release/*
+          if-no-files-found: error
+
+  macos:
+    name: Build macOS
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+
+      - name: Test renderer
+        run: npm test
+
+      - name: Check Rust formatting
+        run: cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Test Rust backend
+        run: cargo test --locked --all-targets --manifest-path src-tauri/Cargo.toml
+
+      - name: Lint Rust targets
+        run: cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Build macOS bundles
+        run: npm run app:build
+
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          mkdir -p release
+          dmg="$(find src-tauri/target/release/bundle/dmg -name '*.dmg' | head -n 1)"
+          test -n "${dmg}" || { echo "dmg bundle missing"; exit 1; }
+          arch="$(uname -m)"
+          case "${arch}" in
+            arm64) arch_tag="aarch64" ;;
+            x86_64) arch_tag="x64" ;;
+            *) echo "unsupported macOS arch: ${arch}"; exit 1 ;;
+          esac
+          cp "${dmg}" "release/AI-Usage-Dashboard_${version}_${arch_tag}.dmg"
+          cp scripts/install-macos.sh release/install-macos.sh
+          chmod 755 release/install-macos.sh
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows
+          path: release
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux
+          path: release
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos
+          path: release
+
+      - name: Build checksum file
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          cd release
+          # Exclude the checksum file itself from hashing.
+          find . -type f ! -name 'AI-Usage-Dashboard_*_SHA256SUMS.txt' -printf '%P\n' \
+            | sort \
+            | while IFS= read -r file; do
+                sha256sum "${file}"
+              done \
+            | sed 's|  \./|  |' \
+            > "AI-Usage-Dashboard_${version}_SHA256SUMS.txt"
+          ls -la
+          cat "AI-Usage-Dashboard_${version}_SHA256SUMS.txt"
 
       - name: Publish GitHub release
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $notes = "docs/releases/$($env:GITHUB_REF_NAME).md"
-          $assets = Get-ChildItem release -File | ForEach-Object FullName
-          gh release create $env:GITHUB_REF_NAME @assets `
-            --repo $env:GITHUB_REPOSITORY `
-            --verify-tag `
-            --title "AI Usage Dashboard $($env:GITHUB_REF_NAME)" `
-            --notes-file $notes
+          set -euo pipefail
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ ! -f "${notes}" ]; then
+            notes="$(mktemp)"
+            printf 'AI Usage Dashboard %s\n' "${GITHUB_REF_NAME}" > "${notes}"
+          fi
+          # shellcheck disable=SC2046
+          gh release create "${GITHUB_REF_NAME}" $(find release -type f | sort) \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --title "AI Usage Dashboard ${GITHUB_REF_NAME}" \
+            --notes-file "${notes}"
