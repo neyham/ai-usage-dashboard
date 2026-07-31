@@ -18,9 +18,9 @@ use serde_json::Map;
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 #[cfg(windows)]
 use std::process::{Command, Stdio};
+use std::time::Duration;
 #[cfg(windows)]
 use std::time::Instant;
 
