@@ -4,14 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [0.4.0] - 2026-07-31
+
 ### Added
 
+- Align Codex credential discovery with Claude and Grok on Windows: try the
+  native `%USERPROFILE%\.codex\auth.json` first, then fall back to the default
+  Ubuntu WSL home, and accept a bounded `wsl:<distro>:<absolute-path>` override.
 - Show the available Codex banked-reset count and the earliest known expiry.
 - Add opt-in Grok Build tracking for the server-reported usage period, reset
   time, and optional monthly billing allowance. The integration reuses the
   official CLI login, never sends or persists refresh-token values separately,
   and supports bounded `wsl:` credential reads or explicit Windows UNC paths
   into WSL.
+- Restore dual-window Codex fixtures in Judge Demo / mock mode (5H + 7D) while
+  keeping weekly-only as an independent UI regression scenario.
 
 ### Changed
 
@@ -31,6 +38,11 @@ All notable changes to this project are documented in this file.
 - Renew an expired Grok access token through the official CLI before reporting
   `GROK SESSION EXPIRED`, retry one billing `401`, distinguish forbidden
   access, and serialize bounded renewal with a per-source 15-minute backoff.
+
+### Security
+
+- Bump PostCSS to 8.5.25 to address GHSA-r28c-9q8g-f849 (build-time path
+  traversal advisory).
 
 ## [0.3.0] - 2026-07-17
 

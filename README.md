@@ -30,16 +30,14 @@ one provider does not erase last-known-good data for the other providers.
 
 ## Project status
 
-Version `0.3.0` is the latest public release. It adds provider selection and an
-isolated offline demo mode to the Windows-first `0.2.0` foundation. The
-responsive UI, native build, and installer flow are exercised on Windows 11 and
-Surface-sized viewports.
-
-The current `main` branch also contains unreleased post-`0.3.0` work: adaptive
-usage windows, banked Codex resets, Grok Build tracking, and zero-to-four-panel
-layouts. The public `0.3.0` installer contains Codex, Claude, and DeepSeek with
-zero-to-three-panel layouts. Published installers are not code-signed, so
-Windows SmartScreen may require explicit confirmation before installation.
+Version `0.4.0` is the current release line. It keeps the Windows-first
+provider-selection and offline-demo foundation from `0.3.0`, and adds adaptive
+usage windows, Codex banked resets, optional Grok Build tracking, zero-to-four
+provider layouts, and aligned WSL credential discovery for Claude, Codex, and
+Grok. The responsive UI, native build, and installer flow are exercised on
+Windows 11 and Surface-sized viewports. Published installers are not
+code-signed, so Windows SmartScreen may require explicit confirmation before
+installation.
 
 This project reads credential formats and usage endpoints used by provider CLI
 tools. Some of those interfaces are undocumented and can change without notice.
@@ -92,10 +90,10 @@ winget show --id neyham.AIUsageDashboard --exact --source winget
 
 ### Direct installer
 
-The latest public release is `v0.3.0`:
+The latest public release is `v0.4.0`:
 
-- [AI Usage Dashboard v0.3.0 NSIS installer](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.3.0/AI-Usage-Dashboard_0.3.0_x64-setup.exe)
-- [AI Usage Dashboard v0.3.0 SHA-256 checksum](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.3.0/AI-Usage-Dashboard_0.3.0_SHA256SUMS.txt)
+- [AI Usage Dashboard v0.4.0 NSIS installer](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.4.0/AI-Usage-Dashboard_0.4.0_x64-setup.exe)
+- [AI Usage Dashboard v0.4.0 SHA-256 checksum](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.4.0/AI-Usage-Dashboard_0.4.0_SHA256SUMS.txt)
 
 The release publishes a current-user NSIS `setup.exe`; no MSI asset is attached.
 Verify the installer against the checksum file before running it. The installer
@@ -120,7 +118,7 @@ an extra isolation boundary:
 - provider selections persist separately in
   `%APPDATA%\AiUsageDashboard\judge-demo.json` and cannot alter live settings;
 - settings can exercise every layout supported by that build: zero through
-  three panels in `v0.3.0`, and zero through four panels on the current `main`.
+  four panels in `v0.4.0`.
 
 Use it to exercise the UI, selection workflow, parser-to-renderer boundary,
 status presentation, and responsive layouts without touching live accounts. It
@@ -170,9 +168,6 @@ under `src-tauri\target\release\bundle\`.
 
 ## Provider setup
 
-This section documents the current `main` branch. The public `v0.3.0` build does
-not include the post-release Grok Build integration.
-
 Use the settings button in the bottom toolbar to choose which providers appear
 on the home screen. Disabled providers are excluded from automatic and manual
 refresh cycles, including credential reads and network requests. Changes apply
@@ -180,8 +175,8 @@ immediately and persist in `config.json`.
 
 | Provider | Default credential source | Override |
 | --- | --- | --- |
-| Claude | `%USERPROFILE%\.claude\.credentials.json`, then `credentials.json`, then the same files in the `Ubuntu` WSL home | `claudeCredentialsPath` |
-| Codex | `%USERPROFILE%\.codex\auth.json` | `codexAuthPath` |
+| Claude | `%USERPROFILE%\.claude\.credentials.json`, then `credentials.json`, then the same files in the `Ubuntu` WSL home | `claudeCredentialsPath`, including `wsl:<distro>:<absolute-path>` |
+| Codex | `%USERPROFILE%\.codex\auth.json`, then the `Ubuntu` WSL home `~/.codex/auth.json` | `codexAuthPath`, including `wsl:<distro>:<absolute-path>` or a `\\wsl.localhost\...` UNC path |
 | DeepSeek | Windows Credential Manager target `AiUsageDashboard/DeepSeekApiKey`, then `DEEPSEEK_API_KEY` | `deepSeekCredentialTarget` or `deepSeekApiKey` |
 | Grok Build | `%USERPROFILE%\.grok\auth.json`, then the `Ubuntu` WSL home | `grokCredentialsPath`, including `wsl:<distro>:<absolute-path>` or a `\\wsl.localhost\...` UNC path |
 
@@ -193,29 +188,22 @@ Manager, add a **Generic credential** with
 `AiUsageDashboard/DeepSeekApiKey` as the network address, and enter the API key
 as its password. The user-name field is not used by the application.
 
-For a WSL distribution other than `Ubuntu`, configure an explicit Claude path
-such as:
+For a WSL distribution other than `Ubuntu`, configure an explicit path such as:
 
 ```json
 {
-  "claudeCredentialsPath": "wsl:Ubuntu-24.04:/home/your-user/.claude/.credentials.json"
-}
-```
-
-For Grok Build installed in WSL, prefer the bounded `wsl:` reader:
-
-```json
-{
-  "grokCredentialsPath": "wsl:Ubuntu:/home/your-user/.grok/auth.json"
+  "claudeCredentialsPath": "wsl:Ubuntu-24.04:/home/your-user/.claude/.credentials.json",
+  "codexAuthPath": "wsl:Ubuntu-24.04:/home/your-user/.codex/auth.json",
+  "grokCredentialsPath": "wsl:Ubuntu-24.04:/home/your-user/.grok/auth.json"
 }
 ```
 
 The dashboard invokes `wsl.exe` without interpolating the configured path into
 a shell command, caps credential input at 64 KiB, and stops the reader after
 15 seconds. A `\\wsl.localhost\...` UNC path remains supported when preferred.
-Automatic CLI renewal requires the native official path or a `wsl:` path; UNC
-paths remain read-only. An explicit path is fail closed. If it cannot be read,
-the dashboard reports an authentication or data error instead of silently
+Automatic Grok CLI renewal requires the native official path or a `wsl:` path;
+UNC paths remain read-only. An explicit path is fail closed. If it cannot be
+read, the dashboard reports an authentication or data error instead of silently
 selecting another account.
 When a recognized Grok access token expires and the login contains a refresh
 token, the dashboard runs

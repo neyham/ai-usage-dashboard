@@ -152,7 +152,7 @@ mod tests {
         assert_eq!(summary.status, "ok");
         assert_eq!(summary.services.claude.five_hour_percent, Some(42.0));
         assert_eq!(summary.services.claude.seven_day_percent, Some(73.0));
-        assert_eq!(summary.services.codex.five_hour_percent, None);
+        assert_eq!(summary.services.codex.five_hour_percent, Some(18.0));
         assert_eq!(summary.services.codex.seven_day_percent, Some(64.0));
         assert_eq!(summary.services.codex.reset_credits_available, Some(3));
         assert!(summary.services.codex.reset_credits_expire_local.is_some());
