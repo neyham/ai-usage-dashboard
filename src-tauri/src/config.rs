@@ -39,7 +39,9 @@ pub struct Config {
     pub claude_code_command: String,
     pub claude_code_refresh_timeout_seconds: u64,
     pub claude_code_refresh_max_budget_usd: f64,
-    /// Optional override path for Codex auth.json.
+    /// Optional override path for Codex auth.json, including a bounded
+    /// "wsl:<distro>:<absolute-path>" spec. Empty uses the native home path,
+    /// then (on Windows only) a default Ubuntu WSL home fallback.
     pub codex_auth_path: String,
     /// Optional path to Grok Build auth.json, including a bounded
     /// "wsl:<distro>:<path>" spec or Windows UNC path into WSL. Grok

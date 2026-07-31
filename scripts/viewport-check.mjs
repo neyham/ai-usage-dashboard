@@ -32,7 +32,9 @@ const baseSummary = {
       fromCache: false,
       dataMayBeStale: false,
       plan: "pro",
+      fiveHourPercent: 18,
       sevenDayPercent: 61,
+      fiveHourResetLocal: "07-29 12:30",
       sevenDayResetLocal: "07-29 01:02",
       resetCreditsAvailable: 3,
       resetCreditsExpireLocal: "08-15 12:00",
@@ -549,13 +551,39 @@ async function checkFullscreenThreeColumns(browser) {
 }
 
 async function checkUsageVariants(browser) {
+  const dualWindowCodex = baseSummary.services.codex;
+  const weeklyOnlyCodex = {
+    status: "NOMINAL",
+    fromCache: false,
+    dataMayBeStale: false,
+    plan: "pro",
+    sevenDayPercent: 61,
+    sevenDayResetLocal: "07-29 01:02",
+    resetCreditsAvailable: 3,
+    resetCreditsExpireLocal: "08-15 12:00",
+  };
+  const dualWindowClaude = baseSummary.services.claude;
+
   const variants = [
+    {
+      name: "codex-weekly-only",
+      summary: {
+        ...baseSummary,
+        services: {
+          ...baseSummary.services,
+          codex: weeklyOnlyCodex,
+        },
+      },
+      codexLabels: ["7D"],
+      claudeLabels: ["5H", "7D"],
+    },
     {
       name: "claude-weekly-only",
       summary: {
         ...baseSummary,
         services: {
           ...baseSummary.services,
+          codex: dualWindowCodex,
           claude: {
             status: "NOMINAL",
             fromCache: false,
@@ -565,6 +593,7 @@ async function checkUsageVariants(browser) {
           },
         },
       },
+      codexLabels: ["5H", "7D"],
       claudeLabels: ["7D"],
     },
     {
@@ -573,6 +602,7 @@ async function checkUsageVariants(browser) {
         ...baseSummary,
         services: {
           ...baseSummary.services,
+          codex: dualWindowCodex,
           claude: {
             status: "NOMINAL",
             fromCache: false,
@@ -581,7 +611,21 @@ async function checkUsageVariants(browser) {
           },
         },
       },
+      codexLabels: ["5H", "7D"],
       claudeLabels: ["EXTRA"],
+    },
+    {
+      name: "codex-dual-window",
+      summary: {
+        ...baseSummary,
+        services: {
+          ...baseSummary.services,
+          codex: dualWindowCodex,
+          claude: dualWindowClaude,
+        },
+      },
+      codexLabels: ["5H", "7D"],
+      claudeLabels: ["5H", "7D"],
     },
   ];
 
@@ -600,7 +644,10 @@ async function checkUsageVariants(browser) {
     await page.goto(baseUrl, { waitUntil: "networkidle" });
     await page.locator(".panel").first().waitFor();
 
-    assert.deepEqual(await page.locator(".panel-codex .meter-label").allTextContents(), ["7D"]);
+    assert.deepEqual(
+      await page.locator(".panel-codex .meter-label").allTextContents(),
+      variant.codexLabels,
+    );
     assert.equal(await page.locator(".panel-codex .reset-credits").count(), 1);
     await page.locator(".panel-codex .reset-credits", { hasText: "3 AVAILABLE" }).waitFor();
     await page.locator(".panel-codex .reset-credits", { hasText: "FIRST EXP" }).waitFor();
