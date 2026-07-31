@@ -4,13 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [0.4.1] - 2026-07-31
+
 ### Added
 
-- Linux and macOS packaging support for the upcoming multi-platform release line:
-  CI jobs on Ubuntu and macOS, Release builds for `.deb` / AppImage / `.dmg`,
-  and one-line install scripts (`scripts/install-linux.sh`,
-  `scripts/install-macos.sh`) that download assets from GitHub Releases and
-  verify SHA-256 checksums.
+- Multi-platform packaging for Linux and macOS: CI jobs on Ubuntu and macOS,
+  Release builds for `.deb` / AppImage / `.dmg`, and one-line install scripts
+  (`scripts/install-linux.sh`, `scripts/install-macos.sh`) that download assets
+  from GitHub Releases and verify SHA-256 checksums.
 - Linux package metadata (`deb` runtime depends) and macOS minimum system
   version in `tauri.conf.json`.
 
@@ -18,6 +19,8 @@ All notable changes to this project are documented in this file.
 
 - Gate Windows-only Codex WSL helper imports so Linux/macOS builds compile
   without unused-import warnings.
+- Fix rustfmt import order in the Codex fetcher so multi-platform CI
+  `cargo fmt --check` passes.
 
 ## [0.4.0] - 2026-07-31
 

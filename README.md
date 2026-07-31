@@ -31,13 +31,13 @@ one provider does not erase last-known-good data for the other providers.
 
 ## Project status
 
-Version `0.4.0` is the current **Windows** release line (WinGet + NSIS). It
-keeps provider selection and the offline demo from `0.3.0`, and adds adaptive
-usage windows, Codex banked resets, optional Grok Build tracking, zero-to-four
-provider layouts, and aligned WSL credential discovery for Claude, Codex, and
-Grok on Windows. Multi-platform packaging (Linux `.deb` / AppImage, macOS
-`.dmg`, and one-line install scripts) is in progress on `main` for the next
-release; published installers are not code-signed.
+Version `0.4.1` is the current multi-platform release: Windows (WinGet + NSIS),
+Linux (`.deb` / AppImage), and macOS (`.dmg`), with one-line install scripts
+that verify SHA-256 checksums. It includes adaptive usage windows, Codex banked
+resets, optional Grok Build tracking, zero-to-four provider layouts, offline
+demo mode, and Windows WSL credential discovery for Claude, Codex, and Grok.
+Published installers are not code-signed. Screensaver and scheduled-idle
+helpers remain Windows-only.
 
 This project reads credential formats and usage endpoints used by provider CLI
 tools. Some of those interfaces are undocumented and can change without notice.
@@ -74,7 +74,7 @@ credential exposure.
 
 ## Install
 
-One-line installs (preferred once multi-platform release assets are published):
+One-line installs:
 
 ```powershell
 # Windows
@@ -91,8 +91,8 @@ curl -fsSL https://github.com/neyham/ai-usage-dashboard/releases/latest/download
 curl -fsSL https://github.com/neyham/ai-usage-dashboard/releases/latest/download/install-linux.sh | sh
 ```
 
-Pin a version with `VERSION=0.5.0` before the install script, for example
-`VERSION=0.5.0 sh install-linux.sh`.
+Pin a version with `VERSION=0.4.1` before the install script, for example
+`VERSION=0.4.1 sh install-linux.sh`.
 
 ### Windows (WinGet and direct installer)
 
@@ -105,22 +105,21 @@ winget source update
 winget show --id neyham.AIUsageDashboard --exact --source winget
 ```
 
-The latest public **Windows** release is `v0.4.0`:
+The latest public release is `v0.4.1`:
 
-- [AI Usage Dashboard v0.4.0 NSIS installer](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.4.0/AI-Usage-Dashboard_0.4.0_x64-setup.exe)
-- [AI Usage Dashboard v0.4.0 SHA-256 checksum](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.4.0/AI-Usage-Dashboard_0.4.0_SHA256SUMS.txt)
+- [AI Usage Dashboard v0.4.1 NSIS installer](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.4.1/AI-Usage-Dashboard_0.4.1_x64-setup.exe)
+- [AI Usage Dashboard v0.4.1 SHA-256 checksum](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.4.1/AI-Usage-Dashboard_0.4.1_SHA256SUMS.txt)
 
-The `v0.4.0` release publishes a current-user NSIS `setup.exe` only. Installers
-are unsigned, so Windows SmartScreen may require confirmation. After
+Installers are unsigned, so Windows SmartScreen may require confirmation. After
 installation, open **AI Usage Dashboard (Judge Demo)** from the Start menu for
 an offline walkthrough with synthetic data.
 
-### Linux and macOS status
+### Linux and macOS
 
-Linux and macOS install scripts and CI packaging live on `main` and will ship
-with the next multi-platform release tag. Until then, build from source on
-those platforms (see below). Screensaver and scheduled-idle helpers remain
-Windows-only.
+Use the one-line install scripts above (they pull `.deb` / AppImage or `.dmg`
+from GitHub Releases and verify checksums). You can also download assets from
+the [latest release](https://github.com/neyham/ai-usage-dashboard/releases/latest)
+page. Screensaver and scheduled-idle helpers remain Windows-only.
 
 ## Offline demo
 
