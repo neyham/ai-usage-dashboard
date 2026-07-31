@@ -18,14 +18,18 @@ use serde_json::Map;
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+#[cfg(windows)]
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+#[cfg(windows)]
+use std::time::Instant;
 
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 const RESET_CREDITS_URL: &str = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const RESET_CREDITS_TIMEOUT: Duration = Duration::from_secs(4);
 const LONG_WINDOW_THRESHOLD_SECONDS: u64 = 24 * 60 * 60;
 const MAX_AUTH_BYTES: usize = 64 * 1024;
+#[cfg(windows)]
 const WSL_PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
 type Window<'a> = &'a Map<String, Value>;
 type WindowPair<'a> = (Option<Window<'a>>, Option<Window<'a>>);
