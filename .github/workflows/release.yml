@@ -239,19 +239,19 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download Windows artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: windows
           path: release
 
       - name: Download Linux artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: linux
           path: release
 
       - name: Download macOS artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: macos
           path: release
