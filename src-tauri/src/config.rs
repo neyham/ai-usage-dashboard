@@ -1,7 +1,7 @@
 //! App config from %APPDATA%\AiUsageDashboard\config.json (Roaming on Windows,
 //! XDG config dir elsewhere). Mirrors the WinForms prototype's config schema.
 
-use crate::fs_util::atomic_write;
+use crate::fs_util::{atomic_write, atomic_write_private, restrict_file_to_owner};
 use crate::models::EnabledProviders;
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -17,7 +17,8 @@ pub const DEFAULT_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD: f64 = 0.03;
 pub const MIN_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD: f64 = 0.001;
 pub const MAX_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD: f64 = 0.10;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// Intentionally no `Debug`: this type can hold a plaintext DeepSeek key.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
     /// Set when config.json exists but cannot be read or parsed. Never serialized.
@@ -27,10 +28,8 @@ pub struct Config {
     pub network_timeout_seconds: u64,
     /// Providers displayed and refreshed by the dashboard.
     pub enabled_providers: EnabledProviders,
-    /// Optional plaintext fallback for the DeepSeek key (lowest priority).
+    /// Optional plaintext DeepSeek key saved directly from Display Settings.
     pub deep_seek_api_key: String,
-    /// Credential Manager target name (Windows) / keyring service tag.
-    pub deep_seek_credential_target: String,
     /// Optional override path / "wsl:<distro>:<path>" spec for Claude creds.
     pub claude_credentials_path: String,
     /// Optional recovery path for Claude OAuth refresh failures. Disabled by
@@ -49,6 +48,9 @@ pub struct Config {
     pub grok_credentials_path: String,
     /// "" for live; "normal" | "claude429" | "failures" for mock mode.
     pub mock_mode: String,
+    /// Preferred window chrome when not launched with CLI override:
+    /// "normal" (windowed) | "fullscreen". Screensaver remains CLI-only.
+    pub window_mode: String,
 }
 
 impl Default for Config {
@@ -59,7 +61,6 @@ impl Default for Config {
             network_timeout_seconds: 15,
             enabled_providers: EnabledProviders::default(),
             deep_seek_api_key: String::new(),
-            deep_seek_credential_target: "AiUsageDashboard/DeepSeekApiKey".into(),
             claude_credentials_path: String::new(),
             claude_code_refresh_enabled: false,
             claude_code_command: "claude".into(),
@@ -68,6 +69,7 @@ impl Default for Config {
             codex_auth_path: String::new(),
             grok_credentials_path: String::new(),
             mock_mode: String::new(),
+            window_mode: "normal".into(),
         }
     }
 }
@@ -106,6 +108,12 @@ impl Config {
             } else {
                 DEFAULT_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD
             };
+        let mode = self.window_mode.trim().to_ascii_lowercase();
+        self.window_mode = if mode == "fullscreen" {
+            "fullscreen".into()
+        } else {
+            "normal".into()
+        };
         self
     }
 }
@@ -134,7 +142,6 @@ const DEFAULT_CONFIG_JSON: &str = r#"{
     "grok": false
   },
   "deepSeekApiKey": "",
-  "deepSeekCredentialTarget": "AiUsageDashboard/DeepSeekApiKey",
   "claudeCredentialsPath": "",
   "claudeCodeRefreshEnabled": false,
   "claudeCodeCommand": "claude",
@@ -142,7 +149,8 @@ const DEFAULT_CONFIG_JSON: &str = r#"{
   "claudeCodeRefreshMaxBudgetUsd": 0.03,
   "codexAuthPath": "",
   "grokCredentialsPath": "",
-  "mockMode": ""
+  "mockMode": "",
+  "windowMode": "normal"
 }
 "#;
 
@@ -152,30 +160,42 @@ pub fn load_or_create() -> Config {
     let _ = std::fs::create_dir_all(&dir);
     let path = config_path();
     if !path.exists() {
-        return if std::fs::write(&path, DEFAULT_CONFIG_JSON).is_ok() {
+        return if atomic_write_private(&path, DEFAULT_CONFIG_JSON.as_bytes()).is_ok() {
             Config::default()
         } else {
             Config::with_load_error()
         };
     }
+    if restrict_file_to_owner(&path).is_err() {
+        return Config::with_load_error();
+    }
     match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str::<Config>(text.trim_start_matches('\u{feff}'))
-            .map(Config::clamp)
-            .unwrap_or_else(|_| Config::with_load_error()),
+        Ok(text) => parse_config_text(&text),
         Err(_) => Config::with_load_error(),
     }
+}
+
+/// Parse config JSON text, tolerating a leading UTF-8 BOM (common on Windows editors).
+pub(crate) fn parse_config_text(text: &str) -> Config {
+    serde_json::from_str::<Config>(strip_utf8_bom(text))
+        .map(Config::clamp)
+        .unwrap_or_else(|_| Config::with_load_error())
+}
+
+pub(crate) fn strip_utf8_bom(text: &str) -> &str {
+    text.trim_start_matches('\u{feff}')
 }
 
 pub fn save(config: &Config) -> io::Result<()> {
     let mut text = serde_json::to_vec_pretty(config).map_err(io::Error::other)?;
     text.push(b'\n');
-    atomic_write(&config_path(), &text)
+    atomic_write_private(&config_path(), &text)
 }
 
 pub fn load_judge_demo_selection() -> EnabledProviders {
     std::fs::read_to_string(judge_demo_config_path())
         .ok()
-        .and_then(|text| serde_json::from_str(text.trim_start_matches('\u{feff}')).ok())
+        .and_then(|text| serde_json::from_str(strip_utf8_bom(&text)).ok())
         .unwrap_or_default()
 }
 
@@ -229,6 +249,13 @@ mod tests {
     }
 
     #[test]
+    fn utf8_bom_prefixed_config_parses_without_load_error() {
+        let config = super::parse_config_text("\u{feff}{\"mockMode\":\"normal\"}\n");
+        assert!(!config.load_error);
+        assert_eq!(config.mock_mode, "normal");
+    }
+
+    #[test]
     fn provider_selection_accepts_partial_nested_config() {
         let config: Config =
             serde_json::from_str(r#"{"enabledProviders":{"claude":false,"deepseek":false}}"#)
@@ -277,6 +304,20 @@ mod tests {
 
         assert_eq!(saved, selection);
         std::fs::remove_dir_all(root).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn window_mode_defaults_to_normal_and_clamps_unknown_values() {
+        let defaulted: Config =
+            serde_json::from_str(r#"{}"#).expect("empty object uses field defaults");
+        assert_eq!(defaulted.window_mode, "normal");
+
+        let full: Config =
+            serde_json::from_str(r#"{"windowMode":"FULLSCREEN"}"#).expect("fullscreen mode");
+        assert_eq!(full.clamp().window_mode, "fullscreen");
+
+        let junk: Config = serde_json::from_str(r#"{"windowMode":"kiosk"}"#).expect("unknown mode");
+        assert_eq!(junk.clamp().window_mode, "normal");
     }
 
     #[test]

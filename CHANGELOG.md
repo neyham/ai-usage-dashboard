@@ -4,6 +4,50 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [0.5.0] - 2026-08-02
+
+### Added
+
+- Settings toggle for **windowed vs fullscreen** on Windows, macOS, and Linux.
+  Choice is persisted as `windowMode` in `config.json`, applied at launch when
+  no CLI override is present, and switchable at runtime from Display Settings
+  (screensaver launches remain fixed at start).
+- Write-only DeepSeek API key input in Display Settings on all three desktop
+  platforms. Blank input preserves the current key, successful saves refresh
+  immediately, and the backend never returns the stored value to the UI.
+
+### Fixed
+
+- Distinguish provider setup and auth failures from generic transport errors:
+  DeepSeek reports `KEY MISSING` / `AUTH EXPIRED` / `AUTH FORBIDDEN` instead of
+  a blanket `API ERROR` when the key is absent or rejected; Codex reports
+  `LOGIN REQUIRED` / `AUTH EXPIRED` / `AUTH FORBIDDEN` / `RATE LIMITED` on the
+  corresponding credential and HTTP paths, while malformed/unreadable Codex
+  credential files report `CREDENTIAL ERROR`. Claude and Grok already used
+  dedicated auth statuses; the UI chip treats credential/setup states as auth.
+- Harden UTF-8 BOM handling for `config.json` parsing with an explicit regression
+  test, and tolerate a BOM when loading `state.json` cache files with its own
+  regression test.
+- Save provider and window changes through one transactional command, submit only
+  changed fields, include an optional DeepSeek key in the same config transaction,
+  preserve process-only CLI overrides, and roll the native window
+  back if persistence fails. If the rollback itself fails, synchronize the backend
+  and renderer to the actual OS window state instead of reporting the old mode.
+  Fullscreen remains interactive with a visible cursor; only screensaver mode hides
+  it, and a screensaver that cannot enter its required window state exits fail-closed.
+- Create Mac/Linux `config.json` replacement inodes with mode 0600 and tighten
+  existing upgrade configs at load because the direct DeepSeek settings path
+  stores its key in that per-user file.
+- Release the shared cache lock during network refreshes and persist bounded
+  provider `Retry-After` cooldowns for Codex, DeepSeek, and Grok.
+- Keep rate-limit and Grok authentication tags visible even when cached data is
+  stale, and make the default Windows Ubuntu WSL Codex fallback read
+  `auth.json` reliably through `wsl.exe`; a missing file reports `LOGIN REQUIRED`
+  without misclassifying other WSL failures as missing credentials.
+- Prevent the Linux installer from falling back to an amd64 AppImage on arm64,
+  and stage release bundles by the requested version instead of the first stale
+  artifact found in a reused target directory.
+
 ## [0.4.1] - 2026-07-31
 
 ### Added

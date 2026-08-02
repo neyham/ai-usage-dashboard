@@ -51,8 +51,8 @@ export function TelemetryBar({
             type="button"
             className="icon-button tm-settings"
             onClick={onSettings}
-            aria-label="Provider settings"
-            title="Provider settings"
+            aria-label="Display settings"
+            title="Display settings"
           >
             <Settings size={19} aria-hidden />
           </button>

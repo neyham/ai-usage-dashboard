@@ -27,4 +27,4 @@ CI. Gatekeeper may require **Open Anyway** on first launch.
 | --- | --- |
 | Config | `~/Library/Application Support/AiUsageDashboard/config.json` (via `dirs::config_dir`) |
 | Cache | `~/Library/Application Support/AiUsageDashboard/state.json` (via `dirs::data_local_dir`) |
-| DeepSeek key | macOS Keychain via `keyring`, then `DEEPSEEK_API_KEY` |
+| DeepSeek key | Display Settings / `deepSeekApiKey`, then `DEEPSEEK_API_KEY` |
