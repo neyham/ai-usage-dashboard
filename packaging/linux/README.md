@@ -30,4 +30,4 @@ Plus Node.js 18+ and Rust 1.88+.
 | --- | --- |
 | Config | `~/.config/AiUsageDashboard/config.json` |
 | Cache | `~/.local/share/AiUsageDashboard/state.json` |
-| DeepSeek key | Secret Service via `keyring`, then `DEEPSEEK_API_KEY` |
+| DeepSeek key | Display Settings / `deepSeekApiKey`, then `DEEPSEEK_API_KEY` |

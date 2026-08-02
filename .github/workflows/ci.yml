@@ -121,7 +121,7 @@ jobs:
       - name: Lint Rust targets
         run: cargo clippy --locked --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
 
-      - name: Shell-check install scripts
+      - name: Validate install script syntax
         run: |
           sh -n scripts/install-linux.sh
           sh -n scripts/install-macos.sh

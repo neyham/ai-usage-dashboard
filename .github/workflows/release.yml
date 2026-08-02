@@ -142,8 +142,8 @@ jobs:
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
           mkdir -p release
-          deb="$(find src-tauri/target/release/bundle/deb -name '*.deb' | head -n 1)"
-          appimage="$(find src-tauri/target/release/bundle/appimage -name '*.AppImage' | head -n 1)"
+          deb="$(find src-tauri/target/release/bundle/deb -type f -name "*_${version}_*.deb" -print -quit)"
+          appimage="$(find src-tauri/target/release/bundle/appimage -type f -name "*_${version}_*.AppImage" -print -quit)"
           test -n "${deb}" || { echo "deb bundle missing"; exit 1; }
           test -n "${appimage}" || { echo "AppImage bundle missing"; exit 1; }
           cp "${deb}" "release/AI-Usage-Dashboard_${version}_amd64.deb"
@@ -209,7 +209,7 @@ jobs:
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
           mkdir -p release
-          dmg="$(find src-tauri/target/release/bundle/dmg -name '*.dmg' | head -n 1)"
+          dmg="$(find src-tauri/target/release/bundle/dmg -type f -name "*_${version}_*.dmg" -print -quit)"
           test -n "${dmg}" || { echo "dmg bundle missing"; exit 1; }
           arch="$(uname -m)"
           case "${arch}" in

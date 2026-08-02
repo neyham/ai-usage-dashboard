@@ -1,18 +1,18 @@
-//! DeepSeek balance fetcher. The key is resolved at call time from the OS
-//! credential store / env / config and never persisted or logged.
+//! DeepSeek balance fetcher. The key is resolved at call time from config or
+//! the environment and is never logged.
 
-use super::{send_with_one_retry, Resp};
+use super::{require_success, send_with_one_retry, FetchError, Resp, MSG_KEY_MISSING};
 use crate::config::Config;
 use crate::models::DeepSeekService;
 use crate::secrets;
-use anyhow::{anyhow, bail, Context};
+use anyhow::Context;
 use reqwest::Client;
 use serde_json::Value;
 
 const BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
 
-pub async fn fetch(config: &Config, client: &Client) -> anyhow::Result<DeepSeekService> {
-    let key = secrets::deepseek_key(config).ok_or_else(|| anyhow!("DeepSeek API key missing"))?;
+pub async fn fetch(config: &Config, client: &Client) -> Result<DeepSeekService, FetchError> {
+    let key = require_key(secrets::deepseek_key(config))?;
 
     let resp: Resp = send_with_one_retry(|| {
         client
@@ -20,12 +20,17 @@ pub async fn fetch(config: &Config, client: &Client) -> anyhow::Result<DeepSeekS
             .header("Authorization", format!("Bearer {key}"))
             .header("Content-Type", "application/json")
     })
-    .await?;
+    .await
+    .map_err(FetchError::Other)?;
 
-    if !resp.is_success() {
-        bail!("DeepSeek balance HTTP {}", resp.status);
-    }
-    parse_balance(&resp.body)
+    require_success(&resp, "DeepSeek balance")?;
+    parse_balance(&resp.body).map_err(FetchError::Other)
+}
+
+fn require_key(key: Option<String>) -> Result<String, FetchError> {
+    key.ok_or(FetchError::Auth {
+        message: MSG_KEY_MISSING,
+    })
 }
 
 pub(crate) fn parse_balance(body: &str) -> anyhow::Result<DeepSeekService> {
@@ -77,7 +82,8 @@ pub(crate) fn parse_balance(body: &str) -> anyhow::Result<DeepSeekService> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_balance;
+    use super::{parse_balance, require_key};
+    use crate::fetchers::{FetchError, MSG_KEY_MISSING};
 
     #[test]
     fn deepseek_reports_unavailable_balance_without_discarding_amount() {
@@ -102,6 +108,14 @@ mod tests {
             r#"{"is_available":true,"balance_infos":[{"currency":"CNY"}]}"#,
         ] {
             assert!(parse_balance(body).is_err(), "unexpectedly accepted {body}");
+        }
+    }
+
+    #[test]
+    fn deepseek_missing_key_is_key_missing_without_touching_live_stores() {
+        match require_key(None).expect_err("missing key must fail closed") {
+            FetchError::Auth { message } => assert_eq!(message, MSG_KEY_MISSING),
+            other => panic!("expected KEY MISSING auth error, got {other:?}"),
         }
     }
 }

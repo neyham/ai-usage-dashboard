@@ -90,16 +90,9 @@ install_deb() {
 }
 
 install_appimage() {
-  # Prefer arch_tag naming used by release staging; accept deb-style amd64 alias.
+  # Use only the native architecture; never fall back to a foreign binary.
   appimage="AI-Usage-Dashboard_${VERSION}_${arch_tag}.AppImage"
-  if ! curl -fsSL -o "${appimage}" "${base}/${appimage}"; then
-    if [ "${arch_tag}" = "amd64" ]; then
-      return 1
-    fi
-    # Some toolchains label x86_64 AppImages as amd64.
-    appimage="AI-Usage-Dashboard_${VERSION}_amd64.AppImage"
-    curl -fsSL -o "${appimage}" "${base}/${appimage}" || return 1
-  fi
+  curl -fsSL -o "${appimage}" "${base}/${appimage}" || return 1
   verify "${appimage}"
   mkdir -p "${APPIMAGE_DIR}"
   dest="${APPIMAGE_DIR}/ai-usage-dashboard.AppImage"

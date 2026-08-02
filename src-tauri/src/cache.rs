@@ -31,6 +31,8 @@ impl CachedCard {
 pub struct CacheState {
     pub updated_at: Option<DateTime<Utc>>,
     pub claude_cooldown_until: Option<DateTime<Utc>>,
+    /// Provider-specific Retry-After deadlines, persisted across restarts.
+    pub provider_cooldowns: HashMap<String, DateTime<Utc>>,
     pub services: HashMap<String, CachedCard>,
 }
 
@@ -47,7 +49,7 @@ pub fn cache_path() -> PathBuf {
 impl CacheState {
     pub fn load() -> Self {
         match std::fs::read_to_string(cache_path()) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+            Ok(text) => parse_cache_text(&text),
             Err(_) => Self::default(),
         }
     }
@@ -79,5 +81,40 @@ impl CacheState {
             Some(until) if Utc::now() < until => Some(until),
             _ => None,
         }
+    }
+
+    pub fn provider_cooldown_active(&self, key: &str) -> Option<DateTime<Utc>> {
+        self.provider_cooldowns
+            .get(key)
+            .filter(|until| Utc::now() < **until)
+            .cloned()
+    }
+
+    pub fn set_provider_cooldown(&mut self, key: &str, until: DateTime<Utc>) {
+        self.provider_cooldowns.insert(key.to_string(), until);
+    }
+
+    pub fn clear_provider_cooldown(&mut self, key: &str) {
+        self.provider_cooldowns.remove(key);
+    }
+}
+
+fn parse_cache_text(text: &str) -> CacheState {
+    // Windows editors may rewrite state.json with a UTF-8 BOM.
+    serde_json::from_str(text.trim_start_matches('\u{feff}')).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_cache_text;
+
+    #[test]
+    fn utf8_bom_prefixed_cache_keeps_state() {
+        let cache = parse_cache_text(
+            "\u{feff}{\"updatedAt\":\"2099-08-01T00:00:00Z\",\"providerCooldowns\":{\"codex\":\"2099-08-01T01:00:00Z\"}}",
+        );
+
+        assert!(cache.updated_at.is_some());
+        assert!(cache.provider_cooldowns.contains_key("codex"));
     }
 }

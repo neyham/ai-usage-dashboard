@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { EnabledProviders, LaunchMode, SummaryStatus, UsageSummary } from "./types";
+import type {
+  EnabledProviders,
+  LaunchMode,
+  SummaryStatus,
+  UsageSummary,
+  WindowMode,
+} from "./types";
 import { ClockHeader } from "./components/ClockHeader";
 import { ServicePanel } from "./components/ServicePanel";
 import { SystemStrip } from "./components/SystemStrip";
@@ -43,6 +49,25 @@ export default function App() {
   const [judgeDemo, setJudgeDemo] = useState(false);
   const refreshPendingRef = useRef(false);
   const refreshTimerRef = useRef<number | null>(null);
+  const settingsReturnFocusRef = useRef<HTMLElement | null>(null);
+
+  const openSettings = useCallback(() => {
+    const active = document.activeElement;
+    settingsReturnFocusRef.current = active instanceof HTMLElement ? active : null;
+    setSettingsOpen(true);
+  }, []);
+
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false);
+    window.requestAnimationFrame(() => {
+      const previous = settingsReturnFocusRef.current;
+      if (previous?.isConnected) {
+        previous.focus();
+      } else {
+        document.querySelector<HTMLButtonElement>(".tm-settings")?.focus();
+      }
+    });
+  }, []);
 
   const finishRefresh = useCallback(() => {
     refreshPendingRef.current = false;
@@ -153,8 +178,7 @@ export default function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape" && settingsOpen) {
-        event.preventDefault();
-        setSettingsOpen(false);
+        // The dialog owns Escape so it can keep itself mounted while saving.
         return;
       }
       if (event.key === "Escape" && launchMode !== "normal") {
@@ -230,12 +254,38 @@ export default function App() {
   const linkLabel = LINK_LABEL[displayStatus] ?? LINK_LABEL.error;
   const enabledCount = Object.values(summary.enabledProviders).filter(Boolean).length;
 
-  const saveEnabledProviders = useCallback(async (enabledProviders: EnabledProviders) => {
-    const saved = await invoke<EnabledProviders>("save_enabled_providers", {
-      enabledProviders,
-    });
-    setSummary((current) => ({ ...current, enabledProviders: saved }));
-  }, []);
+  const saveSettings = useCallback(
+    async (
+      enabledProviders?: EnabledProviders,
+      nextWindowMode?: WindowMode,
+      deepseekApiKey?: string,
+    ) => {
+      try {
+        const saved = await invoke<{ enabledProviders: EnabledProviders; windowMode: WindowMode }>(
+          "save_display_settings",
+          {
+            enabledProviders: enabledProviders ?? null,
+            windowMode: nextWindowMode ?? null,
+            deepseekApiKey: deepseekApiKey ?? null,
+          },
+        );
+        setSummary((current) => ({ ...current, enabledProviders: saved.enabledProviders }));
+        setLaunchMode(saved.windowMode);
+      } catch (err) {
+        try {
+          const actualMode = await invoke<string>("launch_mode");
+          if (isLaunchMode(actualMode)) setLaunchMode(actualMode);
+        } catch (modeErr) {
+          console.error("launch_mode reconciliation failed", modeErr);
+        }
+        throw err;
+      }
+    },
+    [],
+  );
+
+  const effectiveWindowMode: WindowMode =
+    launchMode === "fullscreen" ? "fullscreen" : "normal";
 
   return (
     <div className={`dashboard mode-${launchMode}`}>
@@ -276,7 +326,7 @@ export default function App() {
           {enabledCount === 0 && (
             <div className="panels-empty" role="status">
               <span>NO PROVIDERS SELECTED</span>
-              <button type="button" onClick={() => setSettingsOpen(true)}>
+              <button type="button" onClick={openSettings}>
                 OPEN SETTINGS
               </button>
             </div>
@@ -289,14 +339,16 @@ export default function App() {
           errorMessage={uiError}
           judgeDemo={judgeDemo}
           onRefresh={refresh}
-          onSettings={launchMode === "screensaver" ? undefined : () => setSettingsOpen(true)}
+          onSettings={launchMode === "screensaver" ? undefined : openSettings}
         />
       </div>
       {settingsOpen && launchMode !== "screensaver" && (
         <ProviderSettings
           value={summary.enabledProviders}
-          onClose={() => setSettingsOpen(false)}
-          onSave={saveEnabledProviders}
+          windowMode={effectiveWindowMode}
+          judgeDemo={judgeDemo}
+          onClose={closeSettings}
+          onSave={saveSettings}
         />
       )}
     </div>

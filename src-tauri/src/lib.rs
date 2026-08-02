@@ -18,11 +18,12 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 const SCREENSAVER_REFRESH_INTERVAL_MINUTES: u64 = 15;
+const MAX_DEEPSEEK_API_KEY_BYTES: usize = 2_048;
 
 pub struct AppState {
     config: Mutex<Config>,
     /// "normal" | "fullscreen" | "screensaver" — drives how the UI exits.
-    mode: String,
+    mode: Mutex<String>,
     judge_demo: bool,
     summary: Mutex<UsageSummary>,
     cache: Mutex<CacheState>,
@@ -96,16 +97,6 @@ impl AppOptions {
         }
         o
     }
-
-    fn mode(&self) -> String {
-        if self.screensaver {
-            "screensaver".into()
-        } else if self.fullscreen {
-            "fullscreen".into()
-        } else {
-            "normal".into()
-        }
-    }
 }
 
 /// Return the latest summary (cached or live). Never errors — keeps the UI fed.
@@ -126,29 +117,8 @@ async fn refresh_now(app: AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Persist the home-screen selection without exposing the rest of config.json.
-#[tauri::command]
-async fn save_enabled_providers(
-    app: AppHandle,
-    enabled_providers: EnabledProviders,
-) -> Result<EnabledProviders, String> {
+async fn publish_enabled_providers(app: &AppHandle, enabled_providers: EnabledProviders) {
     let state = app.state::<AppState>();
-    {
-        let mut current = state.config.lock().await;
-        if current.load_error {
-            return Err("CONFIG FILE IS INVALID".into());
-        }
-        let mut next = current.clone();
-        next.enabled_providers = enabled_providers;
-        if state.judge_demo {
-            config::save_judge_demo_selection(enabled_providers)
-                .map_err(|_| "DEMO SETTINGS SAVE FAILED".to_string())?;
-        } else {
-            config::save(&next).map_err(|_| "CONFIG SAVE FAILED".to_string())?;
-        }
-        *current = next;
-    }
-
     let summary = if state.judge_demo {
         mock::summary("normal", enabled_providers)
             .expect("judge demo mock mode is always available")
@@ -159,14 +129,12 @@ async fn save_enabled_providers(
     *state.summary.lock().await = summary.clone();
     let _ = app.emit("summary", &summary);
 
-    if queue_refresh(&app).await {
+    if queue_refresh(app).await {
         let handle = app.clone();
         tauri::async_runtime::spawn(async move {
             run_refresh(&handle).await;
         });
     }
-
-    Ok(enabled_providers)
 }
 
 /// Quit (Esc from fullscreen / screensaver, or input in screensaver mode).
@@ -177,8 +145,198 @@ fn exit_app(app: AppHandle) {
 
 /// Let the renderer know how it was launched so it can wire exit-on-input.
 #[tauri::command]
-fn launch_mode(state: State<'_, AppState>) -> String {
-    state.mode.clone()
+async fn launch_mode(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.mode.lock().await.clone())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DisplaySettings {
+    enabled_providers: EnabledProviders,
+    window_mode: String,
+}
+
+/// Atomically save changed display settings. Omitted fields are left untouched,
+/// so a provider-only save cannot persist a temporary CLI fullscreen override.
+#[tauri::command]
+async fn save_display_settings(
+    app: AppHandle,
+    enabled_providers: Option<EnabledProviders>,
+    window_mode: Option<String>,
+    deepseek_api_key: Option<String>,
+) -> Result<DisplaySettings, String> {
+    let requested_window = match window_mode {
+        Some(mode) => {
+            Some(normalize_window_mode(&mode).ok_or_else(|| "INVALID WINDOW MODE".to_string())?)
+        }
+        None => None,
+    };
+    let requested_deepseek_key = normalize_deepseek_api_key(deepseek_api_key)?;
+    let state = app.state::<AppState>();
+    if state.judge_demo && requested_deepseek_key.is_some() {
+        return Err("CREDENTIAL STORAGE DISABLED IN DEMO".into());
+    }
+    let mut current_mode = state.mode.lock().await;
+    if requested_window.is_some() && current_mode.as_str() == "screensaver" {
+        return Err("SCREENSAVER MODE IS FIXED AT LAUNCH".into());
+    }
+
+    let previous_mode = current_mode.clone();
+    let mut current_config = state.config.lock().await;
+    if current_config.load_error {
+        return Err("CONFIG FILE IS INVALID".into());
+    }
+
+    let previous_enabled = current_config.enabled_providers;
+    let next_enabled = enabled_providers.unwrap_or(previous_enabled);
+    let providers_changed = next_enabled != previous_enabled;
+    let deepseek_key_changed = requested_deepseek_key
+        .as_ref()
+        .is_some_and(|key| key != &current_config.deep_seek_api_key);
+    let mut next_config = current_config.clone();
+    next_config.enabled_providers = next_enabled;
+    if let Some(key) = requested_deepseek_key {
+        next_config.deep_seek_api_key = key;
+    }
+    if let Some(requested) = requested_window {
+        next_config.window_mode = requested.to_string();
+    }
+
+    let chrome_changed = requested_window.is_some_and(|requested| requested != previous_mode);
+    if let Some(requested) = requested_window.filter(|_| chrome_changed) {
+        apply_window_chrome(&app, requested == "fullscreen", false)?;
+        *current_mode = requested.to_string();
+    }
+
+    let save_result = if state.judge_demo {
+        if providers_changed {
+            config::save_judge_demo_selection(next_enabled)
+        } else {
+            Ok(())
+        }
+    } else if providers_changed || requested_window.is_some() || deepseek_key_changed {
+        config::save(&next_config)
+    } else {
+        Ok(())
+    };
+
+    if save_result.is_err() {
+        let rollback_failed = chrome_changed
+            && apply_window_chrome(&app, previous_mode == "fullscreen", false).is_err();
+        *current_mode = mode_after_failed_save(&previous_mode, requested_window, rollback_failed);
+        let message = if state.judge_demo {
+            "DEMO SETTINGS SAVE FAILED"
+        } else {
+            "CONFIG SAVE FAILED"
+        };
+        return Err(if rollback_failed {
+            format!("{message}; WINDOW ROLLBACK FAILED")
+        } else {
+            message.to_string()
+        });
+    }
+
+    *current_config = next_config;
+    if let Some(requested) = requested_window {
+        *current_mode = requested.to_string();
+    }
+    let saved = DisplaySettings {
+        enabled_providers: current_config.enabled_providers,
+        window_mode: current_mode.clone(),
+    };
+    drop(current_config);
+    drop(current_mode);
+
+    if providers_changed {
+        publish_enabled_providers(&app, saved.enabled_providers).await;
+    } else if deepseek_key_changed && queue_refresh(&app).await {
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            run_refresh(&handle).await;
+        });
+    }
+
+    Ok(saved)
+}
+
+/// Blank input means "leave the existing key unchanged". A non-blank value is
+/// trimmed and bounded before it can enter Config; no error includes the key.
+fn normalize_deepseek_api_key(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > MAX_DEEPSEEK_API_KEY_BYTES {
+        return Err("DEEPSEEK KEY IS TOO LONG".into());
+    }
+    if value
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err("DEEPSEEK KEY CONTAINS INVALID CHARACTERS".into());
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn mode_after_failed_save(
+    previous_mode: &str,
+    requested_window: Option<&str>,
+    rollback_failed: bool,
+) -> String {
+    if rollback_failed {
+        requested_window.unwrap_or(previous_mode).to_string()
+    } else {
+        previous_mode.to_string()
+    }
+}
+
+fn launch_chrome_failure_is_fatal(screensaver: bool) -> bool {
+    screensaver
+}
+
+fn normalize_window_mode(mode: &str) -> Option<&'static str> {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "normal" | "windowed" | "window" => Some("normal"),
+        "fullscreen" | "full-screen" | "full" => Some("fullscreen"),
+        _ => None,
+    }
+}
+
+/// Apply OS-level window chrome. Shared by startup and settings.
+fn apply_window_chrome(app: &AppHandle, fullscreen: bool, screensaver: bool) -> Result<(), String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "MAIN WINDOW MISSING".to_string())?;
+    win.set_fullscreen(fullscreen)
+        .map_err(|_| "FULLSCREEN TOGGLE FAILED".to_string())?;
+    // Keep the cursor usable in normal/fullscreen so Settings remains clickable;
+    // only screensaver hides it for kiosk-style idle display.
+    let _ = win.set_cursor_visible(!screensaver);
+    if screensaver {
+        let _ = win.set_always_on_top(true);
+    } else {
+        let _ = win.set_always_on_top(false);
+    }
+    let _ = win.set_focus();
+    Ok(())
+}
+
+/// Resolve effective launch mode: CLI screensaver/fullscreen overrides config.
+fn resolve_launch_mode(options: &AppOptions, config_window_mode: &str) -> String {
+    if options.screensaver {
+        return "screensaver".into();
+    }
+    if options.fullscreen {
+        return "fullscreen".into();
+    }
+    if normalize_window_mode(config_window_mode) == Some("fullscreen") {
+        "fullscreen".into()
+    } else {
+        "normal".into()
+    }
 }
 
 /// True only for the isolated offline synthetic demo launch mode.
@@ -228,13 +386,16 @@ async fn run_refresh(app: &AppHandle) {
         } else if let Some(summary) = mock::summary(&config.mock_mode, config.enabled_providers) {
             summary
         } else {
-            let mut cache = state.cache.lock().await;
-            let s = fetchers::collect_summary(&config, &mut cache).await;
+            // Do not hold the shared cache lock across provider network calls.
+            // Settings can render a last-known snapshot while this refresh runs.
+            let mut working_cache = state.cache.lock().await.clone();
+            let s = fetchers::collect_summary(&config, &mut working_cache).await;
             if config.enabled_providers.count() > 0 {
-                if let Err(err) = cache.save() {
+                if let Err(err) = working_cache.save() {
                     eprintln!("failed to persist dashboard cache: {err}");
                 }
             }
+            *state.cache.lock().await = working_cache;
             s
         };
 
@@ -351,12 +512,14 @@ pub fn run() {
     };
     let interval_minutes =
         effective_refresh_interval_minutes(config.refresh_interval_minutes, options.screensaver);
-    let mode = options.mode();
+    let mode = resolve_launch_mode(&options, &config.window_mode);
+    let start_fullscreen = mode == "fullscreen" || mode == "screensaver";
+    let start_screensaver = mode == "screensaver";
 
     tauri::Builder::default()
         .manage(AppState {
             config: Mutex::new(config),
-            mode,
+            mode: Mutex::new(mode),
             judge_demo: options.judge_demo,
             summary: Mutex::new(initial),
             cache: Mutex::new(cache),
@@ -366,20 +529,23 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_summary,
             refresh_now,
-            save_enabled_providers,
+            save_display_settings,
             exit_app,
             launch_mode,
             judge_demo
         ])
         .setup(move |app| {
-            // Apply fullscreen / screensaver window state.
-            if options.fullscreen {
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.set_fullscreen(true);
-                    let _ = win.set_cursor_visible(false);
-                    let _ = win.set_focus();
-                    if options.screensaver {
-                        let _ = win.set_always_on_top(true);
+            // Apply fullscreen / screensaver window state (CLI or persisted windowMode).
+            if start_fullscreen {
+                let handle = app.handle().clone();
+                if let Err(err) = apply_window_chrome(&handle, true, start_screensaver) {
+                    eprintln!("failed to apply requested launch window mode: {err}");
+                    if launch_chrome_failure_is_fatal(start_screensaver) {
+                        app.handle().exit(1);
+                        return Ok(());
+                    }
+                    if let Ok(mut mode) = app.state::<AppState>().mode.try_lock() {
+                        *mode = "normal".into();
                     }
                 }
             }
@@ -401,7 +567,44 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{effective_refresh_interval_minutes, AppOptions};
+    use super::{
+        effective_refresh_interval_minutes, launch_chrome_failure_is_fatal, mode_after_failed_save,
+        normalize_deepseek_api_key, normalize_window_mode, resolve_launch_mode, AppOptions,
+    };
+
+    #[test]
+    fn deepseek_key_input_is_optional_trimmed_and_bounded() {
+        assert_eq!(normalize_deepseek_api_key(None).unwrap(), None);
+        assert_eq!(
+            normalize_deepseek_api_key(Some("   ".into())).unwrap(),
+            None
+        );
+        assert_eq!(
+            normalize_deepseek_api_key(Some("  sk-test  ".into())).unwrap(),
+            Some("sk-test".into())
+        );
+        assert!(normalize_deepseek_api_key(Some("sk bad".into())).is_err());
+        assert!(normalize_deepseek_api_key(Some("sk\0bad".into())).is_err());
+        assert!(normalize_deepseek_api_key(Some("x".repeat(2_049))).is_err());
+    }
+
+    #[test]
+    fn failed_settings_save_tracks_the_actual_window_after_rollback() {
+        assert_eq!(
+            mode_after_failed_save("normal", Some("fullscreen"), false),
+            "normal"
+        );
+        assert_eq!(
+            mode_after_failed_save("normal", Some("fullscreen"), true),
+            "fullscreen"
+        );
+    }
+
+    #[test]
+    fn screensaver_chrome_failure_is_fatal() {
+        assert!(launch_chrome_failure_is_fatal(true));
+        assert!(!launch_chrome_failure_is_fatal(false));
+    }
 
     #[test]
     fn screensaver_uses_a_quieter_refresh_floor() {
@@ -415,6 +618,30 @@ mod tests {
         let options = AppOptions::parse(["--judge-demo".to_string()].into_iter());
 
         assert!(options.judge_demo);
-        assert_eq!(options.mode(), "normal");
+        assert_eq!(resolve_launch_mode(&options, "normal"), "normal");
+    }
+
+    #[test]
+    fn config_window_mode_applies_when_no_cli_override() {
+        let options = AppOptions::default();
+        assert_eq!(resolve_launch_mode(&options, "fullscreen"), "fullscreen");
+        assert_eq!(resolve_launch_mode(&options, "normal"), "normal");
+        assert_eq!(resolve_launch_mode(&options, "junk"), "normal");
+    }
+
+    #[test]
+    fn cli_fullscreen_and_screensaver_override_config() {
+        let fullscreen = AppOptions::parse(["--fullscreen".to_string()].into_iter());
+        assert_eq!(resolve_launch_mode(&fullscreen, "normal"), "fullscreen");
+
+        let saver = AppOptions::parse(["/s".to_string()].into_iter());
+        assert_eq!(resolve_launch_mode(&saver, "normal"), "screensaver");
+    }
+
+    #[test]
+    fn window_mode_aliases_normalize() {
+        assert_eq!(normalize_window_mode("windowed"), Some("normal"));
+        assert_eq!(normalize_window_mode("FULLSCREEN"), Some("fullscreen"));
+        assert_eq!(normalize_window_mode("kiosk"), None);
     }
 }

@@ -146,6 +146,34 @@ fn cached_service<T: DeserializeOwned + Default>(
 const MSG_RATE_LIMITED: &str = "RATE LIMITED";
 const MSG_FAILED: &str = "API ERROR";
 const MSG_CACHED: &str = "LAST KNOWN";
+pub(crate) const MSG_KEY_MISSING: &str = "KEY MISSING";
+pub(crate) const MSG_LOGIN_REQUIRED: &str = "LOGIN REQUIRED";
+pub(crate) const MSG_AUTH_EXPIRED: &str = "AUTH EXPIRED";
+pub(crate) const MSG_AUTH_FORBIDDEN: &str = "AUTH FORBIDDEN";
+pub(crate) const MSG_CREDENTIAL_ERROR: &str = "CREDENTIAL ERROR";
+
+pub(crate) fn require_success(resp: &Resp, label: &str) -> Result<(), FetchError> {
+    match resp.status {
+        200..=299 => Ok(()),
+        401 => Err(FetchError::Auth {
+            message: MSG_AUTH_EXPIRED,
+        }),
+        403 => Err(FetchError::Auth {
+            message: MSG_AUTH_FORBIDDEN,
+        }),
+        429 => Err(FetchError::RateLimited {
+            retry_after: resp.retry_after,
+        }),
+        status => Err(FetchError::Other(anyhow::anyhow!("{label} HTTP {status}"))),
+    }
+}
+
+fn retry_deadline(retry_after: Option<u64>) -> DateTime<Utc> {
+    let seconds = retry_after
+        .map(|value| value.saturating_add(30).min(MAX_RETRY_AFTER_SECONDS))
+        .unwrap_or(1800);
+    Utc::now() + Duration::seconds(seconds as i64)
+}
 
 /// Build a summary purely from cached data, used to seed the UI on startup so
 /// it never begins blank while the first live refresh is in flight.
@@ -271,10 +299,7 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
                 (svc, false)
             }
             Err(FetchError::RateLimited { retry_after }) => {
-                let secs = retry_after
-                    .map(|s| s.saturating_add(30).min(MAX_RETRY_AFTER_SECONDS))
-                    .unwrap_or(1800);
-                let until = Utc::now() + Duration::seconds(secs as i64);
+                let until = retry_deadline(retry_after);
                 cache.claude_cooldown_until = Some(until);
                 (
                     cached_service(cache, "claude", MSG_RATE_LIMITED, Some(fmt_local(until))),
@@ -289,39 +314,75 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
     };
 
     // ----- Codex -----
-    let (codex, codex_cached): (CodexService, bool) = if enabled.codex {
+    let (codex, codex_cached): (CodexService, bool) = if !enabled.codex {
+        (CodexService::default(), false)
+    } else if cache.provider_cooldown_active("codex").is_some() {
+        (cached_service(cache, "codex", MSG_RATE_LIMITED, None), true)
+    } else {
+        cache.clear_provider_cooldown("codex");
         match codex::fetch(config, &client).await {
             Ok(svc) => {
+                cache.clear_provider_cooldown("codex");
                 if let Ok(v) = serde_json::to_value(&svc) {
                     cache.put("codex", v);
                 }
                 (svc, false)
             }
-            Err(_) => (cached_service(cache, "codex", MSG_FAILED, None), true),
+            Err(FetchError::Auth { message }) => {
+                (cached_service(cache, "codex", message, None), true)
+            }
+            Err(FetchError::RateLimited { retry_after }) => {
+                cache.set_provider_cooldown("codex", retry_deadline(retry_after));
+                (cached_service(cache, "codex", MSG_RATE_LIMITED, None), true)
+            }
+            Err(FetchError::Other(_)) => (cached_service(cache, "codex", MSG_FAILED, None), true),
         }
-    } else {
-        (CodexService::default(), false)
     };
 
     // ----- DeepSeek -----
-    let (deepseek, deepseek_cached): (DeepSeekService, bool) = if enabled.deepseek {
+    let (deepseek, deepseek_cached): (DeepSeekService, bool) = if !enabled.deepseek {
+        (DeepSeekService::default(), false)
+    } else if cache.provider_cooldown_active("deepseek").is_some() {
+        (
+            cached_service(cache, "deepseek", MSG_RATE_LIMITED, None),
+            true,
+        )
+    } else {
+        cache.clear_provider_cooldown("deepseek");
         match deepseek::fetch(config, &client).await {
             Ok(svc) => {
+                cache.clear_provider_cooldown("deepseek");
                 if let Ok(v) = serde_json::to_value(&svc) {
                     cache.put("deepseek", v);
                 }
                 (svc, false)
             }
-            Err(_) => (cached_service(cache, "deepseek", MSG_FAILED, None), true),
+            Err(FetchError::Auth { message }) => {
+                (cached_service(cache, "deepseek", message, None), true)
+            }
+            Err(FetchError::RateLimited { retry_after }) => {
+                cache.set_provider_cooldown("deepseek", retry_deadline(retry_after));
+                (
+                    cached_service(cache, "deepseek", MSG_RATE_LIMITED, None),
+                    true,
+                )
+            }
+            Err(FetchError::Other(_)) => {
+                (cached_service(cache, "deepseek", MSG_FAILED, None), true)
+            }
         }
-    } else {
-        (DeepSeekService::default(), false)
     };
 
     // ----- Grok Build -----
-    let (grok, grok_cached): (GrokService, bool) = if enabled.grok {
+    let (grok, grok_cached): (GrokService, bool) = if !enabled.grok {
+        (GrokService::default(), false)
+    } else if cache.provider_cooldown_active("grok").is_some() {
+        (cached_service(cache, "grok", MSG_RATE_LIMITED, None), true)
+    } else {
+        cache.clear_provider_cooldown("grok");
         match grok::fetch(config, &client).await {
             Ok(svc) => {
+                cache.clear_provider_cooldown("grok");
                 if let Ok(v) = serde_json::to_value(&svc) {
                     cache.put("grok", v);
                 }
@@ -330,13 +391,12 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
             Err(FetchError::Auth { message }) => {
                 (cached_service(cache, "grok", message, None), true)
             }
-            Err(FetchError::RateLimited { .. }) => {
+            Err(FetchError::RateLimited { retry_after }) => {
+                cache.set_provider_cooldown("grok", retry_deadline(retry_after));
                 (cached_service(cache, "grok", MSG_RATE_LIMITED, None), true)
             }
             Err(FetchError::Other(_)) => (cached_service(cache, "grok", MSG_FAILED, None), true),
         }
-    } else {
-        (GrokService::default(), false)
     };
 
     cache.updated_at = Some(Utc::now());
@@ -401,7 +461,10 @@ pub(crate) fn assemble(
 
 #[cfg(test)]
 mod tests {
-    use super::{assemble, parse_retry_after_at};
+    use super::{
+        assemble, parse_retry_after_at, require_success, FetchError, Resp, MSG_AUTH_EXPIRED,
+        MSG_AUTH_FORBIDDEN,
+    };
     use crate::cache::CacheState;
     use crate::config::Config;
     use crate::models::{
@@ -592,5 +655,38 @@ mod tests {
             parse_retry_after_at("Fri, 31 Dec 9999 23:59:59 GMT", now),
             Some(86_400)
         );
+    }
+
+    #[test]
+    fn shared_http_classifier_preserves_auth_and_retry_after() {
+        let response = |status, retry_after| Resp {
+            status,
+            retry_after,
+            body: String::new(),
+        };
+
+        assert!(require_success(&response(204, None), "test").is_ok());
+        assert!(matches!(
+            require_success(&response(401, None), "test"),
+            Err(FetchError::Auth {
+                message: MSG_AUTH_EXPIRED
+            })
+        ));
+        assert!(matches!(
+            require_success(&response(403, None), "test"),
+            Err(FetchError::Auth {
+                message: MSG_AUTH_FORBIDDEN
+            })
+        ));
+        assert!(matches!(
+            require_success(&response(429, Some(91)), "test"),
+            Err(FetchError::RateLimited {
+                retry_after: Some(91)
+            })
+        ));
+        assert!(matches!(
+            require_success(&response(500, None), "test"),
+            Err(FetchError::Other(_))
+        ));
     }
 }

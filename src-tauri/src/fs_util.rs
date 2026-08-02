@@ -128,6 +128,33 @@ fn unlock_file(file: &fs::File) -> io::Result<()> {
 
 /// Replace a file without exposing a partially-written destination.
 pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
+    atomic_write_with_privacy(path, contents, false)
+}
+
+/// Atomically replace a file that may contain credentials. On Unix the new
+/// inode is created mode 0600 before it ever becomes visible at `path`.
+pub fn atomic_write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
+    atomic_write_with_privacy(path, contents, true)
+}
+
+/// Tighten an existing credential-bearing file during upgrades as well as on
+/// writes. Windows relies on the per-user profile ACL inherited by the file.
+pub fn restrict_file_to_owner(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+fn atomic_write_with_privacy(path: &Path, contents: &[u8], private: bool) -> io::Result<()> {
+    #[cfg(not(unix))]
+    let _ = private;
     let resolved_path;
     let path = if fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
         resolved_path = fs::canonicalize(path)?;
@@ -149,6 +176,14 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
             .create_new(true)
             .open(&temp_path)?;
 
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        } else if let Some(permissions) = existing_permissions {
+            file.set_permissions(permissions)?;
+        }
+        #[cfg(not(unix))]
         if let Some(permissions) = existing_permissions {
             file.set_permissions(permissions)?;
         }
@@ -216,6 +251,8 @@ fn temp_path(path: &Path, parent: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::atomic_write;
+    #[cfg(unix)]
+    use super::{atomic_write_private, restrict_file_to_owner};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -252,6 +289,47 @@ mod tests {
             b"preserved"
         );
         fs::remove_dir_all(path.parent().expect("test directory")).expect("remove test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_atomic_write_restricts_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = test_path("private.json");
+        atomic_write_private(&path, b"secret").expect("write private file");
+
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("private file metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_private_file_is_restricted_during_upgrade() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = test_path("legacy-config.json");
+        fs::create_dir_all(path.parent().expect("test directory")).expect("create test directory");
+        fs::write(&path, b"legacy secret").expect("create legacy config");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o664))
+            .expect("widen legacy permissions");
+
+        restrict_file_to_owner(&path).expect("restrict legacy config");
+
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("legacy config metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 
     #[cfg(unix)]

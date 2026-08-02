@@ -31,7 +31,7 @@ one provider does not erase last-known-good data for the other providers.
 
 ## Project status
 
-Version `0.4.1` is the current multi-platform release: Windows (WinGet + NSIS),
+Version `0.5.0` is the current multi-platform release: Windows (WinGet + NSIS),
 Linux (`.deb` / AppImage), and macOS (`.dmg`), with one-line install scripts
 that verify SHA-256 checksums. It includes adaptive usage windows, Codex banked
 resets, optional Grok Build tracking, zero-to-four provider layouts, offline
@@ -51,11 +51,12 @@ receives a sanitized summary containing percentages, reset times, plan labels,
 balances, timestamps, and status text.
 
 - No project server, analytics, or telemetry is used.
-- Provider tokens, API keys, credential files, and raw API error bodies are not
-  sent to the renderer.
-- DeepSeek keys are never written to the cache. The OS credential store is
-  preferred (Windows Credential Manager, macOS Keychain, Linux Secret Service),
-  then environment variables, then plaintext configuration.
+- Stored provider tokens, API keys, credential files, and raw API error bodies
+  are never returned to the renderer. A DeepSeek key typed into Display Settings
+  is sent once over local Tauri IPC and the password field is cleared after save.
+- DeepSeek keys are never written to the usage cache. The settings field stores
+  the key directly in local `config.json`; Mac/Linux config writes use mode 0600.
+  `DEEPSEEK_API_KEY` remains a cross-platform fallback.
 - The dashboard only checks whether a Grok refresh token is non-empty. It never
   extracts that value into app state, sends it, logs it, or passes it to a
   child process, and it does not write Grok credentials itself. When an access
@@ -91,8 +92,8 @@ curl -fsSL https://github.com/neyham/ai-usage-dashboard/releases/latest/download
 curl -fsSL https://github.com/neyham/ai-usage-dashboard/releases/latest/download/install-linux.sh | sh
 ```
 
-Pin a version with `VERSION=0.4.1` before the install script, for example
-`VERSION=0.4.1 sh install-linux.sh`.
+Pin a version with `VERSION=0.5.0` before the install script, for example
+`VERSION=0.5.0 sh install-linux.sh`.
 
 ### Windows (WinGet and direct installer)
 
@@ -105,10 +106,13 @@ winget source update
 winget show --id neyham.AIUsageDashboard --exact --source winget
 ```
 
-The latest public release is `v0.4.1`:
+The latest public release is `v0.5.0`:
 
-- [AI Usage Dashboard v0.4.1 NSIS installer](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.4.1/AI-Usage-Dashboard_0.4.1_x64-setup.exe)
-- [AI Usage Dashboard v0.4.1 SHA-256 checksum](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.4.1/AI-Usage-Dashboard_0.4.1_SHA256SUMS.txt)
+- [AI Usage Dashboard v0.5.0 NSIS installer](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.5.0/AI-Usage-Dashboard_0.5.0_x64-setup.exe)
+- [AI Usage Dashboard v0.5.0 Linux `.deb`](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.5.0/AI-Usage-Dashboard_0.5.0_amd64.deb)
+- [AI Usage Dashboard v0.5.0 Linux AppImage](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.5.0/AI-Usage-Dashboard_0.5.0_amd64.AppImage)
+- [AI Usage Dashboard v0.5.0 macOS `.dmg` assets](https://github.com/neyham/ai-usage-dashboard/releases/tag/v0.5.0)
+- [AI Usage Dashboard v0.5.0 SHA-256 checksums](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.5.0/AI-Usage-Dashboard_0.5.0_SHA256SUMS.txt)
 
 Installers are unsigned, so Windows SmartScreen may require confirmation. After
 installation, open **AI Usage Dashboard (Judge Demo)** from the Start menu for
@@ -135,7 +139,7 @@ an extra isolation boundary:
 - provider selections persist separately in the platform config directory
   (`judge-demo.json`) and cannot alter live settings;
 - settings can exercise every layout supported by that build: zero through
-  four panels in `v0.4.0`.
+  four panels in `v0.5.0`.
 
 Use it to exercise the UI, selection workflow, parser-to-renderer boundary,
 status presentation, and responsive layouts without touching live accounts. It
@@ -169,7 +173,7 @@ Command-line fallbacks:
 
 **Windows:** `x86_64-pc-windows-msvc` toolchain and Visual Studio Build Tools with
 **Desktop development with C++**. Build from PowerShell for Windows integration
-(Credential Manager, Task Scheduler, screensaver). A WSL build produces a Linux
+(Task Scheduler and screensaver integration). A WSL build produces a Linux
 binary instead.
 
 **Linux (Ubuntu 24.04 example):**
@@ -200,28 +204,39 @@ Outputs land under `src-tauri/target/release/` and
 `src-tauri/target/release/bundle/` (NSIS on Windows, `.deb`/AppImage on Linux,
 `.dmg`/`.app` on macOS).
 
+Do not use a standalone `cargo build` debug executable as a deployment smoke
+test. Debug builds load the Vite `devUrl` (`http://localhost:1420`) and require
+`npm run app:dev` to stay running. Use `npm run app:build` and the release binary
+or bundle when validating embedded production assets.
+
 ## Provider setup
 
-Use the settings button in the bottom toolbar to choose which providers appear
-on the home screen. Disabled providers are excluded from automatic and manual
-refresh cycles, including credential reads and network requests. Changes apply
-immediately and persist in `config.json`.
+Use the settings button in the bottom toolbar to choose the window mode and
+which providers appear on the home screen. Disabled providers are excluded from
+automatic and manual refresh cycles, including credential reads and network
+requests. Only changed fields are submitted; provider and window changes are
+saved together, and a temporary CLI fullscreen override is not persisted by a
+provider-only save. The same dialog accepts a replacement DeepSeek API key;
+leave its password field blank to keep the existing value.
 
 | Provider | Default credential source | Override |
 | --- | --- | --- |
 | Claude | `~/.claude/.credentials.json`, then `credentials.json`; on Windows also the `Ubuntu` WSL home | `claudeCredentialsPath` (`wsl:<distro>:<absolute-path>` on Windows only) |
 | Codex | `~/.codex/auth.json`; on Windows also the `Ubuntu` WSL home | `codexAuthPath` (`wsl:` or `\\wsl.localhost\...` on Windows only) |
-| DeepSeek | OS credential store target `AiUsageDashboard/DeepSeekApiKey`, then `DEEPSEEK_API_KEY` | `deepSeekCredentialTarget` or `deepSeekApiKey` |
+| DeepSeek | `deepSeekApiKey` saved from Display Settings, then `DEEPSEEK_API_KEY` | Enter or replace it in Display Settings |
 | Grok Build | `~/.grok/auth.json`; on Windows also the `Ubuntu` WSL home | `grokCredentialsPath` (`wsl:` or UNC on Windows only) |
 
 Sign in with the official Claude Code, Codex, and Grok Build clients before
 enabling their panels. Grok is disabled by default so an upgrade never starts
 reading a newly introduced credential source without an explicit selection.
 
-**DeepSeek without a plaintext file:** on Windows, create a Generic credential
-in Credential Manager with network address `AiUsageDashboard/DeepSeekApiKey`
-and the API key as the password. On Linux/macOS, store the same
-service/account pair via the platform keyring, or set `DEEPSEEK_API_KEY`.
+The direct settings field stores DeepSeek's key as plaintext in the per-user
+configuration file. The app never pre-fills or returns that value to the UI;
+blank means unchanged. On Mac/Linux, every app config replacement is created
+with mode 0600 before it becomes visible.
+
+If you do not want the key in `config.json`, set `DEEPSEEK_API_KEY` in the app's
+environment instead.
 
 For a Windows WSL distribution other than `Ubuntu`, configure an explicit path
 such as:
@@ -312,7 +327,6 @@ Example:
     "grok": false
   },
   "deepSeekApiKey": "",
-  "deepSeekCredentialTarget": "AiUsageDashboard/DeepSeekApiKey",
   "claudeCredentialsPath": "",
   "claudeCodeRefreshEnabled": false,
   "claudeCodeCommand": "claude",
@@ -320,7 +334,8 @@ Example:
   "claudeCodeRefreshMaxBudgetUsd": 0.03,
   "codexAuthPath": "",
   "grokCredentialsPath": "",
-  "mockMode": ""
+  "mockMode": "",
+  "windowMode": "normal"
 }
 ```
 
@@ -334,8 +349,9 @@ clamped to safe bounds:
 | `claudeCodeRefreshTimeoutSeconds` | 5 to 120 seconds |
 | `claudeCodeRefreshMaxBudgetUsd` | USD 0.001 to USD 0.10 |
 
-Avoid `deepSeekApiKey` unless no safer storage option is available; it stores
-the key as plaintext in `config.json`.
+`deepSeekApiKey` is plaintext in `config.json`. Treat that per-user file as a
+secret and do not sync or commit it. The settings UI never displays the saved
+value again.
 
 ## Refresh and cache behavior
 
@@ -354,6 +370,9 @@ the key as plaintext in `config.json`.
   tokens can rotate.
 - Claude HTTP 429 responses honor `Retry-After` plus a 30-second buffer. If no
   usable value is returned, the cooldown defaults to 30 minutes.
+- Codex, DeepSeek, and Grok HTTP 429 responses use the same bounded cooldown and
+  persist it in `state.json`, preventing manual refreshes from bypassing the
+  provider's `Retry-After` deadline.
 - A successful response is cached per provider. Cached data older than six
   hours is marked as possibly stale.
 
@@ -364,6 +383,14 @@ the key as plaintext in `config.json`.
 unavailable, rate limited, unauthenticated, or reporting a non-nominal balance.
 `SERVICE FAILURE` means every enabled check failed or only fallback data was
 available. With no providers selected, the dashboard remains in standby.
+
+Panel status text distinguishes setup and auth from generic failures when
+possible: DeepSeek uses `KEY MISSING` / `AUTH EXPIRED` / `AUTH FORBIDDEN`
+instead of a blanket `API ERROR` when the key is absent or rejected; Codex and
+Claude use `LOGIN REQUIRED` / `AUTH EXPIRED` (and related auth statuses), while
+a malformed or unreadable Codex credential file is `CREDENTIAL ERROR`; Grok
+keeps `GROK SESSION EXPIRED` for expired sessions. `API ERROR` still means a
+transport, HTTP, or response-parse failure after credentials were available.
 
 If every enabled panel fails:
 
@@ -382,9 +409,14 @@ data; it does not repair authentication.
 
 ## Launch modes
 
+Default chrome follows `windowMode` in `config.json` (`normal` or `fullscreen`).
+Change it from **Display Settings** in the app (gear icon), or by editing the
+config file and restarting. CLI flags still override the saved preference for
+that process.
+
 | Argument | Behavior |
 | --- | --- |
-| none | Normal resizable window |
+| none | Uses saved `windowMode` (`normal` by default) |
 | `--fullscreen` | Borderless fullscreen; `Esc` exits |
 | `--judge-demo` | Offline synthetic demo; no normal config, credential, cache, or provider access |
 | `/s` or `-s` | Fullscreen, always on top, and exits on real input after a short arming delay |
@@ -428,7 +460,9 @@ The UI suite exercises healthy, rate-limited, partial-failure, and
 insufficient-balance states across seven viewports, including Surface 200%
 landscape, portrait, and half-Snap layouts. It also checks overflow, touch
 targets, refresh state, keyboard behavior, screensaver input exit, offline demo
-disclosure, and zero/one/two/three/four-panel selection layouts.
+disclosure, zero/one/two/three/four-panel selection layouts, transactional
+settings failures, CLI fullscreen isolation, modal focus behavior, and auth-chip
+mapping.
 
 Set `mockMode` to `normal`, `claude429`, or `failures` to exercise the embedded
 provider fixtures without network access. An unknown value displays `INVALID
