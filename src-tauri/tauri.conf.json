@@ -34,8 +34,8 @@
     "active": true,
     "targets": "all",
     "category": "Utility",
-    "shortDescription": "Local dashboard for Claude, Codex, Grok Build, and DeepSeek usage",
-    "longDescription": "Local-first desktop dashboard for viewing Claude Code, Codex, Grok Build, and DeepSeek usage. Credentials stay on the machine; the renderer only receives sanitized summaries.",
+    "shortDescription": "Cross-platform quota cockpit for AI coding tools",
+    "longDescription": "Local-first desktop dashboard for Claude Code, Codex, and Grok Build usage windows plus DeepSeek API balance. Credentials stay in the native backend; the renderer only receives sanitized summaries.",
     "resources": {
       "../LICENSE": "LICENSE",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"

@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.5.0",
   "license": "MIT",
-  "description": "Local desktop dashboard for Codex, Claude, Grok Build, and DeepSeek usage",
+  "description": "Local, cross-platform quota cockpit for Claude Code, Codex, Grok Build, and DeepSeek API balance",
   "type": "module",
   "repository": {
     "type": "git",

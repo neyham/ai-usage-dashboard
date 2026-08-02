@@ -1,96 +1,103 @@
 # AI Usage Dashboard
 
+[![Latest release](https://img.shields.io/github/v/release/neyham/ai-usage-dashboard)](https://github.com/neyham/ai-usage-dashboard/releases/latest)
 [![CI](https://github.com/neyham/ai-usage-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/neyham/ai-usage-dashboard/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/neyham/ai-usage-dashboard)](LICENSE)
 
-A local-first desktop dashboard for viewing Claude Code, Codex, and Grok Build
-usage alongside a DeepSeek API balance. Built with Tauri, Rust, React, and
-TypeScript for Windows, Linux, and macOS. Windows also supports scheduled idle
-launch and a screensaver mode.
+[简体中文](docs/README.zh-CN.md)
 
-![AI Usage Dashboard showing synthetic mock data](docs/assets/dashboard.png)
+**Know your coding-agent limits before they interrupt your session.**
 
-> The screenshot uses synthetic test data. It contains no account information or
-> provider credentials.
+See Claude Code, Codex, and Grok Build usage windows, reset times, and service
+health—plus your DeepSeek API balance—in one local desktop view.
 
-## What it shows
+**Windows · macOS · Linux · No dashboard account · No analytics or telemetry**
 
-- Claude utilization for the available session, weekly, or monthly extra-usage
-  window, plus reset times, cooldowns, and cache state.
-- Codex utilization for the available rate-limit windows, reset times, plan
-  label, and banked-reset count with the earliest known expiry.
-- Grok Build utilization for the server-reported credit period and reset time,
-  subscription tier, and optional monthly billing allowance.
-- DeepSeek API balance and insufficient-balance state.
-- A combined health state that distinguishes fresh data, partial degradation,
-  total failure, and an in-progress refresh.
-- Normal window and borderless fullscreen on all platforms; scheduled idle and
-  screensaver launch modes on Windows.
+![Four-panel AI Usage Dashboard showing synthetic Codex, Claude Code, DeepSeek, and Grok Build data](docs/assets/dashboard-v0.5.png)
 
-Each provider is checked independently. A missing credential or an outage for
-one provider does not erase last-known-good data for the other providers.
+> Production UI rendered with bundled synthetic fixtures. No account information
+> or provider credentials are shown.
 
-## Project status
-
-Version `0.5.0` is the current multi-platform release: Windows (WinGet + NSIS),
-Linux (`.deb` / AppImage), and macOS (`.dmg`), with one-line install scripts
-that verify SHA-256 checksums. It includes adaptive usage windows, Codex banked
-resets, optional Grok Build tracking, zero-to-four provider layouts, offline
-demo mode, and Windows WSL credential discovery for Claude, Codex, and Grok.
-Published installers are not code-signed. Screensaver and scheduled-idle
-helpers remain Windows-only.
-
-This project reads credential formats and usage endpoints used by provider CLI
-tools. Some of those interfaces are undocumented and can change without notice.
-The project is not affiliated with, endorsed by, or supported by Anthropic,
-OpenAI, xAI, or DeepSeek.
-
-## Privacy and security
-
-The Rust backend owns credentials and network requests. The React renderer only
-receives a sanitized summary containing percentages, reset times, plan labels,
-balances, timestamps, and status text.
-
-- No project server, analytics, or telemetry is used.
-- Stored provider tokens, API keys, credential files, and raw API error bodies
-  are never returned to the renderer. A DeepSeek key typed into Display Settings
-  is sent once over local Tauri IPC and the password field is cleared after save.
-- DeepSeek keys are never written to the usage cache. The settings field stores
-  the key directly in local `config.json`; Mac/Linux config writes use mode 0600.
-  `DEEPSEEK_API_KEY` remains a cross-platform fallback.
-- The dashboard only checks whether a Grok refresh token is non-empty. It never
-  extracts that value into app state, sends it, logs it, or passes it to a
-  child process, and it does not write Grok credentials itself. When an access
-  token expires, it can run the official Grok CLI's non-interactive
-  model-discovery command; that CLI owns any update to its `auth.json`.
-- Sanitized usage cache is stored under the platform data directory
-  (`%LOCALAPPDATA%\AiUsageDashboard\state.json` on Windows,
-  `~/.local/share/AiUsageDashboard/state.json` on Linux, Application Support on
-  macOS). It can still contain private account information and should be
-  treated as sensitive.
-- Malformed configuration and invalid mock modes fail closed and do not contact
-  live provider services.
-
-See [SECURITY.md](SECURITY.md) before reporting a vulnerability or suspected
-credential exposure.
+AI Usage Dashboard is a current-status quota cockpit for individual developers,
+not a historical cost analyzer or team FinOps service.
 
 ## Install
 
-One-line installs:
+Download installers and SHA-256 checksums from the
+[latest release](https://github.com/neyham/ai-usage-dashboard/releases/latest),
+or install from the command line.
+
+**Windows**
 
 ```powershell
-# Windows
 winget install --id neyham.AIUsageDashboard --exact --source winget
 ```
 
+**macOS**
+
 ```sh
-# macOS
 curl -fsSL https://github.com/neyham/ai-usage-dashboard/releases/latest/download/install-macos.sh | sh
 ```
 
+**Linux** — Debian/Ubuntu `.deb`, otherwise AppImage
+
 ```sh
-# Linux (Debian/Ubuntu .deb, otherwise AppImage)
 curl -fsSL https://github.com/neyham/ai-usage-dashboard/releases/latest/download/install-linux.sh | sh
 ```
+
+The macOS and Linux scripts verify downloaded assets against the published
+SHA-256 file. Published installers are currently unsigned, so Windows SmartScreen
+or macOS Gatekeeper may require manual confirmation.
+
+## At a glance
+
+| Provider | What the dashboard shows |
+| --- | --- |
+| Claude Code | Available usage windows, reset times, extra usage, cooldown, and cache state |
+| Codex | Usage windows, reset times, plan, banked resets, and earliest expiry |
+| Grok Build | Server-reported credit period, reset time, plan, and optional monthly allowance |
+| DeepSeek | API balance and insufficient-balance state |
+
+- Each provider refreshes independently; one outage does not erase the others.
+- Last-known-good data stays visible and is marked when it may be stale.
+- Choose any zero-to-four provider layout.
+- Use a normal window or borderless fullscreen on every platform.
+- Windows additionally supports WSL credential discovery, scheduled idle launch,
+  and screensaver mode.
+
+## Compatibility and limitations
+
+Version `0.5.0` is the current multi-platform release: Windows (WinGet + NSIS),
+Linux (`.deb` / AppImage), and macOS (`.dmg`). Screensaver and scheduled-idle
+helpers remain Windows-only. Published installers are not code-signed.
+
+This project reads credential formats and usage endpoints used by provider CLI
+tools. Some of those interfaces are undocumented and can change without notice;
+incompatible responses fail closed to sanitized last-known-good data. This
+project is not affiliated with, endorsed by, or supported by Anthropic, OpenAI,
+xAI, or DeepSeek.
+
+## Local by design
+
+The Rust backend owns credentials and live network requests. The React renderer
+only receives sanitized percentages, reset times, plan labels, balances,
+timestamps, and status text.
+
+- There is no project account, project-operated server, analytics, or telemetry.
+- Stored tokens, API keys, credential files, and raw provider responses are
+  never returned to the renderer.
+- A DeepSeek key entered in Settings is stored in the per-user `config.json`,
+  never in the usage cache, and is not shown again by the UI. macOS and Linux
+  config files use mode 0600.
+- Sanitized cached summaries can still contain private account information and
+  should be treated as sensitive.
+- Malformed configuration and invalid mock modes fail closed.
+
+"Local-first" does not mean live mode is offline: enabled providers are queried
+directly from the Rust backend. See the full [security model](SECURITY.md) before
+reporting a vulnerability or suspected credential exposure.
+
+## Additional installation notes
 
 Pin a version with `VERSION=0.5.0` before the install script, for example
 `VERSION=0.5.0 sh install-linux.sh`.
@@ -106,45 +113,32 @@ winget source update
 winget show --id neyham.AIUsageDashboard --exact --source winget
 ```
 
-The latest public release is `v0.5.0`:
-
-- [AI Usage Dashboard v0.5.0 NSIS installer](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.5.0/AI-Usage-Dashboard_0.5.0_x64-setup.exe)
-- [AI Usage Dashboard v0.5.0 Linux `.deb`](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.5.0/AI-Usage-Dashboard_0.5.0_amd64.deb)
-- [AI Usage Dashboard v0.5.0 Linux AppImage](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.5.0/AI-Usage-Dashboard_0.5.0_amd64.AppImage)
-- [AI Usage Dashboard v0.5.0 macOS `.dmg` assets](https://github.com/neyham/ai-usage-dashboard/releases/tag/v0.5.0)
-- [AI Usage Dashboard v0.5.0 SHA-256 checksums](https://github.com/neyham/ai-usage-dashboard/releases/download/v0.5.0/AI-Usage-Dashboard_0.5.0_SHA256SUMS.txt)
-
-Installers are unsigned, so Windows SmartScreen may require confirmation. After
-installation, open **AI Usage Dashboard (Judge Demo)** from the Start menu for
-an offline walkthrough with synthetic data.
+After installation, open **AI Usage Dashboard (Judge Demo)** from the Start
+menu for an offline walkthrough with synthetic data.
 
 ### Linux and macOS
 
-Use the one-line install scripts above (they pull `.deb` / AppImage or `.dmg`
-from GitHub Releases and verify checksums). You can also download assets from
-the [latest release](https://github.com/neyham/ai-usage-dashboard/releases/latest)
-page. Screensaver and scheduled-idle helpers remain Windows-only.
+The one-line scripts pull `.deb` / AppImage or `.dmg` assets from GitHub
+Releases and verify checksums. Direct downloads remain available on the
+[latest release](https://github.com/neyham/ai-usage-dashboard/releases/latest)
+page.
 
-## Offline demo
+## Run without credentials
 
-The offline demo reuses the production mock parsers and embedded fixtures, with
-an extra isolation boundary:
+The isolated offline demo reuses the production parsers and bundled fixtures:
 
 - launch with `--judge-demo` (Start menu shortcut: **AI Usage Dashboard (Judge
   Demo)**); the UI shows `SYNTHETIC DEMO · OFFLINE`;
-- it does not load normal `config.json`, provider credentials, or the normal
-  cache;
-- refresh actions always regenerate embedded fixture data and never construct a
-  live provider request;
+- it does not load normal `config.json`, credentials, cache, or provider
+  endpoints;
+- refresh actions regenerate fixture data without constructing a live request;
 - provider selections persist separately in the platform config directory
   (`judge-demo.json`) and cannot alter live settings;
-- settings can exercise every layout supported by that build: zero through
-  four panels in `v0.5.0`.
+- settings can exercise every zero-to-four panel layout.
 
-Use it to exercise the UI, selection workflow, parser-to-renderer boundary,
-status presentation, and responsive layouts without touching live accounts. It
-does not validate provider authentication, endpoint availability, or live quota
-accuracy.
+It demonstrates the UI and parser-to-renderer boundary without touching live
+accounts. It does not validate authentication, endpoint availability, or live
+quota accuracy.
 
 Command-line fallbacks:
 
