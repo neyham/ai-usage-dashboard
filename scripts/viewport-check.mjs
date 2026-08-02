@@ -152,14 +152,28 @@ async function waitForServer(server) {
 
 async function installTauriMock(page, summary, launchMode = "normal", judgeDemo = false) {
   await page.addInitScript(
-    ({ initialSummary, mode, demo }) => {
+    ({ initialSummary, mode: initialMode, demo }) => {
       let currentSummary = structuredClone(initialSummary);
+      let mode = initialMode;
       let nextCallbackId = 1;
       let nextEventId = 1;
       const callbacks = new Map();
       const listeners = new Map();
       let refreshPending = false;
-      const stats = { exits: 0, refreshes: 0, savedSelections: [], completeRefresh() {} };
+      let saveResolver = null;
+      const stats = {
+        exits: 0,
+        refreshes: 0,
+        savedSelections: [],
+        saveCalls: [],
+        deepseekKeySubmissions: 0,
+        deepseekKeyLengths: [],
+        deferSave: false,
+        failNextSave: false,
+        failNextSaveWithRollbackFailure: false,
+        completeRefresh() {},
+        finishSave() {},
+      };
 
       const unregisterListener = (event, eventId) => {
         const eventListeners = listeners.get(event);
@@ -178,6 +192,10 @@ async function installTauriMock(page, summary, launchMode = "normal", judgeDemo 
         if (!refreshPending) return;
         refreshPending = false;
         emit("summary", structuredClone(currentSummary));
+      };
+      stats.finishSave = () => {
+        saveResolver?.();
+        saveResolver = null;
       };
 
       window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener };
@@ -213,14 +231,49 @@ async function installTauriMock(page, summary, launchMode = "normal", judgeDemo 
             refreshPending = true;
             return true;
           }
-          if (command === "save_enabled_providers") {
-            currentSummary = {
-              ...currentSummary,
-              enabledProviders: structuredClone(args.enabledProviders),
+          if (command === "save_display_settings") {
+            const safeArgs = structuredClone(args);
+            if (safeArgs.deepseekApiKey == null) {
+              delete safeArgs.deepseekApiKey;
+            } else {
+              stats.deepseekKeySubmissions += 1;
+              stats.deepseekKeyLengths.push(String(safeArgs.deepseekApiKey).length);
+              safeArgs.deepseekApiKey = "[REDACTED]";
+            }
+            stats.saveCalls.push(safeArgs);
+            if (stats.deferSave) {
+              await new Promise((resolveSave) => {
+                saveResolver = resolveSave;
+              });
+              stats.deferSave = false;
+            }
+            if (stats.failNextSave) {
+              stats.failNextSave = false;
+              if (stats.failNextSaveWithRollbackFailure && args.windowMode != null) {
+                mode = String(args.windowMode).toLowerCase();
+              }
+              stats.failNextSaveWithRollbackFailure = false;
+              throw new Error("CONFIG SAVE FAILED");
+            }
+            if (args.enabledProviders != null) {
+              currentSummary = {
+                ...currentSummary,
+                enabledProviders: structuredClone(args.enabledProviders),
+              };
+              stats.savedSelections.push(structuredClone(args.enabledProviders));
+              emit("summary", structuredClone(currentSummary));
+            }
+            if (args.windowMode != null) {
+              const requested = String(args.windowMode).toLowerCase();
+              if (requested !== "fullscreen" && requested !== "normal") {
+                throw new Error("INVALID WINDOW MODE");
+              }
+              mode = requested;
+            }
+            return {
+              enabledProviders: structuredClone(currentSummary.enabledProviders),
+              windowMode: mode,
             };
-            stats.savedSelections.push(structuredClone(args.enabledProviders));
-            emit("summary", structuredClone(currentSummary));
-            return structuredClone(args.enabledProviders);
           }
           if (command === "exit_app") {
             stats.exits += 1;
@@ -421,12 +474,28 @@ async function checkProviderSelection(browser) {
   await page.locator(".tm-settings").click();
   await page.locator(".settings-dialog").waitFor();
   assert.equal(await page.locator('.provider-option input[type="checkbox"]:checked').count(), 4);
+  assert.equal(await page.locator('.window-mode-option input[value="normal"]').isChecked(), true);
   await page.screenshot({ path: join(artifactDir, "provider-settings.png"), fullPage: true });
+  await page.locator(".window-mode-option", { hasText: "FULLSCREEN" }).click();
   await page.locator(".provider-option.provider-claude").click();
   await page.locator(".settings-save").click();
   await page.locator(".settings-dialog").waitFor({ state: "detached" });
+  assert.equal(
+    await page.locator(".dashboard").evaluate((el) => el.classList.contains("mode-fullscreen")),
+    true,
+  );
   assert.equal(await page.locator(".panel").count(), 3);
   assert.equal(await page.locator(".panel-claude").count(), 0);
+  // Return to windowed so later layout checks keep an interactive cursor.
+  await page.locator(".tm-settings").click();
+  await page.locator(".settings-dialog").waitFor();
+  await page.locator(".window-mode-option", { hasText: "WINDOWED" }).click();
+  await page.locator(".settings-save").click();
+  await page.locator(".settings-dialog").waitFor({ state: "detached" });
+  assert.equal(
+    await page.locator(".dashboard").evaluate((el) => el.classList.contains("mode-fullscreen")),
+    false,
+  );
   assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
   await page.screenshot({ path: join(artifactDir, "provider-selection-three.png"), fullPage: true });
 
@@ -467,13 +536,19 @@ async function checkProviderSelection(browser) {
 
   const saves = await page.evaluate(() => window.__DASHBOARD_TEST__.savedSelections);
   assert.deepEqual(saves, [
-    { codex: true, claude: false, deepseek: true, grok: true },
+    { codex: true, claude: false, deepseek: true, grok: true }, // fullscreen + uncheck Claude
     { codex: true, claude: false, deepseek: false, grok: true },
     { codex: false, claude: false, deepseek: false, grok: true },
     { codex: false, claude: false, deepseek: false, grok: false },
     { codex: true, claude: false, deepseek: false, grok: false },
     { codex: true, claude: true, deepseek: true, grok: true },
   ]);
+  const saveCalls = await page.evaluate(() => window.__DASHBOARD_TEST__.saveCalls);
+  assert.deepEqual(saveCalls[0], {
+    enabledProviders: { codex: true, claude: false, deepseek: true, grok: true },
+    windowMode: "fullscreen",
+  });
+  assert.deepEqual(saveCalls[1], { enabledProviders: null, windowMode: "normal" });
   await page.screenshot({ path: join(artifactDir, "provider-selection.png"), fullPage: true });
   await context.close();
 }
@@ -534,7 +609,7 @@ async function checkFullscreenThreeColumns(browser) {
       await inspectLayout(
         page,
         { width: viewport.width, height: viewport.height },
-        { expectHiddenCursor: true },
+        { expectHiddenCursor: false },
       ),
       [],
     );
@@ -546,6 +621,261 @@ async function checkFullscreenThreeColumns(browser) {
         fullPage: true,
       });
     }
+    await context.close();
+  }
+}
+
+async function checkSettingsTransactions(browser) {
+  const cliContext = await browser.newContext({ viewport: { width: 1368, height: 912 } });
+  const cliPage = await cliContext.newPage();
+  await installTauriMock(cliPage, summaries.normal, "fullscreen");
+  await cliPage.goto(baseUrl, { waitUntil: "networkidle" });
+  await cliPage.locator(".dashboard.mode-fullscreen").waitFor();
+  assert.equal(
+    await cliPage.locator(".tm-settings").evaluate((element) => getComputedStyle(element).cursor),
+    "pointer",
+  );
+
+  await cliPage.locator(".tm-settings").click();
+  await cliPage.waitForFunction(() =>
+    document.activeElement?.classList.contains("settings-close"),
+  );
+  await cliPage.keyboard.press("Shift+Tab");
+  assert.equal(
+    await cliPage.evaluate(() => document.activeElement?.classList.contains("settings-save")),
+    true,
+  );
+  await cliPage.keyboard.press("Tab");
+  assert.equal(
+    await cliPage.evaluate(() => document.activeElement?.classList.contains("settings-close")),
+    true,
+  );
+  await cliPage.keyboard.press("Escape");
+  await cliPage.locator(".settings-dialog").waitFor({ state: "detached" });
+  await cliPage.waitForFunction(() =>
+    document.activeElement?.classList.contains("tm-settings"),
+  );
+
+  // A provider-only save from a CLI fullscreen launch must not persist that
+  // process-only override as the window preference.
+  await cliPage.locator(".tm-settings").click();
+  await cliPage.locator(".provider-option.provider-claude").click();
+  await cliPage.locator(".settings-save").click();
+  await cliPage.locator(".settings-dialog").waitFor({ state: "detached" });
+  const cliSave = await cliPage.evaluate(() => window.__DASHBOARD_TEST__.saveCalls[0]);
+  assert.deepEqual(cliSave, {
+    enabledProviders: { codex: true, claude: false, deepseek: true, grok: true },
+    windowMode: null,
+  });
+  assert.equal(await cliPage.locator(".dashboard.mode-fullscreen").count(), 1);
+
+  // Explicitly activating the already-selected effective CLI mode lets the
+  // user promote it to the persisted preference without a toggle round-trip.
+  await cliPage.locator(".tm-settings").click();
+  await cliPage
+    .locator('label.window-mode-option:has(input[name="windowMode"][value="fullscreen"])')
+    .click();
+  await cliPage.locator(".settings-save").click();
+  await cliPage.locator(".settings-dialog").waitFor({ state: "detached" });
+  const promotedCliSave = await cliPage.evaluate(() => window.__DASHBOARD_TEST__.saveCalls[1]);
+  assert.deepEqual(promotedCliSave, {
+    enabledProviders: null,
+    windowMode: "fullscreen",
+  });
+  await cliContext.close();
+
+  const failureContext = await browser.newContext({ viewport: { width: 1368, height: 912 } });
+  const failurePage = await failureContext.newPage();
+  await installTauriMock(failurePage, summaries.normal);
+  await failurePage.goto(baseUrl, { waitUntil: "networkidle" });
+  await failurePage.locator(".panel").first().waitFor();
+
+  await failurePage.evaluate(() => {
+    window.__DASHBOARD_TEST__.deferSave = true;
+  });
+  await failurePage.locator(".tm-settings").click();
+  await failurePage.locator(".provider-option.provider-claude").click();
+  await failurePage.locator(".settings-save").click();
+  await failurePage.locator(".settings-save", { hasText: "SAVING" }).waitFor();
+  await failurePage.keyboard.press("Escape");
+  assert.equal(await failurePage.locator(".settings-dialog").count(), 1);
+  await failurePage.evaluate(() => window.__DASHBOARD_TEST__.finishSave());
+  await failurePage.locator(".settings-dialog").waitFor({ state: "detached" });
+  assert.equal(await failurePage.locator(".panel-claude").count(), 0);
+
+  await failurePage.evaluate(() => {
+    window.__DASHBOARD_TEST__.failNextSave = true;
+  });
+  await failurePage.locator(".tm-settings").click();
+  await failurePage.locator(".provider-option.provider-claude").click();
+  await failurePage.locator(".settings-save").click();
+  await failurePage.locator('[role="alert"]', { hasText: "SETTINGS SAVE FAILED" }).waitFor();
+  assert.equal(await failurePage.locator(".settings-dialog").count(), 1);
+  assert.equal(await failurePage.locator(".panel-claude").count(), 0);
+  await failurePage.keyboard.press("Escape");
+  await failurePage.locator(".settings-dialog").waitFor({ state: "detached" });
+
+  await failurePage.evaluate(() => {
+    window.__DASHBOARD_TEST__.failNextSave = true;
+    window.__DASHBOARD_TEST__.failNextSaveWithRollbackFailure = true;
+  });
+  await failurePage.locator(".tm-settings").click();
+  await failurePage
+    .locator('label.window-mode-option:has(input[name="windowMode"][value="fullscreen"])')
+    .click();
+  await failurePage.locator(".settings-save").click();
+  await failurePage.locator('[role="alert"]', { hasText: "SETTINGS SAVE FAILED" }).waitFor();
+  await failurePage.locator(".dashboard.mode-fullscreen").waitFor();
+  assert.equal(await failurePage.locator(".settings-dialog").count(), 1);
+  await failurePage.keyboard.press("Escape");
+  await failurePage.locator(".settings-dialog").waitFor({ state: "detached" });
+  await failurePage.keyboard.press("Escape");
+  await failurePage.waitForFunction(() => window.__DASHBOARD_TEST__.exits === 1);
+  await failureContext.close();
+}
+
+async function checkDeepSeekKeySettings(browser) {
+  const context = await browser.newContext({ viewport: { width: 1368, height: 912 } });
+  const page = await context.newPage();
+  await installTauriMock(page, summaries.normal);
+  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.locator(".panel").first().waitFor();
+
+  await page.locator(".tm-settings").click();
+  const keyInput = page.locator("#deepseek-api-key");
+  assert.equal(await keyInput.getAttribute("type"), "password");
+  assert.equal(await keyInput.getAttribute("autocomplete"), "new-password");
+  assert.equal(await keyInput.inputValue(), "");
+  await page.locator(".settings-save").click();
+  await page.locator(".settings-dialog").waitFor({ state: "detached" });
+  assert.equal(await page.evaluate(() => window.__DASHBOARD_TEST__.saveCalls.length), 0);
+
+  const fixtureKey = "sk-viewport-fixture";
+  await page.locator(".tm-settings").click();
+  await page.locator("#deepseek-api-key").fill(fixtureKey);
+  await page.locator(".settings-save").click();
+  await page.locator(".settings-dialog").waitFor({ state: "detached" });
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      submissions: window.__DASHBOARD_TEST__.deepseekKeySubmissions,
+      lengths: window.__DASHBOARD_TEST__.deepseekKeyLengths,
+      call: window.__DASHBOARD_TEST__.saveCalls[0],
+    })),
+    {
+      submissions: 1,
+      lengths: [fixtureKey.length],
+      call: {
+        enabledProviders: null,
+        windowMode: null,
+        deepseekApiKey: "[REDACTED]",
+      },
+    },
+  );
+  assert.equal((await page.locator("body").innerText()).includes(fixtureKey), false);
+
+  await page.locator(".tm-settings").click();
+  assert.equal(await page.locator("#deepseek-api-key").inputValue(), "");
+  await page.keyboard.press("Escape");
+  await page.locator(".settings-dialog").waitFor({ state: "detached" });
+
+  await page.evaluate(() => {
+    window.__DASHBOARD_TEST__.failNextSave = true;
+  });
+  await page.locator(".tm-settings").click();
+  await page.locator("#deepseek-api-key").fill("sk-retry-fixture");
+  await page.locator(".provider-option.provider-claude").click();
+  await page.locator(".settings-save").click();
+  await page.locator('[role="alert"]', { hasText: "SETTINGS SAVE FAILED" }).waitFor();
+  assert.equal(await page.locator(".settings-dialog").count(), 1);
+  assert.equal(await page.locator(".panel-claude").count(), 1);
+  assert.equal(await page.locator("#deepseek-api-key").inputValue(), "sk-retry-fixture");
+  await page.keyboard.press("Escape");
+  await page.locator(".settings-dialog").waitFor({ state: "detached" });
+  await context.close();
+}
+
+async function checkAuthStatusChips(browser) {
+  const context = await browser.newContext({ viewport: { width: 1368, height: 912 } });
+  const page = await context.newPage();
+  const authSummary = {
+    ...baseSummary,
+    status: "error",
+    services: {
+      codex: { ...baseSummary.services.codex, status: "LOGIN REQUIRED", fromCache: true },
+      claude: { ...baseSummary.services.claude, status: "AUTH EXPIRED", dataMayBeStale: true },
+      deepseek: { ...baseSummary.services.deepseek, status: "KEY MISSING", fromCache: true },
+      grok: { ...baseSummary.services.grok, status: "CREDENTIAL ERROR", dataMayBeStale: true },
+    },
+  };
+  await installTauriMock(page, authSummary);
+  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.locator(".panel").first().waitFor();
+  assert.equal(await page.locator(".chip-auth").count(), 4);
+  assert.deepEqual(await page.locator(".chip-auth .chip-tag").allTextContents(), [
+    "AUTH",
+    "AUTH",
+    "AUTH",
+    "AUTH",
+  ]);
+  await context.close();
+
+  for (const status of [
+    "GROK SESSION EXPIRED",
+    "GROK ACCESS UNAVAILABLE",
+    "TEAM USAGE UNAVAILABLE",
+  ]) {
+    const grokContext = await browser.newContext({ viewport: { width: 1368, height: 912 } });
+    const grokPage = await grokContext.newPage();
+    const grokAuthSummary = {
+      ...baseSummary,
+      status: "error",
+      services: {
+        ...baseSummary.services,
+        grok: {
+          ...baseSummary.services.grok,
+          status,
+          fromCache: true,
+          dataMayBeStale: true,
+        },
+      },
+    };
+    await installTauriMock(grokPage, grokAuthSummary);
+    await grokPage.goto(baseUrl, { waitUntil: "networkidle" });
+    const chip = grokPage.locator(".panel-grok .chip");
+    await chip.waitFor();
+    assert.equal(await chip.getAttribute("class"), "chip chip-auth");
+    assert.equal(await chip.locator(".chip-tag").textContent(), "AUTH");
+    assert.equal(await chip.locator(".chip-text").textContent(), status);
+    assert.equal(await chip.getAttribute("aria-label"), `AUTH: ${status}`);
+    await grokContext.close();
+  }
+}
+
+async function checkRateLimitStatusChips(browser) {
+  for (const fromCache of [false, true]) {
+    const context = await browser.newContext({ viewport: { width: 1368, height: 912 } });
+    const page = await context.newPage();
+    const rateLimitedSummary = {
+      ...baseSummary,
+      status: "error",
+      services: {
+        ...baseSummary.services,
+        codex: {
+          ...baseSummary.services.codex,
+          status: "RATE LIMITED",
+          fromCache,
+          dataMayBeStale: true,
+        },
+      },
+    };
+    await installTauriMock(page, rateLimitedSummary);
+    await page.goto(baseUrl, { waitUntil: "networkidle" });
+    const chip = page.locator(".panel-codex .chip");
+    await chip.waitFor();
+    assert.equal(await chip.getAttribute("class"), "chip chip-warn");
+    assert.equal(await chip.locator(".chip-tag").textContent(), "LIMIT");
+    assert.equal(await chip.locator(".chip-text").textContent(), "RATE LIMITED");
+    assert.equal(await chip.getAttribute("aria-label"), "LIMIT: RATE LIMITED");
     await context.close();
   }
 }
@@ -687,6 +1017,14 @@ async function checkJudgeDemo(browser) {
     assert.equal(await page.locator(".panel").count(), 4);
     assert.deepEqual(await inspectLayout(page, viewport), []);
 
+    if (viewport.name === "surface") {
+      await page.locator(".tm-settings").click();
+      assert.equal(await page.locator("#deepseek-api-key").isDisabled(), true);
+      assert.equal(await page.locator("#deepseek-api-key").inputValue(), "");
+      await page.keyboard.press("Escape");
+      await page.locator(".settings-dialog").waitFor({ state: "detached" });
+    }
+
     const refresh = page.locator(".tm-refresh");
     await refresh.click();
     await page.evaluate(() => window.__DASHBOARD_TEST__.completeRefresh());
@@ -703,8 +1041,13 @@ async function launchTestBrowser() {
   try {
     return await chromium.launch({ headless: true });
   } catch (error) {
-    if (process.platform !== "win32") throw error;
-    return chromium.launch({ channel: "msedge", headless: true });
+    if (process.platform === "win32") {
+      return chromium.launch({ channel: "msedge", headless: true });
+    }
+    if (process.platform === "darwin") {
+      return chromium.launch({ channel: "chrome", headless: true });
+    }
+    throw error;
   }
 }
 
@@ -724,6 +1067,14 @@ try {
   }
   await checkProviderSelection(browser);
   process.stdout.write(`PASS provider selection and 0/1/2/3/4-panel layouts\n`);
+  await checkSettingsTransactions(browser);
+  process.stdout.write(`PASS transactional settings, CLI override, focus, and save failures\n`);
+  await checkDeepSeekKeySettings(browser);
+  process.stdout.write(`PASS direct DeepSeek key settings and redacted test telemetry\n`);
+  await checkAuthStatusChips(browser);
+  process.stdout.write(`PASS provider auth-status chip mapping\n`);
+  await checkRateLimitStatusChips(browser);
+  process.stdout.write(`PASS rate-limit status overrides stale freshness\n`);
   await checkFullscreenThreeColumns(browser);
   process.stdout.write(`PASS fullscreen three-column layout across Surface/Full HD sizes\n`);
   await checkUsageVariants(browser);

@@ -7,7 +7,10 @@
 //! fallback. Explicit `codexAuthPath` supports a bounded
 //! `wsl:<distro>:<absolute-path>` reader and is fail closed.
 
-use super::{send, send_with_one_retry, Resp};
+use super::{
+    require_success, send, send_with_one_retry, FetchError, Resp, MSG_CREDENTIAL_ERROR,
+    MSG_LOGIN_REQUIRED,
+};
 use crate::config::Config;
 use crate::models::CodexService;
 use crate::util::{clamp_percent, fmt_local, local_label, parse_datetime};
@@ -29,6 +32,8 @@ const RESET_CREDITS_URL: &str = "https://chatgpt.com/backend-api/wham/rate-limit
 const RESET_CREDITS_TIMEOUT: Duration = Duration::from_secs(4);
 const LONG_WINDOW_THRESHOLD_SECONDS: u64 = 24 * 60 * 60;
 const MAX_AUTH_BYTES: usize = 64 * 1024;
+#[cfg(any(windows, test))]
+const WSL_MISSING_EXIT_CODE: i32 = 44;
 #[cfg(windows)]
 const WSL_PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
 type Window<'a> = &'a Map<String, Value>;
@@ -39,20 +44,60 @@ struct CodexAuth {
     account_id: Option<String>,
 }
 
+#[derive(Debug)]
+enum CodexAuthError {
+    Missing,
+    Invalid,
+}
+
+#[derive(Debug)]
+struct MissingCodexToken;
+
+#[derive(Debug)]
+struct MissingCodexCredential;
+
+impl std::fmt::Display for MissingCodexToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Codex token missing in auth.json")
+    }
+}
+
+impl std::error::Error for MissingCodexToken {}
+
+impl std::fmt::Display for MissingCodexCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Codex credential file is missing")
+    }
+}
+
+impl std::error::Error for MissingCodexCredential {}
+
 struct ResetCreditSummary {
     available: u64,
     earliest_expiry_local: Option<String>,
 }
 
-pub async fn fetch(config: &Config, client: &Client) -> anyhow::Result<CodexService> {
-    let auth = read_auth(config)?;
+pub async fn fetch(config: &Config, client: &Client) -> Result<CodexService, FetchError> {
+    let auth = match read_auth(config) {
+        Ok(auth) => auth,
+        Err(CodexAuthError::Missing) => {
+            return Err(FetchError::Auth {
+                message: MSG_LOGIN_REQUIRED,
+            })
+        }
+        Err(CodexAuthError::Invalid) => {
+            return Err(FetchError::Auth {
+                message: MSG_CREDENTIAL_ERROR,
+            })
+        }
+    };
 
-    let resp: Resp = send_with_one_retry(|| authenticated_get(client, USAGE_URL, &auth)).await?;
+    let resp: Resp = send_with_one_retry(|| authenticated_get(client, USAGE_URL, &auth))
+        .await
+        .map_err(FetchError::Other)?;
 
-    if !resp.is_success() {
-        bail!("Codex usage HTTP {}", resp.status);
-    }
-    let mut service = parse_usage(&resp.body)?;
+    require_success(&resp, "Codex usage")?;
+    let mut service = parse_usage(&resp.body).map_err(FetchError::Other)?;
 
     let request = authenticated_get(client, RESET_CREDITS_URL, &auth)
         .timeout(RESET_CREDITS_TIMEOUT)
@@ -176,8 +221,27 @@ fn authenticated_get(client: &Client, url: &str, auth: &CodexAuth) -> reqwest::R
     }
 }
 
-fn read_auth(config: &Config) -> anyhow::Result<CodexAuth> {
-    parse_auth(&read_auth_text(config.codex_auth_path.trim())?)
+fn read_auth(config: &Config) -> Result<CodexAuth, CodexAuthError> {
+    let text = read_auth_text(config.codex_auth_path.trim()).map_err(|error| {
+        let missing = error.chain().any(|cause| {
+            cause.downcast_ref::<MissingCodexCredential>().is_some()
+                || cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io_error| io_error.kind() == std::io::ErrorKind::NotFound)
+        });
+        if missing {
+            CodexAuthError::Missing
+        } else {
+            CodexAuthError::Invalid
+        }
+    })?;
+    parse_auth(&text).map_err(|error| {
+        if error.downcast_ref::<MissingCodexToken>().is_some() {
+            CodexAuthError::Missing
+        } else {
+            CodexAuthError::Invalid
+        }
+    })
 }
 
 fn read_auth_text(configured: &str) -> anyhow::Result<String> {
@@ -274,7 +338,16 @@ fn read_wsl_path(distro: &str, path: &str) -> anyhow::Result<String> {
         return Ok(text);
     }
     let mut command = Command::new("wsl.exe");
-    command.args(["-d", distro, "--", "cat", "--", path]);
+    command.args([
+        "-d",
+        distro,
+        "--",
+        "sh",
+        "-lc",
+        "if [ ! -f \"$1\" ]; then exit 44; fi; cat -- \"$1\"",
+        "ai-usage-dashboard",
+        path,
+    ]);
     read_wsl_command(command)
         .with_context(|| format!("read Codex WSL credentials at wsl:{distro}:{path}"))
 }
@@ -288,7 +361,7 @@ fn read_default_wsl_auth() -> anyhow::Result<String> {
         "--",
         "sh",
         "-lc",
-        "cat -- \"$HOME/.codex/auth.json\"",
+        "if [ ! -f \"$HOME/.codex/auth.json\" ]; then exit 44; fi; cat -- \"$HOME/.codex/auth.json\"",
     ]);
     read_wsl_command(command).context("read Codex auth.json from default WSL Ubuntu home")
 }
@@ -373,6 +446,9 @@ fn read_wsl_command(mut command: Command) -> anyhow::Result<String> {
                     .join()
                     .map_err(|_| anyhow!("join WSL Codex credential reader"))??;
                 if !status.success() {
+                    if wsl_exit_is_missing(status.code()) {
+                        return Err(MissingCodexCredential.into());
+                    }
                     bail!("WSL Codex credential reader exited with {status}");
                 }
                 if text.trim().is_empty() {
@@ -398,6 +474,11 @@ fn read_wsl_command(mut command: Command) -> anyhow::Result<String> {
     }
 }
 
+#[cfg(any(windows, test))]
+fn wsl_exit_is_missing(exit_code: Option<i32>) -> bool {
+    exit_code == Some(WSL_MISSING_EXIT_CODE)
+}
+
 fn parse_auth(text: &str) -> anyhow::Result<CodexAuth> {
     let root: Value = serde_json::from_str(text).context("parse Codex auth.json")?;
     let tokens = &root["tokens"];
@@ -417,18 +498,26 @@ fn parse_auth(text: &str) -> anyhow::Result<CodexAuth> {
             }
         }
     }
-    bail!("Codex token missing in auth.json")
+    Err(MissingCodexToken.into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        default_auth_path, parse_auth, parse_reset_credits, parse_usage, parse_wsl_spec,
-        read_auth_text, WslSpec,
+        default_auth_path, parse_auth, parse_reset_credits, parse_usage, parse_wsl_spec, read_auth,
+        read_auth_text, wsl_exit_is_missing, CodexAuthError, WslSpec, WSL_MISSING_EXIT_CODE,
     };
+    use crate::config::Config;
     use crate::util::local_label;
     use serde_json::json;
     use std::io::Write;
+
+    #[test]
+    fn wsl_missing_credential_exit_code_is_distinct() {
+        assert!(wsl_exit_is_missing(Some(WSL_MISSING_EXIT_CODE)));
+        assert!(!wsl_exit_is_missing(Some(1)));
+        assert!(!wsl_exit_is_missing(None));
+    }
 
     #[test]
     fn codex_used_percent_is_already_percent_scale() {
@@ -547,6 +636,48 @@ mod tests {
             message.contains("read Codex auth.json") || message.contains("No such file"),
             "unexpected error: {message}"
         );
+    }
+
+    #[test]
+    fn codex_auth_classifies_only_missing_credentials_as_login_required() {
+        let root = std::env::temp_dir().join(format!(
+            "ai-usage-dashboard-codex-auth-classification-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create auth fixture directory");
+
+        let missing_config = Config {
+            codex_auth_path: root.join("missing.json").to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        assert!(matches!(
+            read_auth(&missing_config),
+            Err(CodexAuthError::Missing)
+        ));
+
+        let malformed = root.join("malformed.json");
+        std::fs::write(&malformed, b"not-json").expect("write malformed auth fixture");
+        let malformed_config = Config {
+            codex_auth_path: malformed.to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        assert!(matches!(
+            read_auth(&malformed_config),
+            Err(CodexAuthError::Invalid)
+        ));
+
+        let tokenless = root.join("tokenless.json");
+        std::fs::write(&tokenless, br#"{"tokens":{}}"#).expect("write tokenless fixture");
+        let tokenless_config = Config {
+            codex_auth_path: tokenless.to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        assert!(matches!(
+            read_auth(&tokenless_config),
+            Err(CodexAuthError::Missing)
+        ));
+
+        std::fs::remove_dir_all(root).expect("remove auth fixtures");
     }
 
     #[test]
