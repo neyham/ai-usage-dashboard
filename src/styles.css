@@ -943,6 +943,11 @@ body {
   padding: 18px 0;
   border: 0;
 }
+.performance-options {
+  margin: 0;
+  padding: 14px 0 4px;
+  border: 0;
+}
 .provider-option {
   --provider-accent: var(--green);
   position: relative;
@@ -960,6 +965,7 @@ body {
 .provider-option.provider-claude { --provider-accent: var(--amber); }
 .provider-option.provider-deepseek { --provider-accent: var(--cyan); }
 .provider-option.provider-grok { --provider-accent: var(--lime); }
+.performance-option { --provider-accent: var(--cyan); }
 .provider-option:has(input:checked) {
   border-color: color-mix(in srgb, var(--provider-accent) 50%, transparent);
   background: color-mix(in srgb, var(--provider-accent) 7%, transparent);
@@ -992,12 +998,28 @@ body {
   font-size: 18px;
   font-weight: 700;
 }
+.performance-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.performance-copy strong {
+  color: var(--text);
+  font-size: 16px;
+}
+.performance-copy small {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 1.35;
+}
 .provider-code {
   color: var(--muted);
   font-family: var(--mono);
   font-size: 10px;
 }
-.provider-options:disabled .provider-option {
+.provider-options:disabled .provider-option,
+.performance-options:disabled .provider-option {
   cursor: wait;
   opacity: 0.65;
 }
@@ -1453,6 +1475,46 @@ body {
 @keyframes blink {
   0%, 60% { opacity: 1; }
   61%, 100% { opacity: 0.32; }
+}
+
+/* App-level low power is deliberately stronger than the OS motion preference:
+   it also removes full-screen compositing layers and decorative glows. Hidden
+   windows pause the same work automatically, without changing the saved mode. */
+.dashboard.low-power,
+.dashboard.effects-paused {
+  background: var(--bg);
+}
+.dashboard.low-power *,
+.dashboard.effects-paused * {
+  animation: none !important;
+  transition: none !important;
+}
+.dashboard.low-power .scanlines,
+.dashboard.low-power .vignette,
+.dashboard.low-power .reticle,
+.dashboard.effects-paused .scanlines,
+.dashboard.effects-paused .vignette,
+.dashboard.effects-paused .reticle {
+  display: none;
+}
+.dashboard.low-power .rail-rec,
+.dashboard.low-power .clock,
+.dashboard.low-power .panel-edge,
+.dashboard.low-power .panel-glyph,
+.dashboard.low-power .seg-on,
+.dashboard.low-power .seg-amber,
+.dashboard.low-power .seg-red,
+.dashboard.low-power .tm-net .tm-dot,
+.dashboard.effects-paused .rail-rec,
+.dashboard.effects-paused .clock,
+.dashboard.effects-paused .panel-edge,
+.dashboard.effects-paused .panel-glyph,
+.dashboard.effects-paused .seg-on,
+.dashboard.effects-paused .seg-amber,
+.dashboard.effects-paused .seg-red,
+.dashboard.effects-paused .tm-net .tm-dot {
+  box-shadow: none;
+  text-shadow: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

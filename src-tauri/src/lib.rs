@@ -15,7 +15,7 @@ use config::Config;
 use models::{EnabledProviders, UsageSummary};
 use std::time::Duration as StdDuration;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 const SCREENSAVER_REFRESH_INTERVAL_MINUTES: u64 = 15;
 const MAX_DEEPSEEK_API_KEY_BYTES: usize = 2_048;
@@ -29,6 +29,7 @@ pub struct AppState {
     cache: Mutex<CacheState>,
     refreshing: Mutex<bool>,
     refresh_pending: Mutex<bool>,
+    refresh_schedule_changed: Notify,
 }
 
 struct RefreshFlagGuard {
@@ -149,11 +150,19 @@ async fn launch_mode(state: State<'_, AppState>) -> Result<String, String> {
     Ok(state.mode.lock().await.clone())
 }
 
+/// Return the persisted renderer performance preference without exposing the
+/// rest of Config (which can contain credentials).
+#[tauri::command]
+async fn low_power_mode(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.config.lock().await.low_power_mode)
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DisplaySettings {
     enabled_providers: EnabledProviders,
     window_mode: String,
+    low_power_mode: bool,
 }
 
 /// Atomically save changed display settings. Omitted fields are left untouched,
@@ -164,6 +173,7 @@ async fn save_display_settings(
     enabled_providers: Option<EnabledProviders>,
     window_mode: Option<String>,
     deepseek_api_key: Option<String>,
+    low_power_mode: Option<bool>,
 ) -> Result<DisplaySettings, String> {
     let requested_window = match window_mode {
         Some(mode) => {
@@ -193,6 +203,8 @@ async fn save_display_settings(
     let deepseek_key_changed = requested_deepseek_key
         .as_ref()
         .is_some_and(|key| key != &current_config.deep_seek_api_key);
+    let low_power_changed =
+        low_power_mode.is_some_and(|requested| requested != current_config.low_power_mode);
     let mut next_config = current_config.clone();
     next_config.enabled_providers = next_enabled;
     if let Some(key) = requested_deepseek_key {
@@ -200,6 +212,9 @@ async fn save_display_settings(
     }
     if let Some(requested) = requested_window {
         next_config.window_mode = requested.to_string();
+    }
+    if let Some(requested) = low_power_mode {
+        next_config.low_power_mode = requested;
     }
 
     let chrome_changed = requested_window.is_some_and(|requested| requested != previous_mode);
@@ -214,7 +229,11 @@ async fn save_display_settings(
         } else {
             Ok(())
         }
-    } else if providers_changed || requested_window.is_some() || deepseek_key_changed {
+    } else if providers_changed
+        || requested_window.is_some()
+        || deepseek_key_changed
+        || low_power_changed
+    {
         config::save(&next_config)
     } else {
         Ok(())
@@ -243,9 +262,14 @@ async fn save_display_settings(
     let saved = DisplaySettings {
         enabled_providers: current_config.enabled_providers,
         window_mode: current_mode.clone(),
+        low_power_mode: current_config.low_power_mode,
     };
     drop(current_config);
     drop(current_mode);
+
+    if low_power_changed {
+        state.refresh_schedule_changed.notify_one();
+    }
 
     if providers_changed {
         publish_enabled_providers(&app, saved.enabled_providers).await;
@@ -471,8 +495,12 @@ async fn do_refresh(app: &AppHandle) {
     }
 }
 
-fn effective_refresh_interval_minutes(configured: u64, screensaver: bool) -> u64 {
-    if screensaver {
+fn effective_refresh_interval_minutes(
+    configured: u64,
+    screensaver: bool,
+    low_power_mode: bool,
+) -> u64 {
+    if screensaver || low_power_mode {
         configured.max(SCREENSAVER_REFRESH_INTERVAL_MINUTES)
     } else {
         configured
@@ -510,8 +538,6 @@ pub fn run() {
         // Seed from cache so the dashboard is never blank on startup.
         fetchers::summary_from_cache(&cache, config.enabled_providers)
     };
-    let interval_minutes =
-        effective_refresh_interval_minutes(config.refresh_interval_minutes, options.screensaver);
     let mode = resolve_launch_mode(&options, &config.window_mode);
     let start_fullscreen = mode == "fullscreen" || mode == "screensaver";
     let start_screensaver = mode == "screensaver";
@@ -525,6 +551,7 @@ pub fn run() {
             cache: Mutex::new(cache),
             refreshing: Mutex::new(false),
             refresh_pending: Mutex::new(false),
+            refresh_schedule_changed: Notify::new(),
         })
         .invoke_handler(tauri::generate_handler![
             get_summary,
@@ -532,6 +559,7 @@ pub fn run() {
             save_display_settings,
             exit_app,
             launch_mode,
+            low_power_mode,
             judge_demo
         ])
         .setup(move |app| {
@@ -551,12 +579,28 @@ pub fn run() {
             }
 
             let handle = app.handle().clone();
-            // Background refresh loop: refresh immediately, then every interval.
+            // Background refresh loop: refresh immediately, then wait using the
+            // current settings. A low-power toggle reschedules the wait without
+            // forcing an extra provider request.
             tauri::async_runtime::spawn(async move {
+                do_refresh(&handle).await;
                 loop {
-                    do_refresh(&handle).await;
-                    tokio::time::sleep(StdDuration::from_secs(interval_minutes.saturating_mul(60)))
-                        .await;
+                    let state = handle.state::<AppState>();
+                    let interval_minutes = {
+                        let config = state.config.lock().await;
+                        effective_refresh_interval_minutes(
+                            config.refresh_interval_minutes,
+                            start_screensaver,
+                            config.low_power_mode,
+                        )
+                    };
+                    let wait = StdDuration::from_secs(interval_minutes.saturating_mul(60));
+                    if tokio::time::timeout(wait, state.refresh_schedule_changed.notified())
+                        .await
+                        .is_err()
+                    {
+                        do_refresh(&handle).await;
+                    }
                 }
             });
             Ok(())
@@ -608,9 +652,15 @@ mod tests {
 
     #[test]
     fn screensaver_uses_a_quieter_refresh_floor() {
-        assert_eq!(effective_refresh_interval_minutes(5, false), 5);
-        assert_eq!(effective_refresh_interval_minutes(5, true), 15);
-        assert_eq!(effective_refresh_interval_minutes(30, true), 30);
+        assert_eq!(effective_refresh_interval_minutes(5, false, false), 5);
+        assert_eq!(effective_refresh_interval_minutes(5, true, false), 15);
+        assert_eq!(effective_refresh_interval_minutes(30, true, false), 30);
+    }
+
+    #[test]
+    fn low_power_mode_uses_a_quieter_refresh_floor() {
+        assert_eq!(effective_refresh_interval_minutes(5, false, true), 15);
+        assert_eq!(effective_refresh_interval_minutes(30, false, true), 30);
     }
 
     #[test]

@@ -62,12 +62,14 @@ or macOS Gatekeeper may require manual confirmation.
 - Last-known-good data stays visible and is marked when it may be stale.
 - Choose any zero-to-four provider layout.
 - Use a normal window or borderless fullscreen on every platform.
+- Enable Low Power Mode to stop animation and heavy compositing, update the
+  clock once per minute, and use a 15-minute automatic-refresh minimum.
 - Windows additionally supports WSL credential discovery, scheduled idle launch,
   and screensaver mode.
 
 ## Compatibility and limitations
 
-Version `0.5.0` is the current multi-platform release: Windows (WinGet + NSIS),
+Version `0.6.0` is the current multi-platform release: Windows (WinGet + NSIS),
 Linux (`.deb` / AppImage), and macOS (`.dmg`). Screensaver and scheduled-idle
 helpers remain Windows-only. Published installers are not code-signed.
 
@@ -99,8 +101,8 @@ reporting a vulnerability or suspected credential exposure.
 
 ## Additional installation notes
 
-Pin a version with `VERSION=0.5.0` before the install script, for example
-`VERSION=0.5.0 sh install-linux.sh`.
+Pin a version with `VERSION=0.6.0` before the install script, for example
+`VERSION=0.6.0 sh install-linux.sh`.
 
 ### Windows (WinGet and direct installer)
 
@@ -329,7 +331,8 @@ Example:
   "codexAuthPath": "",
   "grokCredentialsPath": "",
   "mockMode": "",
-  "windowMode": "normal"
+  "windowMode": "normal",
+  "lowPowerMode": false
 }
 ```
 
@@ -342,6 +345,12 @@ clamped to safe bounds:
 | `refreshIntervalMinutes` | 5 to 1,440 minutes |
 | `claudeCodeRefreshTimeoutSeconds` | 5 to 120 seconds |
 | `claudeCodeRefreshMaxBudgetUsd` | USD 0.001 to USD 0.10 |
+
+`lowPowerMode` can also be changed from **Display Settings**. It disables
+continuous motion and heavyweight full-screen overlays, removes decorative
+glows, updates the clock once per minute, and applies a 15-minute minimum to
+automatic provider refreshes. Manual refresh remains available. Hidden or
+minimized windows pause motion and clock updates automatically in either mode.
 
 `deepSeekApiKey` is plaintext in `config.json`. Treat that per-user file as a
 secret and do not sync or commit it. The settings UI never displays the saved
@@ -356,6 +365,8 @@ value again.
   available if they are enabled again later.
 - Screensaver mode enforces a 15-minute minimum interval to avoid unnecessary
   idle-time traffic.
+- Low-power mode enforces the same 15-minute minimum while it is enabled. The
+  change is applied immediately without triggering an extra provider request.
 - Press `F5` or use the refresh button for an on-demand refresh in normal or
   fullscreen mode.
 - Provider usage and balance requests receive one retry after transport

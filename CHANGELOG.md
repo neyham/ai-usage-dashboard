@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [0.6.0] - 2026-08-05
+
+### Added
+
+- Add a persisted **Low Power Mode** in Display Settings. It stops decorative
+  animation, removes the most expensive full-screen WebView compositing layers
+  and glows, updates the clock once per minute, pauses renderer work while the
+  window is hidden, and raises automatic provider refreshes to a 15-minute
+  minimum without affecting manual refresh.
+
 ## [0.5.0] - 2026-08-02
 
 ### Added

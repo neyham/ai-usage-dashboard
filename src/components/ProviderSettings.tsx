@@ -17,6 +17,7 @@ const WINDOW_MODES: Array<{ value: WindowMode; label: string; code: string }> = 
 export function ProviderSettings({
   value,
   windowMode,
+  lowPowerMode,
   judgeDemo,
   onClose,
   onSave,
@@ -24,17 +25,21 @@ export function ProviderSettings({
   value: EnabledProviders;
   /** Current effective mode; screensaver never renders this dialog. */
   windowMode: WindowMode;
+  lowPowerMode: boolean;
   judgeDemo: boolean;
   onClose: () => void;
   onSave: (
     value?: EnabledProviders,
     windowMode?: WindowMode,
     deepseekApiKey?: string,
+    lowPowerMode?: boolean,
   ) => Promise<void>;
 }) {
   const [draft, setDraft] = useState(value);
   const [draftWindow, setDraftWindow] = useState<WindowMode>(windowMode);
   const [windowModeTouched, setWindowModeTouched] = useState(false);
+  const [draftLowPower, setDraftLowPower] = useState(lowPowerMode);
+  const [lowPowerTouched, setLowPowerTouched] = useState(false);
   const [deepseekApiKey, setDeepseekApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,11 +71,12 @@ export function ProviderSettings({
     try {
       const providersChanged = PROVIDERS.some(({ key }) => draft[key] !== value[key]);
       const keyToSave = deepseekApiKey.trim();
-      if (providersChanged || windowModeTouched || keyToSave) {
+      if (providersChanged || windowModeTouched || lowPowerTouched || keyToSave) {
         await onSave(
           providersChanged ? draft : undefined,
           windowModeTouched ? draftWindow : undefined,
           keyToSave || undefined,
+          lowPowerTouched ? draftLowPower : undefined,
         );
       }
       setDeepseekApiKey("");
@@ -164,6 +170,29 @@ export function ProviderSettings({
                 </label>
               ))}
             </div>
+          </fieldset>
+
+          <fieldset className="performance-options" disabled={saving}>
+            <legend className="settings-section-label">PERFORMANCE</legend>
+            <label className="provider-option performance-option">
+              <input
+                type="checkbox"
+                name="lowPowerMode"
+                checked={draftLowPower}
+                onChange={(event) => {
+                  setDraftLowPower(event.target.checked);
+                  setLowPowerTouched(true);
+                }}
+              />
+              <span className="provider-check" aria-hidden>
+                <Check size={16} strokeWidth={3} />
+              </span>
+              <span className="performance-copy">
+                <strong>LOW POWER MODE</strong>
+                <small>NO ANIMATION · MINUTE CLOCK · 15 MIN AUTO REFRESH</small>
+              </span>
+              <span className="provider-code">ECO</span>
+            </label>
           </fieldset>
 
           <fieldset className="provider-options" disabled={saving}>

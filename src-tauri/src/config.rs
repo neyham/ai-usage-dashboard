@@ -51,6 +51,9 @@ pub struct Config {
     /// Preferred window chrome when not launched with CLI override:
     /// "normal" (windowed) | "fullscreen". Screensaver remains CLI-only.
     pub window_mode: String,
+    /// Reduce continuous WebView work for low-power devices by disabling
+    /// decorative motion/effects and lowering the renderer clock cadence.
+    pub low_power_mode: bool,
 }
 
 impl Default for Config {
@@ -70,6 +73,7 @@ impl Default for Config {
             grok_credentials_path: String::new(),
             mock_mode: String::new(),
             window_mode: "normal".into(),
+            low_power_mode: false,
         }
     }
 }
@@ -150,7 +154,8 @@ const DEFAULT_CONFIG_JSON: &str = r#"{
   "codexAuthPath": "",
   "grokCredentialsPath": "",
   "mockMode": "",
-  "windowMode": "normal"
+  "windowMode": "normal",
+  "lowPowerMode": false
 }
 "#;
 
@@ -318,6 +323,17 @@ mod tests {
 
         let junk: Config = serde_json::from_str(r#"{"windowMode":"kiosk"}"#).expect("unknown mode");
         assert_eq!(junk.clamp().window_mode, "normal");
+    }
+
+    #[test]
+    fn low_power_mode_defaults_off_and_accepts_opt_in() {
+        let defaulted: Config =
+            serde_json::from_str(r#"{}"#).expect("empty object uses field defaults");
+        let enabled: Config =
+            serde_json::from_str(r#"{"lowPowerMode":true}"#).expect("low-power mode opt-in");
+
+        assert!(!defaulted.low_power_mode);
+        assert!(enabled.low_power_mode);
     }
 
     #[test]

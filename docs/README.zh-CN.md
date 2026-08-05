@@ -26,6 +26,8 @@ DeepSeek API 余额，集中放在一个本地桌面看板里。
 - 四个 provider 独立刷新；其中一个失败不会清空其他面板。
 - 可以自由选择 0–4 个面板。
 - 三个平台均支持普通窗口和无边框全屏。
+- 可以在显示设置中开启低功耗模式：停止动画和高开销合成效果，将时钟更新
+  降为每分钟一次，并把自动刷新间隔下限设为 15 分钟；手动刷新不受影响。
 - Windows 另外支持 WSL credential discovery、闲置启动和屏保模式。
 
 ## 安装
@@ -78,7 +80,7 @@ Windows 安装包目前会添加 **AI Usage Dashboard (Judge Demo)** 开始菜�
 
 ## 兼容性与限制
 
-- 当前版本为 `v0.5.0`：Windows、Linux、macOS。
+- 当前版本为 `v0.6.0`：Windows、Linux、macOS。
 - 屏保和闲置启动工具仅支持 Windows。
 - 项目使用 provider CLI 的 credential 格式和用量 endpoint，其中一部分不是公开
   API，未来可能变化。
