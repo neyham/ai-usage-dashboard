@@ -43,6 +43,8 @@ function isLaunchMode(value: string): value is LaunchMode {
 export default function App() {
   const [summary, setSummary] = useState<UsageSummary>(EMPTY);
   const [launchMode, setLaunchMode] = useState<LaunchMode>("normal");
+  const [lowPowerMode, setLowPowerMode] = useState(false);
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -165,6 +167,24 @@ export default function App() {
 
   useEffect(() => {
     let disposed = false;
+    invoke<boolean>("low_power_mode")
+      .then((enabled) => {
+        if (!disposed) setLowPowerMode(enabled);
+      })
+      .catch((err) => console.error("low_power_mode failed", err));
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const onVisibilityChange = () => setPageVisible(!document.hidden);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
     invoke<boolean>("judge_demo")
       .then((enabled) => {
         if (!disposed) setJudgeDemo(enabled);
@@ -259,18 +279,28 @@ export default function App() {
       enabledProviders?: EnabledProviders,
       nextWindowMode?: WindowMode,
       deepseekApiKey?: string,
+      nextLowPowerMode?: boolean,
     ) => {
       try {
-        const saved = await invoke<{ enabledProviders: EnabledProviders; windowMode: WindowMode }>(
-          "save_display_settings",
-          {
-            enabledProviders: enabledProviders ?? null,
-            windowMode: nextWindowMode ?? null,
-            deepseekApiKey: deepseekApiKey ?? null,
-          },
-        );
+        const args: {
+          enabledProviders: EnabledProviders | null;
+          windowMode: WindowMode | null;
+          deepseekApiKey: string | null;
+          lowPowerMode?: boolean;
+        } = {
+          enabledProviders: enabledProviders ?? null,
+          windowMode: nextWindowMode ?? null,
+          deepseekApiKey: deepseekApiKey ?? null,
+        };
+        if (nextLowPowerMode !== undefined) args.lowPowerMode = nextLowPowerMode;
+        const saved = await invoke<{
+          enabledProviders: EnabledProviders;
+          windowMode: WindowMode;
+          lowPowerMode: boolean;
+        }>("save_display_settings", args);
         setSummary((current) => ({ ...current, enabledProviders: saved.enabledProviders }));
         setLaunchMode(saved.windowMode);
+        setLowPowerMode(saved.lowPowerMode);
       } catch (err) {
         try {
           const actualMode = await invoke<string>("launch_mode");
@@ -288,7 +318,10 @@ export default function App() {
     launchMode === "fullscreen" ? "fullscreen" : "normal";
 
   return (
-    <div className={`dashboard mode-${launchMode}`}>
+    <div
+      className={`dashboard mode-${launchMode}${lowPowerMode ? " low-power" : ""}${pageVisible ? "" : " effects-paused"}`}
+      data-low-power={lowPowerMode ? "true" : "false"}
+    >
       <div className="scanlines" aria-hidden />
       <div className="vignette" aria-hidden />
       <SideRail />
@@ -302,7 +335,7 @@ export default function App() {
             <div className="tb-meta">LAST SYNC {refreshedLabel} · {linkLabel}</div>
           </div>
           <SystemStrip status={displayStatus} message={uiError} />
-          <ClockHeader />
+          <ClockHeader lowPowerMode={lowPowerMode} />
         </header>
 
         <main className="panels" data-count={enabledCount} aria-busy={isRefreshing}>
@@ -346,6 +379,7 @@ export default function App() {
         <ProviderSettings
           value={summary.enabledProviders}
           windowMode={effectiveWindowMode}
+          lowPowerMode={lowPowerMode}
           judgeDemo={judgeDemo}
           onClose={closeSettings}
           onSave={saveSettings}

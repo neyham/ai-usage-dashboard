@@ -4,7 +4,7 @@
 #
 # Usage:
 #   curl -fsSL https://github.com/neyham/ai-usage-dashboard/releases/latest/download/install-macos.sh | sh
-#   VERSION=0.5.0 sh install-macos.sh
+#   VERSION=0.6.0 sh install-macos.sh
 #   REPO=neyham/ai-usage-dashboard APPLICATIONS_DIR="$HOME/Applications" sh install-macos.sh
 set -eu
 
