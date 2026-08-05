@@ -4,7 +4,7 @@
 #
 # Usage:
 #   curl -fsSL https://github.com/neyham/ai-usage-dashboard/releases/latest/download/install-linux.sh | sh
-#   VERSION=0.5.0 sh install-linux.sh
+#   VERSION=0.6.0 sh install-linux.sh
 #   REPO=neyham/ai-usage-dashboard sh install-linux.sh
 set -eu
 

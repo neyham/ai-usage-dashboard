@@ -150,11 +150,18 @@ async function waitForServer(server) {
   throw new Error(`Timed out waiting for ${baseUrl}:\n${server.output()}`);
 }
 
-async function installTauriMock(page, summary, launchMode = "normal", judgeDemo = false) {
+async function installTauriMock(
+  page,
+  summary,
+  launchMode = "normal",
+  judgeDemo = false,
+  initialLowPowerMode = false,
+) {
   await page.addInitScript(
-    ({ initialSummary, mode: initialMode, demo }) => {
+    ({ initialSummary, mode: initialMode, demo, initialLowPower }) => {
       let currentSummary = structuredClone(initialSummary);
       let mode = initialMode;
+      let lowPowerMode = initialLowPower;
       let nextCallbackId = 1;
       let nextEventId = 1;
       const callbacks = new Map();
@@ -225,6 +232,7 @@ async function installTauriMock(page, summary, launchMode = "normal", judgeDemo 
           }
           if (command === "get_summary") return structuredClone(currentSummary);
           if (command === "launch_mode") return mode;
+          if (command === "low_power_mode") return lowPowerMode;
           if (command === "judge_demo") return demo;
           if (command === "refresh_now") {
             stats.refreshes += 1;
@@ -270,9 +278,13 @@ async function installTauriMock(page, summary, launchMode = "normal", judgeDemo 
               }
               mode = requested;
             }
+            if (args.lowPowerMode != null) {
+              lowPowerMode = Boolean(args.lowPowerMode);
+            }
             return {
               enabledProviders: structuredClone(currentSummary.enabledProviders),
               windowMode: mode,
+              lowPowerMode,
             };
           }
           if (command === "exit_app") {
@@ -284,7 +296,12 @@ async function installTauriMock(page, summary, launchMode = "normal", judgeDemo 
       };
       window.__DASHBOARD_TEST__ = stats;
     },
-    { initialSummary: summary, mode: launchMode, demo: judgeDemo },
+    {
+      initialSummary: summary,
+      mode: launchMode,
+      demo: judgeDemo,
+      initialLowPower: initialLowPowerMode,
+    },
   );
 }
 
@@ -996,6 +1013,127 @@ async function checkUsageVariants(browser) {
   }
 }
 
+async function checkLowPowerMode(browser) {
+  const context = await browser.newContext({
+    viewport: { width: 1368, height: 912 },
+    reducedMotion: "no-preference",
+    colorScheme: "dark",
+  });
+  const page = await context.newPage();
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await installTauriMock(page, summaries.normal);
+  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.locator('.dashboard[data-low-power="false"]').waitFor();
+  await page.locator(".ret-spin").first().waitFor();
+
+  assert.equal(
+    await page.locator(".ret-spin").first().evaluate((element) =>
+      getComputedStyle(element).animationName,
+    ),
+    "spin",
+  );
+  assert.notEqual(
+    await page.locator(".scanlines").evaluate((element) => getComputedStyle(element).display),
+    "none",
+  );
+  assert.equal(await page.locator(".clock").getAttribute("data-cadence"), "second");
+  assert.match((await page.locator(".clock").textContent()) ?? "", /^\d{2}:\d{2}:\d{2}$/);
+
+  await page.locator(".tm-settings").click();
+  const toggle = page.locator('input[name="lowPowerMode"]');
+  assert.equal(await toggle.isChecked(), false);
+  await page.locator(".performance-option").click();
+  await page.locator(".settings-save").click();
+  await page.locator('.dashboard[data-low-power="true"]').waitFor();
+
+  assert.equal(
+    await page.locator(".ret-spin").first().evaluate((element) =>
+      getComputedStyle(element).animationName,
+    ),
+    "none",
+  );
+  assert.equal(
+    await page.locator(".scanlines").evaluate((element) => getComputedStyle(element).display),
+    "none",
+  );
+  assert.equal(
+    await page.locator(".reticle").first().evaluate((element) => getComputedStyle(element).display),
+    "none",
+  );
+  assert.equal(await page.locator(".clock").getAttribute("data-cadence"), "minute");
+  assert.match((await page.locator(".clock").textContent()) ?? "", /^\d{2}:\d{2}$/);
+  assert.equal(
+    await page.evaluate(() =>
+      document.getAnimations().filter((animation) => animation.playState === "running").length,
+    ),
+    0,
+  );
+  assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
+  assert.deepEqual(pageErrors, [], "low-power page errors");
+  assert.deepEqual(await page.evaluate(() => window.__DASHBOARD_TEST__.saveCalls[0]), {
+    enabledProviders: null,
+    windowMode: null,
+    lowPowerMode: true,
+  });
+
+  await page.locator(".tm-settings").click();
+  assert.equal(await toggle.isChecked(), true);
+  await page.locator(".performance-option").click();
+  await page.locator(".settings-save").click();
+  await page.locator('.dashboard[data-low-power="false"]').waitFor();
+  assert.equal(await page.locator(".clock").getAttribute("data-cadence"), "second");
+  assert.deepEqual(await page.evaluate(() => window.__DASHBOARD_TEST__.saveCalls[1]), {
+    enabledProviders: null,
+    windowMode: null,
+    lowPowerMode: false,
+  });
+  await context.close();
+
+  const persistedContext = await browser.newContext({
+    viewport: { width: 1368, height: 912 },
+    reducedMotion: "no-preference",
+    colorScheme: "dark",
+  });
+  const persistedPage = await persistedContext.newPage();
+  await installTauriMock(persistedPage, summaries.normal, "normal", false, true);
+  await persistedPage.goto(baseUrl, { waitUntil: "networkidle" });
+  await persistedPage.locator('.dashboard[data-low-power="true"]').waitFor();
+  await persistedPage.locator(".tm-settings").click();
+  assert.equal(await persistedPage.locator('input[name="lowPowerMode"]').isChecked(), true);
+  await persistedContext.close();
+
+  for (const viewport of [
+    { width: 640, height: 540 },
+    { width: 684, height: 912 },
+  ]) {
+    const compactContext = await browser.newContext({
+      viewport,
+      hasTouch: true,
+      reducedMotion: "no-preference",
+      colorScheme: "dark",
+    });
+    const compactPage = await compactContext.newPage();
+    const compactErrors = [];
+    compactPage.on("pageerror", (error) => compactErrors.push(error.message));
+    await installTauriMock(compactPage, summaries.normal, "normal", false, true);
+    await compactPage.goto(baseUrl, { waitUntil: "networkidle" });
+    await compactPage.locator('.dashboard[data-low-power="true"]').waitFor();
+    assert.deepEqual(await inspectLayout(compactPage, viewport), []);
+    await compactPage.locator(".tm-settings").click();
+    const dialog = compactPage.locator(".settings-dialog");
+    await dialog.waitFor();
+    const dialogBox = await dialog.boundingBox();
+    assert.ok(dialogBox, `${viewport.width}x${viewport.height} settings dialog missing`);
+    assert.ok(dialogBox.x >= 0 && dialogBox.x + dialogBox.width <= viewport.width + 1);
+    assert.ok(dialogBox.y >= 0 && dialogBox.y + dialogBox.height <= viewport.height + 1);
+    await compactPage.locator(".settings-save").scrollIntoViewIfNeeded();
+    assert.equal(await compactPage.locator(".settings-save").isVisible(), true);
+    assert.deepEqual(compactErrors, [], `${viewport.width}x${viewport.height} low-power errors`);
+    await compactContext.close();
+  }
+}
+
 async function checkJudgeDemo(browser) {
   const judgeViewports = [
     { name: "surface", width: 1368, height: 912 },
@@ -1079,6 +1217,8 @@ try {
   process.stdout.write(`PASS fullscreen three-column layout across Surface/Full HD sizes\n`);
   await checkUsageVariants(browser);
   process.stdout.write(`PASS dynamic Codex and Claude usage-window variants\n`);
+  await checkLowPowerMode(browser);
+  process.stdout.write(`PASS low-power motion, compositing, clock, and persistence behavior\n`);
   await checkJudgeDemo(browser);
   process.stdout.write(`PASS isolated judge demo across Surface/compact/Snap layouts\n`);
   await checkKeyboardAndScreensaver(browser);
