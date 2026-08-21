@@ -1,8 +1,10 @@
 //! HTTP helpers, error types, and the per-cycle orchestration that turns
 //! independent fetches into one sanitized `UsageSummary`.
 
+pub mod antigravity;
 pub mod claude;
 pub mod codex;
+pub mod cursor;
 pub mod deepseek;
 pub mod grok;
 
@@ -168,6 +170,52 @@ pub(crate) fn require_success(resp: &Resp, label: &str) -> Result<(), FetchError
     }
 }
 
+async fn join_optional_fetch<T>(
+    task: Option<tokio::task::JoinHandle<Result<T, FetchError>>>,
+) -> Option<Result<T, FetchError>> {
+    match task {
+        Some(handle) => Some(handle.await.unwrap_or_else(|_| {
+            Err(FetchError::Other(anyhow::anyhow!(
+                "provider fetch task failed"
+            )))
+        })),
+        None => None,
+    }
+}
+
+fn apply_standard_fetch<T>(
+    cache: &mut CacheState,
+    key: &'static str,
+    enabled: bool,
+    fetched_live: bool,
+    fetched: Option<Result<T, FetchError>>,
+) -> (T, bool)
+where
+    T: Default + serde::Serialize + DeserializeOwned,
+{
+    if !enabled {
+        return (T::default(), false);
+    }
+    if !fetched_live {
+        return (cached_service(cache, key, MSG_RATE_LIMITED, None), true);
+    }
+    match fetched.expect("live provider fetch was scheduled") {
+        Ok(svc) => {
+            cache.clear_provider_cooldown(key);
+            if let Ok(v) = serde_json::to_value(&svc) {
+                cache.put(key, v);
+            }
+            (svc, false)
+        }
+        Err(FetchError::Auth { message }) => (cached_service(cache, key, message, None), true),
+        Err(FetchError::RateLimited { retry_after }) => {
+            cache.set_provider_cooldown(key, retry_deadline(retry_after));
+            (cached_service(cache, key, MSG_RATE_LIMITED, None), true)
+        }
+        Err(FetchError::Other(_)) => (cached_service(cache, key, MSG_FAILED, None), true),
+    }
+}
+
 fn retry_deadline(retry_after: Option<u64>) -> DateTime<Utc> {
     let seconds = retry_after
         .map(|value| value.saturating_add(30).min(MAX_RETRY_AFTER_SECONDS))
@@ -178,7 +226,10 @@ fn retry_deadline(retry_after: Option<u64>) -> DateTime<Utc> {
 /// Build a summary purely from cached data, used to seed the UI on startup so
 /// it never begins blank while the first live refresh is in flight.
 pub fn summary_from_cache(cache: &CacheState, enabled: EnabledProviders) -> UsageSummary {
-    use crate::models::{ClaudeService, CodexService, DeepSeekService, GrokService};
+    use crate::models::{
+        AntigravityService, ClaudeService, CodexService, CursorService, DeepSeekService,
+        GrokService,
+    };
 
     let cooldown_label = enabled
         .claude
@@ -211,11 +262,24 @@ pub fn summary_from_cache(cache: &CacheState, enabled: EnabledProviders) -> Usag
     } else {
         GrokService::default()
     };
+    let cursor: CursorService = if enabled.cursor && cache.get("cursor").is_some() {
+        cached_service(cache, "cursor", MSG_CACHED, None)
+    } else {
+        CursorService::default()
+    };
+    let antigravity: AntigravityService =
+        if enabled.antigravity && cache.get("antigravity").is_some() {
+            cached_service(cache, "antigravity", MSG_CACHED, None)
+        } else {
+            AntigravityService::default()
+        };
 
     let any = (enabled.claude && cache.get("claude").is_some())
         || (enabled.codex && cache.get("codex").is_some())
         || (enabled.deepseek && cache.get("deepseek").is_some())
-        || (enabled.grok && cache.get("grok").is_some());
+        || (enabled.grok && cache.get("grok").is_some())
+        || (enabled.cursor && cache.get("cursor").is_some())
+        || (enabled.antigravity && cache.get("antigravity").is_some());
 
     UsageSummary {
         refreshed_at: any
@@ -229,6 +293,8 @@ pub fn summary_from_cache(cache: &CacheState, enabled: EnabledProviders) -> Usag
             claude,
             deepseek,
             grok,
+            cursor,
+            antigravity,
         },
     }
 }
@@ -237,7 +303,10 @@ pub fn summary_from_cache(cache: &CacheState, enabled: EnabledProviders) -> Usag
 /// (callers should persist it). Never returns an error — failures degrade to
 /// cached/empty service cards.
 pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSummary {
-    use crate::models::{ClaudeService, CodexService, DeepSeekService, GrokService};
+    use crate::models::{
+        AntigravityService, ClaudeService, CodexService, CursorService, DeepSeekService,
+        GrokService,
+    };
 
     let enabled = config.enabled_providers;
     if enabled.count() == 0 {
@@ -268,12 +337,24 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
             } else {
                 GrokService::default()
             };
+            let cursor = if enabled.cursor {
+                cached_service::<CursorService>(cache, "cursor", MSG_FAILED, None)
+            } else {
+                CursorService::default()
+            };
+            let antigravity = if enabled.antigravity {
+                cached_service::<AntigravityService>(cache, "antigravity", MSG_FAILED, None)
+            } else {
+                AntigravityService::default()
+            };
             return assemble(
                 Services {
                     codex,
                     claude,
                     deepseek,
                     grok,
+                    cursor,
+                    antigravity,
                 },
                 enabled,
                 enabled,
@@ -281,16 +362,62 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
         }
     };
 
-    // ----- Claude (honor any active cooldown before hitting the network) -----
-    let (claude, claude_cached): (ClaudeService, bool) = if !enabled.claude {
+    let claude_cooldown = enabled.claude.then(|| cache.cooldown_active()).flatten();
+    let fetch_claude = enabled.claude && claude_cooldown.is_none();
+    let fetch_codex = enabled.codex && cache.provider_cooldown_active("codex").is_none();
+    let fetch_deepseek = enabled.deepseek && cache.provider_cooldown_active("deepseek").is_none();
+    let fetch_grok = enabled.grok && cache.provider_cooldown_active("grok").is_none();
+    let fetch_cursor = enabled.cursor && cache.provider_cooldown_active("cursor").is_none();
+    let fetch_antigravity =
+        enabled.antigravity && cache.provider_cooldown_active("antigravity").is_none();
+
+    let claude_task = fetch_claude.then(|| {
+        let config = config.clone();
+        let client = client.clone();
+        tokio::spawn(async move { claude::fetch(&config, &client).await })
+    });
+    let codex_task = fetch_codex.then(|| {
+        let config = config.clone();
+        let client = client.clone();
+        tokio::spawn(async move { codex::fetch(&config, &client).await })
+    });
+    let deepseek_task = fetch_deepseek.then(|| {
+        let config = config.clone();
+        let client = client.clone();
+        tokio::spawn(async move { deepseek::fetch(&config, &client).await })
+    });
+    let grok_task = fetch_grok.then(|| {
+        let config = config.clone();
+        let client = client.clone();
+        tokio::spawn(async move { grok::fetch(&config, &client).await })
+    });
+    let cursor_task = fetch_cursor.then(|| {
+        let config = config.clone();
+        let client = client.clone();
+        tokio::spawn(async move { cursor::fetch(&config, &client).await })
+    });
+    let antigravity_task = fetch_antigravity.then(|| {
+        let config = config.clone();
+        let client = client.clone();
+        tokio::spawn(async move { antigravity::fetch(&config, &client).await })
+    });
+
+    let claude_res = join_optional_fetch(claude_task).await;
+    let codex_res = join_optional_fetch(codex_task).await;
+    let deepseek_res = join_optional_fetch(deepseek_task).await;
+    let grok_res = join_optional_fetch(grok_task).await;
+    let cursor_res = join_optional_fetch(cursor_task).await;
+    let antigravity_res = join_optional_fetch(antigravity_task).await;
+
+    let (claude, claude_cached) = if !enabled.claude {
         (ClaudeService::default(), false)
-    } else if let Some(until) = cache.cooldown_active() {
+    } else if let Some(until) = claude_cooldown {
         (
             cached_service(cache, "claude", MSG_RATE_LIMITED, Some(fmt_local(until))),
             true,
         )
     } else {
-        match claude::fetch(config, &client).await {
+        match claude_res.expect("Claude live fetch was scheduled") {
             Ok(svc) => {
                 cache.claude_cooldown_until = None;
                 if let Ok(v) = serde_json::to_value(&svc) {
@@ -313,91 +440,26 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
         }
     };
 
-    // ----- Codex -----
-    let (codex, codex_cached): (CodexService, bool) = if !enabled.codex {
-        (CodexService::default(), false)
-    } else if cache.provider_cooldown_active("codex").is_some() {
-        (cached_service(cache, "codex", MSG_RATE_LIMITED, None), true)
-    } else {
-        cache.clear_provider_cooldown("codex");
-        match codex::fetch(config, &client).await {
-            Ok(svc) => {
-                cache.clear_provider_cooldown("codex");
-                if let Ok(v) = serde_json::to_value(&svc) {
-                    cache.put("codex", v);
-                }
-                (svc, false)
-            }
-            Err(FetchError::Auth { message }) => {
-                (cached_service(cache, "codex", message, None), true)
-            }
-            Err(FetchError::RateLimited { retry_after }) => {
-                cache.set_provider_cooldown("codex", retry_deadline(retry_after));
-                (cached_service(cache, "codex", MSG_RATE_LIMITED, None), true)
-            }
-            Err(FetchError::Other(_)) => (cached_service(cache, "codex", MSG_FAILED, None), true),
-        }
-    };
-
-    // ----- DeepSeek -----
-    let (deepseek, deepseek_cached): (DeepSeekService, bool) = if !enabled.deepseek {
-        (DeepSeekService::default(), false)
-    } else if cache.provider_cooldown_active("deepseek").is_some() {
-        (
-            cached_service(cache, "deepseek", MSG_RATE_LIMITED, None),
-            true,
-        )
-    } else {
-        cache.clear_provider_cooldown("deepseek");
-        match deepseek::fetch(config, &client).await {
-            Ok(svc) => {
-                cache.clear_provider_cooldown("deepseek");
-                if let Ok(v) = serde_json::to_value(&svc) {
-                    cache.put("deepseek", v);
-                }
-                (svc, false)
-            }
-            Err(FetchError::Auth { message }) => {
-                (cached_service(cache, "deepseek", message, None), true)
-            }
-            Err(FetchError::RateLimited { retry_after }) => {
-                cache.set_provider_cooldown("deepseek", retry_deadline(retry_after));
-                (
-                    cached_service(cache, "deepseek", MSG_RATE_LIMITED, None),
-                    true,
-                )
-            }
-            Err(FetchError::Other(_)) => {
-                (cached_service(cache, "deepseek", MSG_FAILED, None), true)
-            }
-        }
-    };
-
-    // ----- Grok Build -----
-    let (grok, grok_cached): (GrokService, bool) = if !enabled.grok {
-        (GrokService::default(), false)
-    } else if cache.provider_cooldown_active("grok").is_some() {
-        (cached_service(cache, "grok", MSG_RATE_LIMITED, None), true)
-    } else {
-        cache.clear_provider_cooldown("grok");
-        match grok::fetch(config, &client).await {
-            Ok(svc) => {
-                cache.clear_provider_cooldown("grok");
-                if let Ok(v) = serde_json::to_value(&svc) {
-                    cache.put("grok", v);
-                }
-                (svc, false)
-            }
-            Err(FetchError::Auth { message }) => {
-                (cached_service(cache, "grok", message, None), true)
-            }
-            Err(FetchError::RateLimited { retry_after }) => {
-                cache.set_provider_cooldown("grok", retry_deadline(retry_after));
-                (cached_service(cache, "grok", MSG_RATE_LIMITED, None), true)
-            }
-            Err(FetchError::Other(_)) => (cached_service(cache, "grok", MSG_FAILED, None), true),
-        }
-    };
+    let (codex, codex_cached) =
+        apply_standard_fetch(cache, "codex", enabled.codex, fetch_codex, codex_res);
+    let (deepseek, deepseek_cached) = apply_standard_fetch(
+        cache,
+        "deepseek",
+        enabled.deepseek,
+        fetch_deepseek,
+        deepseek_res,
+    );
+    let (grok, grok_cached) =
+        apply_standard_fetch(cache, "grok", enabled.grok, fetch_grok, grok_res);
+    let (cursor, cursor_cached) =
+        apply_standard_fetch(cache, "cursor", enabled.cursor, fetch_cursor, cursor_res);
+    let (antigravity, antigravity_cached) = apply_standard_fetch(
+        cache,
+        "antigravity",
+        enabled.antigravity,
+        fetch_antigravity,
+        antigravity_res,
+    );
 
     cache.updated_at = Some(Utc::now());
     assemble(
@@ -406,12 +468,16 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
             claude,
             deepseek,
             grok,
+            cursor,
+            antigravity,
         },
         EnabledProviders {
             codex: codex_cached,
             claude: claude_cached,
             deepseek: deepseek_cached,
             grok: grok_cached,
+            cursor: cursor_cached,
+            antigravity: antigravity_cached,
         },
         enabled,
     )
@@ -431,6 +497,12 @@ pub(crate) fn assemble(
             fallbacks.deepseek,
         ),
         (enabled.grok, &services.grok.status, fallbacks.grok),
+        (enabled.cursor, &services.cursor.status, fallbacks.cursor),
+        (
+            enabled.antigravity,
+            &services.antigravity.status,
+            fallbacks.antigravity,
+        ),
     ]
     .into_iter()
     .filter(|(is_enabled, _, _)| *is_enabled)
@@ -468,7 +540,8 @@ mod tests {
     use crate::cache::CacheState;
     use crate::config::Config;
     use crate::models::{
-        ClaudeService, CodexService, DeepSeekService, EnabledProviders, GrokService, Services,
+        AntigravityService, ClaudeService, CodexService, CursorService, DeepSeekService,
+        EnabledProviders, GrokService, Services,
     };
     use chrono::{DateTime, Utc};
 
@@ -477,15 +550,21 @@ mod tests {
         let mut codex = CodexService::default();
         let mut deepseek = DeepSeekService::default();
         let mut grok = GrokService::default();
+        let mut cursor = CursorService::default();
+        let mut antigravity = AntigravityService::default();
         claude.status = "NOMINAL".into();
         codex.status = "NOMINAL".into();
         deepseek.status = "NOMINAL".into();
         grok.status = "NOMINAL".into();
+        cursor.status = "NOMINAL".into();
+        antigravity.status = "NOMINAL".into();
         Services {
             codex,
             claude,
             deepseek,
             grok,
+            cursor,
+            antigravity,
         }
     }
 
@@ -501,6 +580,8 @@ mod tests {
                 claude: false,
                 deepseek: false,
                 grok: false,
+                cursor: false,
+                antigravity: false,
             },
             EnabledProviders::default(),
         );
@@ -519,6 +600,8 @@ mod tests {
                 claude: false,
                 deepseek: false,
                 grok: false,
+                cursor: false,
+                antigravity: false,
             },
             EnabledProviders::default(),
         );
@@ -535,6 +618,8 @@ mod tests {
             claude: true,
             deepseek: false,
             grok: false,
+            cursor: false,
+            antigravity: false,
         };
 
         let fallbacks = EnabledProviders {
@@ -542,6 +627,8 @@ mod tests {
             claude: false,
             deepseek: true,
             grok: false,
+            cursor: false,
+            antigravity: false,
         };
         let summary = assemble(services, fallbacks, enabled);
 
@@ -557,6 +644,8 @@ mod tests {
             claude: false,
             deepseek: false,
             grok: true,
+            cursor: false,
+            antigravity: false,
         };
 
         let fallbacks = EnabledProviders {
@@ -564,6 +653,34 @@ mod tests {
             claude: false,
             deepseek: false,
             grok: true,
+            cursor: false,
+            antigravity: false,
+        };
+        let summary = assemble(services, fallbacks, enabled);
+
+        assert_eq!(summary.status, "error");
+    }
+
+    #[test]
+    fn cursor_only_failure_is_an_aggregate_error() {
+        let mut services = nominal_services();
+        services.cursor.status = "API ERROR".into();
+        let enabled = EnabledProviders {
+            codex: false,
+            claude: false,
+            deepseek: false,
+            grok: false,
+            cursor: true,
+            antigravity: false,
+        };
+
+        let fallbacks = EnabledProviders {
+            codex: false,
+            claude: false,
+            deepseek: false,
+            grok: false,
+            cursor: true,
+            antigravity: false,
         };
         let summary = assemble(services, fallbacks, enabled);
 
@@ -592,6 +709,8 @@ mod tests {
             claude: false,
             deepseek: false,
             grok: true,
+            cursor: false,
+            antigravity: false,
         };
         let restored = super::summary_from_cache(&cache, enabled);
         assert_eq!(restored.services.grok.status, "LAST KNOWN");
@@ -608,6 +727,8 @@ mod tests {
                 claude: false,
                 deepseek: false,
                 grok: false,
+                cursor: false,
+                antigravity: false,
             },
             ..Config::default()
         };

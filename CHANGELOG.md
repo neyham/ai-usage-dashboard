@@ -4,6 +4,72 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [0.7.0] - 2026-08-21
+
+### Added
+
+- Add opt-in **Cursor** usage tracking on Windows, macOS, and Linux. The
+  dashboard reads the official CLI login or the Cursor desktop session, then
+  shows included monthly usage, named-model API usage, plan, and billing-cycle
+  reset. Cursor stays off by default so an upgrade never starts reading a new
+  credential source without an explicit selection.
+- Add opt-in **Antigravity** Gemini quota tracking on Windows, macOS, and
+  Linux. The dashboard reads the official `agy` OAuth file or the OS keyring
+  item current `agy` builds write, may refresh an expired access token in
+  memory without embedding Google OAuth client secrets, and shows the Gemini
+  5-hour and weekly windows. Antigravity stays off
+  by default.
+- Add an **IP color-slab** art pack with original mascot restyles. Wide
+  top-tier cards use labeled usage bars; compact cards keep the dual ring.
+
+### Fixed
+
+- Continue Cursor credential discovery after an expired CLI or Keychain token
+  so a still-valid desktop `state.vscdb` session can be used.
+- Report a missing macOS Cursor Keychain login as `LOGIN REQUIRED` instead of
+  `CREDENTIAL ERROR`.
+- Remove the dead Antigravity expired-session branch that always returned
+  `SESSION EXPIRED`.
+- Fetch enabled providers in parallel so six live panels no longer stack
+  network timeouts into the frontend refresh limit.
+- Read current `agy` logins from the OS keyring when
+  `antigravity-oauth-token` is absent, so Linux GNOME Keyring sessions are not
+  reported as `LOGIN REQUIRED`.
+
+### Changed
+
+- Make the IP color-slab skin the default. Display Settings can switch back to
+  the circular ring-gauge HUD. Existing configs that already saved `artSkin`
+  keep that choice.
+- Stop embedding Google installed-app OAuth client secrets. Antigravity
+  in-memory refresh now uses `ANTIGRAVITY_OAUTH_CLIENT_ID` /
+  `ANTIGRAVITY_OAUTH_CLIENT_SECRET`, `client_id`/`client_secret` on the local
+  login JSON, or a scan of an installed `agy` / Antigravity.app (same approach
+  as CodexBar). If none are found, an expired session reports
+  `SESSION EXPIRED` until `agy` refreshes the login.
+- Windows now reads only native Windows credential files. Automatic Ubuntu WSL
+  fallback and explicit `wsl:<distro>:<path>` credential paths are removed.
+- Five enabled panels now fill the grid. Exactly one top-tier plan
+  (SuperGrok Heavy, Cursor Ultra/Enterprise, or Google AI Ultra) gets the
+  left half; two top-tier plans split the top row. One to four panels stay
+  equal columns, and six stay a 3×2 wrap.
+- Display Settings now shows the six provider toggles in two columns so Cursor
+  and Antigravity stay on-screen on short displays.
+- Soften the six-panel palette: chrome stays ink-colored, each provider keeps
+  one muted accent, and the ring gauge no longer adds extra neon glows.
+- Add a Q-version mascot to each panel. The face follows usage: idle under
+  35%, focused to 70%, tense to 88%, collapsed above that, and a confused
+  shrug on login or credential failures. The figure is the panel body
+  protagonist, with a mood halo and peak-usage numeral; decorative radar and
+  DeepSeek histogram are gone.
+- Unify provider accents to one lightness/chroma and drop leftover cyan
+  decoration so each panel is only ink + its own accent + ok/warn/danger.
+- Replace segmented usage bars with a square ring gauge. The mascot stands
+  in the ring, the arc is usage, and the peak numeral sits in the opening.
+- Scale the ring numeral with the gauge, enlarge the mascot so it fills the
+  dial, clear a faint box from the Cursor art, and tint DeepSeek's empty
+  track with the panel accent.
+
 ## [0.6.0] - 2026-08-05
 
 ### Added

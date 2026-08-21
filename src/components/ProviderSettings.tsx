@@ -1,5 +1,6 @@
 import { Check, KeyRound, Save, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import type { ArtSkin } from "../ipTheme";
 import type { EnabledProviders, WindowMode } from "../types";
 
 const PROVIDERS: Array<{ key: keyof EnabledProviders; label: string; code: string }> = [
@@ -7,6 +8,8 @@ const PROVIDERS: Array<{ key: keyof EnabledProviders; label: string; code: strin
   { key: "claude", label: "CLAUDE", code: "SYS-02" },
   { key: "deepseek", label: "DEEPSEEK", code: "SYS-03" },
   { key: "grok", label: "GROK", code: "SYS-04" },
+  { key: "cursor", label: "CURSOR", code: "SYS-05" },
+  { key: "antigravity", label: "ANTIGRAVITY", code: "SYS-06" },
 ];
 
 const WINDOW_MODES: Array<{ value: WindowMode; label: string; code: string }> = [
@@ -14,10 +17,16 @@ const WINDOW_MODES: Array<{ value: WindowMode; label: string; code: string }> = 
   { value: "fullscreen", label: "FULLSCREEN", code: "FULL" },
 ];
 
+const ART_SKINS: Array<{ value: ArtSkin; label: string; code: string }> = [
+  { value: "ip", label: "IP SLABS", code: "IP" },
+  { value: "ring", label: "RING GAUGE", code: "RING" },
+];
+
 export function ProviderSettings({
   value,
   windowMode,
   lowPowerMode,
+  artSkin,
   judgeDemo,
   onClose,
   onSave,
@@ -26,6 +35,7 @@ export function ProviderSettings({
   /** Current effective mode; screensaver never renders this dialog. */
   windowMode: WindowMode;
   lowPowerMode: boolean;
+  artSkin: ArtSkin;
   judgeDemo: boolean;
   onClose: () => void;
   onSave: (
@@ -33,6 +43,7 @@ export function ProviderSettings({
     windowMode?: WindowMode,
     deepseekApiKey?: string,
     lowPowerMode?: boolean,
+    artSkin?: ArtSkin,
   ) => Promise<void>;
 }) {
   const [draft, setDraft] = useState(value);
@@ -40,6 +51,8 @@ export function ProviderSettings({
   const [windowModeTouched, setWindowModeTouched] = useState(false);
   const [draftLowPower, setDraftLowPower] = useState(lowPowerMode);
   const [lowPowerTouched, setLowPowerTouched] = useState(false);
+  const [draftArtSkin, setDraftArtSkin] = useState<ArtSkin>(artSkin);
+  const [artSkinTouched, setArtSkinTouched] = useState(false);
   const [deepseekApiKey, setDeepseekApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,12 +84,13 @@ export function ProviderSettings({
     try {
       const providersChanged = PROVIDERS.some(({ key }) => draft[key] !== value[key]);
       const keyToSave = deepseekApiKey.trim();
-      if (providersChanged || windowModeTouched || lowPowerTouched || keyToSave) {
+      if (providersChanged || windowModeTouched || lowPowerTouched || artSkinTouched || keyToSave) {
         await onSave(
           providersChanged ? draft : undefined,
           windowModeTouched ? draftWindow : undefined,
           keyToSave || undefined,
           lowPowerTouched ? draftLowPower : undefined,
+          artSkinTouched ? draftArtSkin : undefined,
         );
       }
       setDeepseekApiKey("");
@@ -172,6 +186,35 @@ export function ProviderSettings({
             </div>
           </fieldset>
 
+          <fieldset className="window-mode-options" disabled={saving}>
+            <legend className="settings-section-label">ART SKIN</legend>
+            <div className="window-mode-grid" role="radiogroup" aria-label="Art skin">
+              {ART_SKINS.map((skin) => (
+                <label
+                  className={`window-mode-option${draftArtSkin === skin.value ? " is-selected" : ""}`}
+                  key={skin.value}
+                >
+                  <input
+                    type="radio"
+                    name="artSkin"
+                    value={skin.value}
+                    checked={draftArtSkin === skin.value}
+                    onClick={() => setArtSkinTouched(true)}
+                    onChange={() => {
+                      setDraftArtSkin(skin.value);
+                      setArtSkinTouched(true);
+                    }}
+                  />
+                  <span className="window-mode-check" aria-hidden>
+                    <Check size={14} strokeWidth={3} />
+                  </span>
+                  <span className="window-mode-name">{skin.label}</span>
+                  <span className="window-mode-code">{skin.code}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
           <fieldset className="performance-options" disabled={saving}>
             <legend className="settings-section-label">PERFORMANCE</legend>
             <label className="provider-option performance-option">
@@ -197,25 +240,27 @@ export function ProviderSettings({
 
           <fieldset className="provider-options" disabled={saving}>
             <legend className="settings-section-label">ACTIVE PROVIDERS</legend>
-            {PROVIDERS.map((provider) => (
-              <label className={`provider-option provider-${provider.key}`} key={provider.key}>
-                <input
-                  type="checkbox"
-                  checked={draft[provider.key]}
-                  onChange={(event) =>
-                    setDraft((current) => ({
-                      ...current,
-                      [provider.key]: event.target.checked,
-                    }))
-                  }
-                />
-                <span className="provider-check" aria-hidden>
-                  <Check size={16} strokeWidth={3} />
-                </span>
-                <span className="provider-name">{provider.label}</span>
-                <span className="provider-code">{provider.code}</span>
-              </label>
-            ))}
+            <div className="provider-grid">
+              {PROVIDERS.map((provider) => (
+                <label className={`provider-option provider-${provider.key}`} key={provider.key}>
+                  <input
+                    type="checkbox"
+                    checked={draft[provider.key]}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        [provider.key]: event.target.checked,
+                      }))
+                    }
+                  />
+                  <span className="provider-check" aria-hidden>
+                    <Check size={16} strokeWidth={3} />
+                  </span>
+                  <span className="provider-name">{provider.label}</span>
+                  <span className="provider-code">{provider.code}</span>
+                </label>
+              ))}
+            </div>
           </fieldset>
 
           <fieldset className="credential-options" disabled={saving || judgeDemo}>

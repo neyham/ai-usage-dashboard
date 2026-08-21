@@ -157,12 +157,27 @@ async fn low_power_mode(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(state.config.lock().await.low_power_mode)
 }
 
+/// Return the persisted art skin without exposing the rest of Config.
+#[tauri::command]
+async fn art_skin(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.config.lock().await.art_skin.clone())
+}
+
+fn normalize_art_skin(value: &str) -> String {
+    if value.trim().eq_ignore_ascii_case("ring") {
+        "ring".into()
+    } else {
+        "ip".into()
+    }
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DisplaySettings {
     enabled_providers: EnabledProviders,
     window_mode: String,
     low_power_mode: bool,
+    art_skin: String,
 }
 
 /// Atomically save changed display settings. Omitted fields are left untouched,
@@ -174,6 +189,7 @@ async fn save_display_settings(
     window_mode: Option<String>,
     deepseek_api_key: Option<String>,
     low_power_mode: Option<bool>,
+    art_skin: Option<String>,
 ) -> Result<DisplaySettings, String> {
     let requested_window = match window_mode {
         Some(mode) => {
@@ -205,6 +221,10 @@ async fn save_display_settings(
         .is_some_and(|key| key != &current_config.deep_seek_api_key);
     let low_power_changed =
         low_power_mode.is_some_and(|requested| requested != current_config.low_power_mode);
+    let requested_art_skin = art_skin.as_deref().map(normalize_art_skin);
+    let art_skin_changed = requested_art_skin
+        .as_ref()
+        .is_some_and(|requested| requested != &current_config.art_skin);
     let mut next_config = current_config.clone();
     next_config.enabled_providers = next_enabled;
     if let Some(key) = requested_deepseek_key {
@@ -215,6 +235,9 @@ async fn save_display_settings(
     }
     if let Some(requested) = low_power_mode {
         next_config.low_power_mode = requested;
+    }
+    if let Some(requested) = requested_art_skin {
+        next_config.art_skin = requested;
     }
 
     let chrome_changed = requested_window.is_some_and(|requested| requested != previous_mode);
@@ -233,6 +256,7 @@ async fn save_display_settings(
         || requested_window.is_some()
         || deepseek_key_changed
         || low_power_changed
+        || art_skin_changed
     {
         config::save(&next_config)
     } else {
@@ -263,6 +287,7 @@ async fn save_display_settings(
         enabled_providers: current_config.enabled_providers,
         window_mode: current_mode.clone(),
         low_power_mode: current_config.low_power_mode,
+        art_skin: current_config.art_skin.clone(),
     };
     drop(current_config);
     drop(current_mode);
@@ -482,10 +507,14 @@ fn config_error_summary(enabled: EnabledProviders) -> UsageSummary {
     summary.services.claude.status = "CONFIG ERROR".into();
     summary.services.deepseek.status = "CONFIG ERROR".into();
     summary.services.grok.status = "CONFIG ERROR".into();
+    summary.services.cursor.status = "CONFIG ERROR".into();
+    summary.services.antigravity.status = "CONFIG ERROR".into();
     summary.services.codex.data_may_be_stale = true;
     summary.services.claude.data_may_be_stale = true;
     summary.services.deepseek.data_may_be_stale = true;
     summary.services.grok.data_may_be_stale = true;
+    summary.services.cursor.data_may_be_stale = true;
+    summary.services.antigravity.data_may_be_stale = true;
     summary
 }
 
@@ -560,6 +589,7 @@ pub fn run() {
             exit_app,
             launch_mode,
             low_power_mode,
+            art_skin,
             judge_demo
         ])
         .setup(move |app| {
@@ -613,7 +643,8 @@ pub fn run() {
 mod tests {
     use super::{
         effective_refresh_interval_minutes, launch_chrome_failure_is_fatal, mode_after_failed_save,
-        normalize_deepseek_api_key, normalize_window_mode, resolve_launch_mode, AppOptions,
+        normalize_art_skin, normalize_deepseek_api_key, normalize_window_mode, resolve_launch_mode,
+        AppOptions,
     };
 
     #[test]
@@ -661,6 +692,13 @@ mod tests {
     fn low_power_mode_uses_a_quieter_refresh_floor() {
         assert_eq!(effective_refresh_interval_minutes(5, false, true), 15);
         assert_eq!(effective_refresh_interval_minutes(30, false, true), 30);
+    }
+
+    #[test]
+    fn art_skin_clamps_to_ring_or_ip() {
+        assert_eq!(normalize_art_skin("IP"), "ip");
+        assert_eq!(normalize_art_skin(" ring "), "ring");
+        assert_eq!(normalize_art_skin("neon"), "ip");
     }
 
     #[test]

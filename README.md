@@ -8,12 +8,13 @@
 
 **Know your coding-agent limits before they interrupt your session.**
 
-See Claude Code, Codex, and Grok Build usage windows, reset times, and service
-health—plus your DeepSeek API balance—in one local desktop view.
+See Claude Code, Codex, Grok Build, Cursor, and Antigravity Gemini usage
+windows, reset times, and service health—plus your DeepSeek API balance—in one
+local desktop view.
 
 **Windows · macOS · Linux · No dashboard account · No analytics or telemetry**
 
-![Four-panel AI Usage Dashboard showing synthetic Codex, Claude Code, DeepSeek, and Grok Build data](docs/assets/dashboard-v0.5.png)
+![Five-panel AI Usage Dashboard in the default IP color-slab skin, showing synthetic Grok, Cursor, Codex, Antigravity, and DeepSeek data](docs/assets/dashboard.png)
 
 > Production UI rendered with bundled synthetic fixtures. No account information
 > or provider credentials are shown.
@@ -56,28 +57,36 @@ or macOS Gatekeeper may require manual confirmation.
 | Claude Code | Available usage windows, reset times, extra usage, cooldown, and cache state |
 | Codex | Usage windows, reset times, plan, banked resets, and earliest expiry |
 | Grok Build | Server-reported credit period, reset time, plan, and optional monthly allowance |
+| Cursor | Included monthly usage, named-model API usage, plan, and billing-cycle reset |
+| Antigravity | Gemini 5-hour and weekly quota, reset times, and plan |
 | DeepSeek | API balance and insufficient-balance state |
 
 - Each provider refreshes independently; one outage does not erase the others.
 - Last-known-good data stays visible and is marked when it may be stale.
-- Choose any zero-to-four provider layout.
+- Choose any zero-to-six provider layout. Five panels fill the board; a
+  single top-tier plan (SuperGrok Heavy, Cursor Ultra/Enterprise, or
+  Google AI Ultra) occupies the left half; two top-tier plans split the
+  top row.
+- The default skin is IP color slabs. Display Settings can switch to the
+  circular ring-gauge HUD. The choice is saved as `artSkin` in `config.json`.
 - Use a normal window or borderless fullscreen on every platform.
 - Enable Low Power Mode to stop animation and heavy compositing, update the
   clock once per minute, and use a 15-minute automatic-refresh minimum.
-- Windows additionally supports WSL credential discovery, scheduled idle launch,
-  and screensaver mode.
+- Windows additionally supports scheduled idle launch and screensaver mode.
 
 ## Compatibility and limitations
 
-Version `0.6.0` is the current multi-platform release: Windows (WinGet + NSIS),
+Version `0.7.0` is the current multi-platform release: Windows (WinGet + NSIS),
 Linux (`.deb` / AppImage), and macOS (`.dmg`). Screensaver and scheduled-idle
-helpers remain Windows-only. Published installers are not code-signed.
+helpers remain Windows-only. Published installers are not code-signed. Community
+WinGet indexes can lag a new GitHub release until the version manifest is
+reviewed.
 
 This project reads credential formats and usage endpoints used by provider CLI
 tools. Some of those interfaces are undocumented and can change without notice;
 incompatible responses fail closed to sanitized last-known-good data. This
 project is not affiliated with, endorsed by, or supported by Anthropic, OpenAI,
-xAI, or DeepSeek.
+xAI, Cursor, Antigravity, or DeepSeek.
 
 ## Local by design
 
@@ -101,8 +110,8 @@ reporting a vulnerability or suspected credential exposure.
 
 ## Additional installation notes
 
-Pin a version with `VERSION=0.6.0` before the install script, for example
-`VERSION=0.6.0 sh install-linux.sh`.
+Pin a version with `VERSION=0.7.0` before the install script, for example
+`VERSION=0.7.0 sh install-linux.sh`.
 
 ### Windows (WinGet and direct installer)
 
@@ -136,7 +145,7 @@ The isolated offline demo reuses the production parsers and bundled fixtures:
 - refresh actions regenerate fixture data without constructing a live request;
 - provider selections persist separately in the platform config directory
   (`judge-demo.json`) and cannot alter live settings;
-- settings can exercise every zero-to-four panel layout.
+- settings can exercise every zero-to-six panel layout.
 
 It demonstrates the UI and parser-to-renderer boundary without touching live
 accounts. It does not validate authentication, endpoint availability, or live
@@ -207,7 +216,7 @@ or bundle when validating embedded production assets.
 
 ## Provider setup
 
-Use the settings button in the bottom toolbar to choose the window mode and
+Use the settings button (gear) to choose the window mode, art skin, and
 which providers appear on the home screen. Disabled providers are excluded from
 automatic and manual refresh cycles, including credential reads and network
 requests. Only changed fields are submitted; provider and window changes are
@@ -217,14 +226,17 @@ leave its password field blank to keep the existing value.
 
 | Provider | Default credential source | Override |
 | --- | --- | --- |
-| Claude | `~/.claude/.credentials.json`, then `credentials.json`; on Windows also the `Ubuntu` WSL home | `claudeCredentialsPath` (`wsl:<distro>:<absolute-path>` on Windows only) |
-| Codex | `~/.codex/auth.json`; on Windows also the `Ubuntu` WSL home | `codexAuthPath` (`wsl:` or `\\wsl.localhost\...` on Windows only) |
+| Claude | `~/.claude/.credentials.json`, then `credentials.json` | `claudeCredentialsPath` (native file path) |
+| Codex | `~/.codex/auth.json` | `codexAuthPath` (native file path) |
 | DeepSeek | `deepSeekApiKey` saved from Display Settings, then `DEEPSEEK_API_KEY` | Enter or replace it in Display Settings |
-| Grok Build | `~/.grok/auth.json`; on Windows also the `Ubuntu` WSL home | `grokCredentialsPath` (`wsl:` or UNC on Windows only) |
+| Grok Build | `~/.grok/auth.json` | `grokCredentialsPath` (native file path) |
+| Cursor | Official CLI login (`~/.cursor/auth.json` on macOS, `%APPDATA%\Cursor\auth.json` on Windows, `~/.config/cursor/auth.json` on Linux; macOS Keychain) or Cursor desktop `state.vscdb` | `cursorCredentialsPath` (`auth.json` or `state.vscdb`) |
+| Antigravity | Official `agy` OAuth file `~/.gemini/antigravity-cli/antigravity-oauth-token`, then the OS keyring item `agy` writes (`service=gemini`, `account=antigravity`) | `antigravityCredentialsPath` (native file path; skips the keyring) |
 
-Sign in with the official Claude Code, Codex, and Grok Build clients before
-enabling their panels. Grok is disabled by default so an upgrade never starts
-reading a newly introduced credential source without an explicit selection.
+Sign in with the official Claude Code, Codex, Grok Build, Cursor, and
+Antigravity (`agy`) clients before enabling their panels. Grok, Cursor, and
+Antigravity are disabled by default so an upgrade never starts reading a newly
+introduced credential source without an explicit selection.
 
 The direct settings field stores DeepSeek's key as plaintext in the per-user
 configuration file. The app never pre-fills or returns that value to the UI;
@@ -234,22 +246,8 @@ with mode 0600 before it becomes visible.
 If you do not want the key in `config.json`, set `DEEPSEEK_API_KEY` in the app's
 environment instead.
 
-For a Windows WSL distribution other than `Ubuntu`, configure an explicit path
-such as:
-
-```json
-{
-  "claudeCredentialsPath": "wsl:Ubuntu-24.04:/home/your-user/.claude/.credentials.json",
-  "codexAuthPath": "wsl:Ubuntu-24.04:/home/your-user/.codex/auth.json",
-  "grokCredentialsPath": "wsl:Ubuntu-24.04:/home/your-user/.grok/auth.json"
-}
-```
-
-The dashboard invokes `wsl.exe` without interpolating the configured path into
-a shell command, caps credential input at 64 KiB, and stops the reader after
-15 seconds. A `\\wsl.localhost\...` UNC path remains supported when preferred.
-Automatic Grok CLI renewal requires the native official path or a `wsl:` path;
-UNC paths remain read-only. An explicit path is fail closed. If it cannot be
+Windows reads the same native credential files as a regular Windows login.
+It does not look inside WSL. An explicit path is fail closed. If it cannot be
 read, the dashboard reports an authentication or data error instead of silently
 selecting another account.
 When a recognized Grok access token expires and the login contains a refresh
@@ -266,6 +264,32 @@ another background attempt. An unavailable CLI is shown as
 `GROK SESSION EXPIRED` instead of incorrectly claiming that the credential file
 is missing; a `403` is reported separately as `GROK ACCESS UNAVAILABLE`.
 
+Cursor uses the official CLI login or the desktop app session already on the
+machine. On macOS the CLI stores the access token in the login Keychain
+(`cursor-access-token`); on Windows and Linux the CLI writes `auth.json`. The
+desktop app keeps a session token in `state.vscdb`. The dashboard only reads
+the access token, builds a session cookie for `cursor.com/api/usage-summary`,
+and never extracts a refresh token, writes credential files, or asks the
+official Cursor CLI to renew. An expired session is reported as
+`SESSION EXPIRED`. These are not public APIs; incompatible responses fail
+closed to sanitized last-known-good data.
+
+Antigravity uses the official `agy` OAuth file at
+`~/.gemini/antigravity-cli/antigravity-oauth-token`. Current `agy` builds store
+the same JSON in the OS keyring instead of that file; the dashboard then reads
+the `gemini` / `antigravity` item from macOS Keychain, GNOME Keyring, or
+Windows Credential Manager. If the access token is expired, the dashboard may refresh it in memory through
+Google's token endpoint. It does not embed Google OAuth client secrets. The
+client is taken from `ANTIGRAVITY_OAUTH_CLIENT_ID` /
+`ANTIGRAVITY_OAUTH_CLIENT_SECRET`, from `client_id`/`client_secret` on the local
+login JSON, or by scanning an installed `agy` / Antigravity.app (the same
+discovery CodexBar uses). If none are found, the panel shows `SESSION EXPIRED`
+until you run `agy`, which refreshes the OS login. It never writes the file or
+keyring item, never sends the refresh token to the renderer, and never logs
+credentials. Quota comes
+from `retrieveUserQuotaSummary`. These are not public APIs; incompatible
+responses fail closed to sanitized last-known-good data.
+
 CodexBar's Grok adapter informed the credential boundary, official-CLI renewal,
 and provider selection. Grok Build 0.2.111 currently returns `Method not found`
 for its `x.ai/billing` ACP probe, so this dashboard uses the live-verified
@@ -275,15 +299,10 @@ closed to sanitized last-known-good data.
 
 ### Claude token renewal
 
-Native Windows Claude credential files are read-only to the dashboard. Direct
-OAuth renewal is intentionally disabled for those files because the dashboard
-cannot participate in every lock used by Claude Code. If the native token has
-expired, refresh it with Claude Code or opt into the bounded CLI fallback in
-configuration.
-
-For explicit `wsl:<distro>:<absolute-path>` credentials, direct renewal uses
-Claude Code-compatible lock directories, reloads the file while holding the
-locks, merges only rotated OAuth fields, and writes atomically.
+Claude credential files are read-only to the dashboard. Direct OAuth renewal is
+intentionally disabled because the dashboard cannot participate in every lock
+used by Claude Code. If the token has expired, refresh it with Claude Code or
+opt into the bounded CLI fallback in configuration.
 
 The optional Claude Code fallback is off by default because its recovery command
 may consume a small amount of usage. When enabled, it is limited to selected
@@ -320,7 +339,9 @@ Example:
     "codex": true,
     "claude": true,
     "deepseek": true,
-    "grok": false
+    "grok": false,
+    "cursor": false,
+    "antigravity": false
   },
   "deepSeekApiKey": "",
   "claudeCredentialsPath": "",
@@ -330,9 +351,12 @@ Example:
   "claudeCodeRefreshMaxBudgetUsd": 0.03,
   "codexAuthPath": "",
   "grokCredentialsPath": "",
+  "cursorCredentialsPath": "",
+  "antigravityCredentialsPath": "",
   "mockMode": "",
   "windowMode": "normal",
-  "lowPowerMode": false
+  "lowPowerMode": false,
+  "artSkin": "ip"
 }
 ```
 
@@ -345,6 +369,9 @@ clamped to safe bounds:
 | `refreshIntervalMinutes` | 5 to 1,440 minutes |
 | `claudeCodeRefreshTimeoutSeconds` | 5 to 120 seconds |
 | `claudeCodeRefreshMaxBudgetUsd` | USD 0.001 to USD 0.10 |
+
+`artSkin` is `"ip"` (color slabs, default) or `"ring"` (circular gauge HUD).
+Change it from **Display Settings**.
 
 `lowPowerMode` can also be changed from **Display Settings**. It disables
 continuous motion and heavyweight full-screen overlays, removes decorative
@@ -399,7 +426,7 @@ transport, HTTP, or response-parse failure after credentials were available.
 
 If every enabled panel fails:
 
-1. Confirm that Claude Code, Codex, and any enabled Grok Build provider are
+1. Confirm that Claude Code, Codex, and any enabled Grok Build or Cursor provider are
    signed in and that a DeepSeek key is available through one of the documented
    sources.
 2. Open `config.json` and check for invalid JSON or an incorrect explicit path.
@@ -465,9 +492,9 @@ The UI suite exercises healthy, rate-limited, partial-failure, and
 insufficient-balance states across seven viewports, including Surface 200%
 landscape, portrait, and half-Snap layouts. It also checks overflow, touch
 targets, refresh state, keyboard behavior, screensaver input exit, offline demo
-disclosure, zero/one/two/three/four-panel selection layouts, transactional
-settings failures, CLI fullscreen isolation, modal focus behavior, and auth-chip
-mapping.
+disclosure, zero-to-six panel selection layouts, plan-tier large and small
+cards, transactional settings failures, CLI fullscreen isolation, modal focus
+behavior, and auth-chip mapping.
 
 Set `mockMode` to `normal`, `claude429`, or `failures` to exercise the embedded
 provider fixtures without network access. An unknown value displays `INVALID

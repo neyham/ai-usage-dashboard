@@ -2,12 +2,12 @@
 
 [English](../README.md)
 
-把 Claude Code、Codex、Grok Build 的当前额度窗口与重置时间，以及
-DeepSeek API 余额，集中放在一个本地桌面看板里。
+把 Claude Code、Codex、Grok Build、Cursor、Antigravity Gemini 的当前额度窗口
+与重置时间，以及 DeepSeek API 余额，集中放在一个本地桌面看板里。
 
 **Windows · macOS · Linux · 无看板账号 · 无 analytics 或 telemetry**
 
-![使用合成数据渲染的四面板 AI Usage Dashboard](assets/dashboard-v0.5.png)
+![默认 IP 色块皮肤下的五面板 AI Usage Dashboard，使用合成数据](assets/dashboard.png)
 
 > 图片来自正式 UI 和内置合成数据，不包含真实账号信息或 provider credential。
 
@@ -21,14 +21,20 @@ DeepSeek API 余额，集中放在一个本地桌面看板里。
 | Claude Code | 可用额度窗口、重置时间、extra usage、cooldown 和缓存状态 |
 | Codex | 额度窗口、重置时间、套餐、banked resets 及最早到期时间 |
 | Grok Build | 服务端返回的 credit period、重置时间、套餐和可选月度 allowance |
+| Cursor | 套餐内月度用量、named-model API 用量、套餐和账期重置时间 |
+| Antigravity | Gemini 5 小时和每周额度、重置时间、套餐 |
 | DeepSeek | API 余额和余额不足状态 |
 
-- 四个 provider 独立刷新；其中一个失败不会清空其他面板。
-- 可以自由选择 0–4 个面板。
+- 各个 provider 独立刷新；其中一个失败不会清空其他面板。
+- 可以自由选择 0–6 个面板。五个面板会铺满；若只有一个顶级套餐
+  （SuperGrok Heavy、Cursor Ultra/Enterprise 或 Google AI Ultra），
+  它会占左半通高；两个顶级套餐则平分上排。
+- 默认皮肤是 IP 色块。可在显示设置中切回圆环 HUD；选择会写入
+  `config.json` 的 `artSkin`。
 - 三个平台均支持普通窗口和无边框全屏。
 - 可以在显示设置中开启低功耗模式：停止动画和高开销合成效果，将时钟更新
   降为每分钟一次，并把自动刷新间隔下限设为 15 分钟；手动刷新不受影响。
-- Windows 另外支持 WSL credential discovery、闲置启动和屏保模式。
+- Windows 另外支持闲置启动和屏保模式。
 
 ## 安装
 
@@ -74,18 +80,19 @@ macOS 和 Linux 安装脚本会根据 Release 中发布的 SHA-256 文件校验�
 ## 不读取 credential 的离线演示
 
 使用 `--judge-demo` 可以启动隔离的合成数据演示。它不会读取正常配置、credential、
-cache，也不会构造 provider 网络请求；设置中仍可体验 0–4 面板布局。
+cache，也不会构造 provider 网络请求；设置中仍可体验 0–6 面板布局。
 
 Windows 安装包目前会添加 **AI Usage Dashboard (Judge Demo)** 开始菜单快捷方式。
 
 ## 兼容性与限制
 
-- 当前版本为 `v0.6.0`：Windows、Linux、macOS。
+- 当前版本为 `v0.7.0`：Windows、Linux、macOS。WinGet 社区源在新 GitHub
+  Release 之后可能短暂滞后。
 - 屏保和闲置启动工具仅支持 Windows。
 - 项目使用 provider CLI 的 credential 格式和用量 endpoint，其中一部分不是公开
   API，未来可能变化。
 - DeepSeek 面板显示 API balance，不是聊天产品的 token usage。
-- 本项目与 Anthropic、OpenAI、xAI、DeepSeek 没有隶属、背书或官方合作关系。
+- 本项目与 Anthropic、OpenAI、xAI、Cursor、Antigravity、DeepSeek 没有隶属、背书或官方合作关系。
 
 源代码构建、provider 配置、刷新与缓存行为等完整技术说明请继续阅读
 [英文 README](../README.md)。

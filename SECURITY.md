@@ -23,7 +23,7 @@ Appropriate reports include:
 - credentials, provider responses, or sensitive account data crossing the
   renderer IPC boundary or being written to logs;
 - unsafe credential-file updates, locking failures, or permission issues;
-- command, argument, or path injection through configuration or WSL handling;
+- command, argument, or path injection through configuration;
 - a CSP bypass or another issue that exposes local data; and
 - a dependency vulnerability that is reachable in this application.
 
@@ -40,10 +40,24 @@ writes `auth.json` itself. For a recognized expired session, it may run the offi
 timeout. The official CLI remains solely responsible for renewing and writing
 its credentials.
 
-Configured `wsl:` distribution and path values are passed as individual
-process arguments rather than interpolated into a shell. Renewal only accepts
-the official `<home>/.grok/auth.json` layout, is serialized across dashboard
-processes, and uses a per-source retry backoff.
+Renewal only accepts the official `<home>/.grok/auth.json` layout, is
+serialized across dashboard processes, and uses a per-source retry backoff.
+
+## Antigravity token refresh boundary
+
+If the local `agy` access token is expired, the dashboard may POST to Google's
+token endpoint. Google OAuth client IDs and secrets are **not** embedded in
+this repository. The client is resolved in this order:
+
+1. `ANTIGRAVITY_OAUTH_CLIENT_ID` and `ANTIGRAVITY_OAUTH_CLIENT_SECRET`;
+2. `client_id` / `client_secret` on the local login JSON;
+3. a scan of an installed `agy` binary or Antigravity.app (same approach as
+   CodexBar).
+
+Resolved clients are never sent to the renderer and never logged. The
+dashboard does not write the OAuth file or OS keyring item. If no client is
+found, refresh is skipped and the panel reports `SESSION EXPIRED` until `agy`
+renews the login.
 
 ## Protect credentials when reporting
 
@@ -53,6 +67,10 @@ Never attach or paste any of the following:
   responses;
 - Codex `auth.json`, authorization headers, cookies, or account identifiers;
 - Grok Build `auth.json`, access or refresh tokens, or account/team identifiers;
+- Cursor CLI `auth.json`, macOS Keychain items, desktop `state.vscdb` tokens,
+  session cookies, or account identifiers;
+- Antigravity / `agy` OAuth access or refresh tokens, OS keyring items, or
+  Google account identifiers;
 - DeepSeek API keys;
 - a dashboard `config.json` containing `deepSeekApiKey`;
 - signing keys or certificate passwords; or

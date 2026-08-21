@@ -1,0 +1,39 @@
+{
+  "groups": [
+    {
+      "displayName": "Gemini Models",
+      "description": "Models within this group: Gemini Flash, Gemini Pro",
+      "buckets": [
+        {
+          "bucketId": "gemini-weekly",
+          "displayName": "Weekly Limit Remaining",
+          "window": "weekly",
+          "resetTime": "2026-08-20T03:59:42Z",
+          "remainingFraction": 0.79
+        },
+        {
+          "bucketId": "gemini-5h",
+          "displayName": "Five Hour Limit Remaining",
+          "window": "5h",
+          "resetTime": "2026-08-19T06:20:12Z",
+          "remainingFraction": 0.73
+        }
+      ]
+    },
+    {
+      "displayName": "Claude and GPT models",
+      "buckets": [
+        {
+          "bucketId": "3p-weekly",
+          "window": "weekly",
+          "remainingFraction": 1
+        },
+        {
+          "bucketId": "3p-5h",
+          "window": "5h",
+          "remainingFraction": 1
+        }
+      ]
+    }
+  ]
+}

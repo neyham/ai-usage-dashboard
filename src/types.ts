@@ -13,6 +13,8 @@ export interface EnabledProviders {
   claude: boolean;
   deepseek: boolean;
   grok: boolean;
+  cursor: boolean;
+  antigravity: boolean;
 }
 
 export interface ClaudeService {
@@ -61,11 +63,35 @@ export interface GrokService {
   monthlyResetLocal?: string;
 }
 
+export interface CursorService {
+  status: string;
+  fromCache: boolean;
+  dataMayBeStale: boolean;
+  plan?: string;
+  usagePercent?: number;
+  usageResetLocal?: string;
+  apiPercent?: number;
+  onDemandPercent?: number;
+}
+
+export interface AntigravityService {
+  status: string;
+  fromCache: boolean;
+  dataMayBeStale: boolean;
+  plan?: string;
+  fiveHourPercent?: number;
+  sevenDayPercent?: number;
+  fiveHourResetLocal?: string;
+  sevenDayResetLocal?: string;
+}
+
 export interface Services {
   codex: CodexService;
   claude: ClaudeService;
   deepseek: DeepSeekService;
   grok: GrokService;
+  cursor: CursorService;
+  antigravity: AntigravityService;
 }
 
 export interface UsageSummary {

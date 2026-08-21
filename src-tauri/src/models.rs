@@ -10,6 +10,8 @@ pub struct EnabledProviders {
     pub claude: bool,
     pub deepseek: bool,
     pub grok: bool,
+    pub cursor: bool,
+    pub antigravity: bool,
 }
 
 impl Default for EnabledProviders {
@@ -19,16 +21,25 @@ impl Default for EnabledProviders {
             claude: true,
             deepseek: true,
             grok: false,
+            cursor: false,
+            antigravity: false,
         }
     }
 }
 
 impl EnabledProviders {
     pub fn count(self) -> usize {
-        [self.codex, self.claude, self.deepseek, self.grok]
-            .into_iter()
-            .filter(|enabled| *enabled)
-            .count()
+        [
+            self.codex,
+            self.claude,
+            self.deepseek,
+            self.grok,
+            self.cursor,
+            self.antigravity,
+        ]
+        .into_iter()
+        .filter(|enabled| *enabled)
+        .count()
     }
 }
 
@@ -170,6 +181,72 @@ impl Default for GrokService {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorService {
+    pub status: String,
+    pub from_cache: bool,
+    pub data_may_be_stale: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub usage_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub usage_reset_local: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub api_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub on_demand_percent: Option<f64>,
+}
+
+impl Default for CursorService {
+    fn default() -> Self {
+        Self {
+            status: "AWAITING DATA".into(),
+            from_cache: false,
+            data_may_be_stale: false,
+            plan: None,
+            usage_percent: None,
+            usage_reset_local: None,
+            api_percent: None,
+            on_demand_percent: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AntigravityService {
+    pub status: String,
+    pub from_cache: bool,
+    pub data_may_be_stale: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub five_hour_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub seven_day_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub five_hour_reset_local: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub seven_day_reset_local: Option<String>,
+}
+
+impl Default for AntigravityService {
+    fn default() -> Self {
+        Self {
+            status: "AWAITING DATA".into(),
+            from_cache: false,
+            data_may_be_stale: false,
+            plan: None,
+            five_hour_percent: None,
+            seven_day_percent: None,
+            five_hour_reset_local: None,
+            seven_day_reset_local: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Services {
@@ -177,6 +254,8 @@ pub struct Services {
     pub claude: ClaudeService,
     pub deepseek: DeepSeekService,
     pub grok: GrokService,
+    pub cursor: CursorService,
+    pub antigravity: AntigravityService,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
