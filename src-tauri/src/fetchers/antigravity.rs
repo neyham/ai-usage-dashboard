@@ -14,7 +14,9 @@ use super::{require_success, send, send_with_one_retry, FetchError, MSG_LOGIN_RE
 use crate::config::Config;
 use crate::models::AntigravityService;
 use crate::util::{clamp_percent, local_label, parse_datetime_str};
-use anyhow::{anyhow, bail, Context};
+#[cfg(not(windows))]
+use anyhow::anyhow;
+use anyhow::{bail, Context};
 use chrono::{DateTime, Utc};
 use reqwest::{Client, RequestBuilder};
 use serde_json::Value;
@@ -474,9 +476,9 @@ fn oauth_artifact_candidates() -> Vec<PathBuf> {
 }
 
 fn installed_antigravity_artifacts() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
     #[cfg(target_os = "macos")]
     {
+        let mut paths = Vec::new();
         let roots = [
             PathBuf::from("/Applications"),
             dirs::home_dir().unwrap_or_default().join("Applications"),
@@ -497,13 +499,19 @@ fn installed_antigravity_artifacts() -> Vec<PathBuf> {
         }
         paths.push(PathBuf::from("/opt/homebrew/bin/agy"));
         paths.push(PathBuf::from("/usr/local/bin/agy"));
+        paths
     }
     #[cfg(target_os = "linux")]
     {
-        paths.push(PathBuf::from("/usr/bin/agy"));
-        paths.push(PathBuf::from("/usr/local/bin/agy"));
+        vec![
+            PathBuf::from("/usr/bin/agy"),
+            PathBuf::from("/usr/local/bin/agy"),
+        ]
     }
-    paths
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        Vec::new()
+    }
 }
 
 fn which_command(name: &str) -> Option<PathBuf> {
