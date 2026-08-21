@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
@@ -14,17 +14,48 @@ import { SystemStrip } from "./components/SystemStrip";
 import { SideRail } from "./components/SideRail";
 import { TelemetryBar } from "./components/TelemetryBar";
 import { ProviderSettings } from "./components/ProviderSettings";
+import { normalizeArtSkin, type ArtSkin } from "./ipTheme";
+import {
+  computePanelLayout,
+  enabledProviderList,
+  livePlanOf,
+  loadStoredPlanSizes,
+  mergeStoredPlanSizes,
+  resolveSize,
+  saveStoredPlanSizes,
+  type PlanSize,
+  type ProviderKind,
+  type StoredPlanSizes,
+} from "./planLayout";
 
 const EMPTY: UsageSummary = {
   refreshedAt: null,
   status: "idle",
-  enabledProviders: { codex: true, claude: true, deepseek: true, grok: false },
+  enabledProviders: {
+    codex: true,
+    claude: true,
+    deepseek: true,
+    grok: false,
+    cursor: false,
+    antigravity: false,
+  },
   services: {
     codex: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
     claude: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
     deepseek: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
     grok: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
+    cursor: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
+    antigravity: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
   },
+};
+
+const PANEL_META: Record<ProviderKind, { title: string; code: string }> = {
+  codex: { title: "CODEX", code: "SYS-01" },
+  claude: { title: "CLAUDE", code: "SYS-02" },
+  deepseek: { title: "DEEPSEEK", code: "SYS-03" },
+  grok: { title: "GROK", code: "SYS-04" },
+  cursor: { title: "CURSOR", code: "SYS-05" },
+  antigravity: { title: "ANTIGRAVITY", code: "SYS-06" },
 };
 
 const REFRESH_TIMEOUT_MS = 180_000;
@@ -44,11 +75,15 @@ export default function App() {
   const [summary, setSummary] = useState<UsageSummary>(EMPTY);
   const [launchMode, setLaunchMode] = useState<LaunchMode>("normal");
   const [lowPowerMode, setLowPowerMode] = useState(false);
+  const [artSkin, setArtSkin] = useState<ArtSkin>("ip");
   const [pageVisible, setPageVisible] = useState(() => !document.hidden);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [judgeDemo, setJudgeDemo] = useState(false);
+  const [storedPlanSizes, setStoredPlanSizes] = useState<StoredPlanSizes>(() =>
+    typeof localStorage === "undefined" ? {} : loadStoredPlanSizes(false),
+  );
   const refreshPendingRef = useRef(false);
   const refreshTimerRef = useRef<number | null>(null);
   const settingsReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -178,6 +213,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    invoke<string>("art_skin")
+      .then((skin) => {
+        if (!disposed) setArtSkin(normalizeArtSkin(skin));
+      })
+      .catch((err) => console.error("art_skin failed", err));
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const onVisibilityChange = () => setPageVisible(!document.hidden);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -194,6 +241,10 @@ export default function App() {
       disposed = true;
     };
   }, []);
+
+  useEffect(() => {
+    setStoredPlanSizes(loadStoredPlanSizes(judgeDemo));
+  }, [judgeDemo]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -271,8 +322,40 @@ export default function App() {
     : uiError
       ? "error"
       : summary.status;
-  const linkLabel = LINK_LABEL[displayStatus] ?? LINK_LABEL.error;
-  const enabledCount = Object.values(summary.enabledProviders).filter(Boolean).length;
+  const linkLabel =
+    artSkin === "ip" && displayStatus === "ok"
+      ? "LINK ACTIVE"
+      : (LINK_LABEL[displayStatus] ?? LINK_LABEL.error);
+  const enabledKinds = useMemo(
+    () => enabledProviderList(summary.enabledProviders),
+    [summary.enabledProviders],
+  );
+  const enabledCount = enabledKinds.length;
+  const panelLayout = useMemo(() => {
+    const sizes = {} as Record<ProviderKind, PlanSize>;
+    const updates: StoredPlanSizes = {};
+    for (const kind of enabledKinds) {
+      const resolved = resolveSize(kind, livePlanOf(kind, summary.services), storedPlanSizes);
+      sizes[kind] = resolved.size;
+      if (resolved.next) {
+        updates[kind] = resolved.next;
+      }
+    }
+    return {
+      sizes,
+      updates,
+      ...computePanelLayout(enabledKinds, sizes),
+    };
+  }, [enabledKinds, storedPlanSizes, summary.services]);
+
+  useEffect(() => {
+    if (Object.keys(panelLayout.updates).length === 0) {
+      return;
+    }
+    const next = mergeStoredPlanSizes(storedPlanSizes, panelLayout.updates);
+    saveStoredPlanSizes(judgeDemo, next);
+    setStoredPlanSizes(next);
+  }, [judgeDemo, panelLayout.updates, storedPlanSizes]);
 
   const saveSettings = useCallback(
     async (
@@ -280,6 +363,7 @@ export default function App() {
       nextWindowMode?: WindowMode,
       deepseekApiKey?: string,
       nextLowPowerMode?: boolean,
+      nextArtSkin?: ArtSkin,
     ) => {
       try {
         const args: {
@@ -287,20 +371,24 @@ export default function App() {
           windowMode: WindowMode | null;
           deepseekApiKey: string | null;
           lowPowerMode?: boolean;
+          artSkin?: ArtSkin;
         } = {
           enabledProviders: enabledProviders ?? null,
           windowMode: nextWindowMode ?? null,
           deepseekApiKey: deepseekApiKey ?? null,
         };
         if (nextLowPowerMode !== undefined) args.lowPowerMode = nextLowPowerMode;
+        if (nextArtSkin !== undefined) args.artSkin = nextArtSkin;
         const saved = await invoke<{
           enabledProviders: EnabledProviders;
           windowMode: WindowMode;
           lowPowerMode: boolean;
+          artSkin: string;
         }>("save_display_settings", args);
         setSummary((current) => ({ ...current, enabledProviders: saved.enabledProviders }));
         setLaunchMode(saved.windowMode);
         setLowPowerMode(saved.lowPowerMode);
+        setArtSkin(normalizeArtSkin(saved.artSkin));
       } catch (err) {
         try {
           const actualMode = await invoke<string>("launch_mode");
@@ -321,10 +409,11 @@ export default function App() {
     <div
       className={`dashboard mode-${launchMode}${lowPowerMode ? " low-power" : ""}${pageVisible ? "" : " effects-paused"}`}
       data-low-power={lowPowerMode ? "true" : "false"}
+      data-art={artSkin}
     >
       <div className="scanlines" aria-hidden />
       <div className="vignette" aria-hidden />
-      <SideRail />
+      <SideRail enabledProviders={summary.enabledProviders} />
 
       <div className="stage">
         <header className="topbar">
@@ -338,24 +427,25 @@ export default function App() {
           <ClockHeader lowPowerMode={lowPowerMode} />
         </header>
 
-        <main className="panels" data-count={enabledCount} aria-busy={isRefreshing}>
-          {summary.enabledProviders.codex && (
-            <ServicePanel kind="codex" title="CODEX" code="SYS-01" service={summary.services.codex} />
-          )}
-          {summary.enabledProviders.claude && (
-            <ServicePanel kind="claude" title="CLAUDE" code="SYS-02" service={summary.services.claude} />
-          )}
-          {summary.enabledProviders.deepseek && (
+        <main
+          className="panels"
+          data-count={enabledCount}
+          data-layout={panelLayout.mode}
+          aria-busy={isRefreshing}
+        >
+          {enabledKinds.map((kind) => (
             <ServicePanel
-              kind="deepseek"
-              title="DEEPSEEK"
-              code="SYS-03"
-              service={summary.services.deepseek}
+              key={kind}
+              kind={kind}
+              title={PANEL_META[kind].title}
+              code={PANEL_META[kind].code}
+              service={summary.services[kind]}
+              planSize={panelLayout.sizes[kind]}
+              slot={panelLayout.slots[kind]}
+              placement={panelLayout.placements[kind]}
+              artSkin={artSkin}
             />
-          )}
-          {summary.enabledProviders.grok && (
-            <ServicePanel kind="grok" title="GROK" code="SYS-04" service={summary.services.grok} />
-          )}
+          ))}
           {enabledCount === 0 && (
             <div className="panels-empty" role="status">
               <span>NO PROVIDERS SELECTED</span>
@@ -380,6 +470,7 @@ export default function App() {
           value={summary.enabledProviders}
           windowMode={effectiveWindowMode}
           lowPowerMode={lowPowerMode}
+          artSkin={artSkin}
           judgeDemo={judgeDemo}
           onClose={closeSettings}
           onSave={saveSettings}

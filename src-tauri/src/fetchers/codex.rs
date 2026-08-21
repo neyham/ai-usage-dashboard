@@ -2,10 +2,8 @@
 //! queries the ChatGPT/Codex web backend. That endpoint is not a stable public
 //! API, so malformed responses fall back to last-known-good cached data.
 //!
-//! Credential discovery matches Claude/Grok on Windows: native
-//! `%USERPROFILE%\.codex\auth.json` first, then a default WSL `Ubuntu` home
-//! fallback. Explicit `codexAuthPath` supports a bounded
-//! `wsl:<distro>:<absolute-path>` reader and is fail closed.
+//! Credential discovery uses the native home path, or an explicit
+//! `codexAuthPath` file override. Explicit paths are fail closed.
 
 use super::{
     require_success, send, send_with_one_retry, FetchError, Resp, MSG_CREDENTIAL_ERROR,
@@ -21,21 +19,13 @@ use serde_json::Map;
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-#[cfg(windows)]
-use std::process::{Command, Stdio};
 use std::time::Duration;
-#[cfg(windows)]
-use std::time::Instant;
 
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 const RESET_CREDITS_URL: &str = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const RESET_CREDITS_TIMEOUT: Duration = Duration::from_secs(4);
 const LONG_WINDOW_THRESHOLD_SECONDS: u64 = 24 * 60 * 60;
 const MAX_AUTH_BYTES: usize = 64 * 1024;
-#[cfg(any(windows, test))]
-const WSL_MISSING_EXIT_CODE: i32 = 44;
-#[cfg(windows)]
-const WSL_PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
 type Window<'a> = &'a Map<String, Value>;
 type WindowPair<'a> = (Option<Window<'a>>, Option<Window<'a>>);
 
@@ -53,9 +43,6 @@ enum CodexAuthError {
 #[derive(Debug)]
 struct MissingCodexToken;
 
-#[derive(Debug)]
-struct MissingCodexCredential;
-
 impl std::fmt::Display for MissingCodexToken {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("Codex token missing in auth.json")
@@ -63,14 +50,6 @@ impl std::fmt::Display for MissingCodexToken {
 }
 
 impl std::error::Error for MissingCodexToken {}
-
-impl std::fmt::Display for MissingCodexCredential {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("Codex credential file is missing")
-    }
-}
-
-impl std::error::Error for MissingCodexCredential {}
 
 struct ResetCreditSummary {
     available: u64,
@@ -224,10 +203,9 @@ fn authenticated_get(client: &Client, url: &str, auth: &CodexAuth) -> reqwest::R
 fn read_auth(config: &Config) -> Result<CodexAuth, CodexAuthError> {
     let text = read_auth_text(config.codex_auth_path.trim()).map_err(|error| {
         let missing = error.chain().any(|cause| {
-            cause.downcast_ref::<MissingCodexCredential>().is_some()
-                || cause
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|io_error| io_error.kind() == std::io::ErrorKind::NotFound)
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io_error| io_error.kind() == std::io::ErrorKind::NotFound)
         });
         if missing {
             CodexAuthError::Missing
@@ -246,35 +224,10 @@ fn read_auth(config: &Config) -> Result<CodexAuth, CodexAuthError> {
 
 fn read_auth_text(configured: &str) -> anyhow::Result<String> {
     if !configured.is_empty() {
-        if let Some(spec) = parse_wsl_spec(configured)? {
-            #[cfg(windows)]
-            {
-                return read_wsl_path(&spec.distro, &spec.path);
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = spec;
-                bail!("Codex wsl: credential paths require Windows");
-            }
-        }
         return read_file_limited(Path::new(configured));
     }
 
-    let path = default_auth_path()?;
-    #[cfg(windows)]
-    {
-        match std::fs::metadata(&path) {
-            Ok(_) => read_file_limited(&path),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => read_default_wsl_auth(),
-            Err(err) => {
-                Err(err).with_context(|| format!("inspect Codex auth at {}", path.display()))
-            }
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        read_file_limited(&path)
-    }
+    read_file_limited(&default_auth_path()?)
 }
 
 fn default_auth_path() -> anyhow::Result<PathBuf> {
@@ -302,183 +255,6 @@ fn read_bounded_utf8(reader: impl Read) -> anyhow::Result<String> {
     String::from_utf8(bytes).context("Codex auth.json is not UTF-8")
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct WslSpec {
-    distro: String,
-    path: String,
-}
-
-fn parse_wsl_spec(value: &str) -> anyhow::Result<Option<WslSpec>> {
-    let Some(spec) = value.strip_prefix("wsl:") else {
-        return Ok(None);
-    };
-    let (raw_distro, raw_path) = spec
-        .split_once(':')
-        .context("Codex WSL path must be wsl:<distro>:<absolute-path>")?;
-    if raw_distro.chars().any(char::is_control) || raw_path.chars().any(char::is_control) {
-        bail!("Codex WSL credential spec contains control characters");
-    }
-    let distro = raw_distro.trim();
-    let path = raw_path.trim();
-    if distro.is_empty() {
-        bail!("Codex WSL distribution is invalid");
-    }
-    if !path.starts_with('/') {
-        bail!("Codex WSL credential path must be absolute");
-    }
-    Ok(Some(WslSpec {
-        distro: distro.to_string(),
-        path: path.to_string(),
-    }))
-}
-
-#[cfg(windows)]
-fn read_wsl_path(distro: &str, path: &str) -> anyhow::Result<String> {
-    if let Some(text) = read_wsl_unc(distro, path) {
-        return Ok(text);
-    }
-    let mut command = Command::new("wsl.exe");
-    command.args([
-        "-d",
-        distro,
-        "--",
-        "sh",
-        "-lc",
-        "if [ ! -f \"$1\" ]; then exit 44; fi; cat -- \"$1\"",
-        "ai-usage-dashboard",
-        path,
-    ]);
-    read_wsl_command(command)
-        .with_context(|| format!("read Codex WSL credentials at wsl:{distro}:{path}"))
-}
-
-#[cfg(windows)]
-fn read_default_wsl_auth() -> anyhow::Result<String> {
-    let mut command = Command::new("wsl.exe");
-    command.args([
-        "-d",
-        "Ubuntu",
-        "--",
-        "sh",
-        "-lc",
-        "if [ ! -f \"$HOME/.codex/auth.json\" ]; then exit 44; fi; cat -- \"$HOME/.codex/auth.json\"",
-    ]);
-    read_wsl_command(command).context("read Codex auth.json from default WSL Ubuntu home")
-}
-
-#[cfg(windows)]
-fn read_wsl_unc(distro: &str, linux_path: &str) -> Option<String> {
-    for candidate in wsl_unc_candidates(distro, linux_path)? {
-        if let Ok(text) = read_file_limited(&candidate) {
-            if !text.trim().is_empty() {
-                return Some(text);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(windows)]
-fn wsl_unc_candidates(distro: &str, linux_path: &str) -> Option<[PathBuf; 2]> {
-    fn numbered_device(stem: &str, prefix: &str) -> bool {
-        let Some(suffix) = stem.strip_prefix(prefix) else {
-            return false;
-        };
-        suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9')
-    }
-
-    fn valid_component(component: &str) -> bool {
-        if component.is_empty()
-            || component == "."
-            || component == ".."
-            || component.ends_with('.')
-            || component.ends_with(' ')
-            || component.chars().any(|ch| {
-                ch <= '\u{1f}' || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
-            })
-        {
-            return false;
-        }
-
-        let stem = component
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_uppercase();
-        !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-            && !numbered_device(&stem, "COM")
-            && !numbered_device(&stem, "LPT")
-    }
-
-    if !valid_component(distro) {
-        return None;
-    }
-    let relative = linux_path.strip_prefix('/')?;
-    let components = relative.split('/').collect::<Vec<_>>();
-    if components.is_empty() || components.iter().any(|part| !valid_component(part)) {
-        return None;
-    }
-    let joined = components.join("\\");
-    Some([
-        PathBuf::from(format!(r"\\wsl.localhost\{distro}\{joined}")),
-        PathBuf::from(format!(r"\\wsl$\{distro}\{joined}")),
-    ])
-}
-
-#[cfg(windows)]
-fn read_wsl_command(mut command: Command) -> anyhow::Result<String> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("start WSL Codex credential reader")?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("capture WSL Codex credential output")?;
-    let reader = std::thread::spawn(move || read_bounded_utf8(stdout));
-    let deadline = Instant::now() + WSL_PROCESS_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let text = reader
-                    .join()
-                    .map_err(|_| anyhow!("join WSL Codex credential reader"))??;
-                if !status.success() {
-                    if wsl_exit_is_missing(status.code()) {
-                        return Err(MissingCodexCredential.into());
-                    }
-                    bail!("WSL Codex credential reader exited with {status}");
-                }
-                if text.trim().is_empty() {
-                    bail!("WSL Codex credential file is empty");
-                }
-                return Ok(text);
-            }
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = reader.join();
-                bail!("WSL Codex credential reader timed out");
-            }
-            Err(err) => {
-                let _ = child.kill();
-                let _ = reader.join();
-                return Err(err).context("wait for WSL Codex credential reader");
-            }
-        }
-    }
-}
-
-#[cfg(any(windows, test))]
-fn wsl_exit_is_missing(exit_code: Option<i32>) -> bool {
-    exit_code == Some(WSL_MISSING_EXIT_CODE)
-}
-
 fn parse_auth(text: &str) -> anyhow::Result<CodexAuth> {
     let root: Value = serde_json::from_str(text).context("parse Codex auth.json")?;
     let tokens = &root["tokens"];
@@ -504,20 +280,13 @@ fn parse_auth(text: &str) -> anyhow::Result<CodexAuth> {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_auth_path, parse_auth, parse_reset_credits, parse_usage, parse_wsl_spec, read_auth,
-        read_auth_text, wsl_exit_is_missing, CodexAuthError, WslSpec, WSL_MISSING_EXIT_CODE,
+        default_auth_path, parse_auth, parse_reset_credits, parse_usage, read_auth, read_auth_text,
+        CodexAuthError,
     };
     use crate::config::Config;
     use crate::util::local_label;
     use serde_json::json;
     use std::io::Write;
-
-    #[test]
-    fn wsl_missing_credential_exit_code_is_distinct() {
-        assert!(wsl_exit_is_missing(Some(WSL_MISSING_EXIT_CODE)));
-        assert!(!wsl_exit_is_missing(Some(1)));
-        assert!(!wsl_exit_is_missing(None));
-    }
 
     #[test]
     fn codex_used_percent_is_already_percent_scale() {
@@ -607,24 +376,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_wsl_spec_parses_bounded_absolute_paths() {
-        assert_eq!(
-            parse_wsl_spec("wsl:Ubuntu:/root/.codex/auth.json").expect("valid"),
-            Some(WslSpec {
-                distro: "Ubuntu".into(),
-                path: "/root/.codex/auth.json".into(),
-            })
-        );
-        assert_eq!(
-            parse_wsl_spec(r"C:\Users\me\.codex\auth.json").expect("native"),
-            None
-        );
-        assert!(parse_wsl_spec("wsl::/root/.codex/auth.json").is_err());
-        assert!(parse_wsl_spec("wsl:Ubuntu:relative/auth.json").is_err());
-        assert!(parse_wsl_spec("wsl:Ubuntu\n:/root/.codex/auth.json").is_err());
-    }
-
-    #[test]
     fn codex_explicit_native_path_is_fail_closed() {
         let missing = std::env::temp_dir().join(format!(
             "ai-usage-dashboard-missing-codex-auth-{}.json",
@@ -703,31 +454,5 @@ mod tests {
     fn codex_default_auth_path_is_home_dot_codex() {
         let path = default_auth_path().expect("home");
         assert!(path.ends_with(std::path::Path::new(".codex").join("auth.json")));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn codex_wsl_unc_candidates_are_exact() {
-        use super::wsl_unc_candidates;
-        let paths =
-            wsl_unc_candidates("Ubuntu", "/root/.codex/auth.json").expect("valid linux path");
-        assert_eq!(
-            paths[0].to_string_lossy(),
-            r"\\wsl.localhost\Ubuntu\root\.codex\auth.json"
-        );
-        assert_eq!(
-            paths[1].to_string_lossy(),
-            r"\\wsl$\Ubuntu\root\.codex\auth.json"
-        );
-        assert!(wsl_unc_candidates("Ubuntu", "relative/auth.json").is_none());
-        assert!(wsl_unc_candidates("bad:distro", "/root/.codex/auth.json").is_none());
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn codex_wsl_spec_requires_windows() {
-        let err = read_auth_text("wsl:Ubuntu:/root/.codex/auth.json")
-            .expect_err("wsl paths only work on Windows");
-        assert!(format!("{err:#}").contains("require Windows"));
     }
 }

@@ -30,7 +30,7 @@ pub struct Config {
     pub enabled_providers: EnabledProviders,
     /// Optional plaintext DeepSeek key saved directly from Display Settings.
     pub deep_seek_api_key: String,
-    /// Optional override path / "wsl:<distro>:<path>" spec for Claude creds.
+    /// Optional override path for Claude credential files.
     pub claude_credentials_path: String,
     /// Optional recovery path for Claude OAuth refresh failures. Disabled by
     /// default because it can spend a tiny amount of Claude Code usage.
@@ -38,14 +38,19 @@ pub struct Config {
     pub claude_code_command: String,
     pub claude_code_refresh_timeout_seconds: u64,
     pub claude_code_refresh_max_budget_usd: f64,
-    /// Optional override path for Codex auth.json, including a bounded
-    /// "wsl:<distro>:<absolute-path>" spec. Empty uses the native home path,
-    /// then (on Windows only) a default Ubuntu WSL home fallback.
+    /// Optional override path for Codex auth.json. Empty uses the native home
+    /// path. Codex credentials are always read-only.
     pub codex_auth_path: String,
-    /// Optional path to Grok Build auth.json, including a bounded
-    /// "wsl:<distro>:<path>" spec or Windows UNC path into WSL. Grok
-    /// credentials are always read-only.
+    /// Optional path to Grok Build auth.json. Grok credentials are always
+    /// read-only.
     pub grok_credentials_path: String,
+    /// Optional path to Cursor CLI `auth.json` or Cursor desktop `state.vscdb`.
+    /// Cursor credentials are always read-only.
+    pub cursor_credentials_path: String,
+    /// Optional path to Antigravity / `agy` OAuth token file. Empty uses the
+    /// official file, then the OS keyring item `agy` writes. Antigravity
+    /// credentials are always read-only.
+    pub antigravity_credentials_path: String,
     /// "" for live; "normal" | "claude429" | "failures" for mock mode.
     pub mock_mode: String,
     /// Preferred window chrome when not launched with CLI override:
@@ -54,6 +59,8 @@ pub struct Config {
     /// Reduce continuous WebView work for low-power devices by disabling
     /// decorative motion/effects and lowering the renderer clock cadence.
     pub low_power_mode: bool,
+    /// Visual language: "ring" (circular gauge HUD) or "ip" (IP-as-logo slabs).
+    pub art_skin: String,
 }
 
 impl Default for Config {
@@ -71,9 +78,12 @@ impl Default for Config {
             claude_code_refresh_max_budget_usd: DEFAULT_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD,
             codex_auth_path: String::new(),
             grok_credentials_path: String::new(),
+            cursor_credentials_path: String::new(),
+            antigravity_credentials_path: String::new(),
             mock_mode: String::new(),
             window_mode: "normal".into(),
             low_power_mode: false,
+            art_skin: "ip".into(),
         }
     }
 }
@@ -118,6 +128,12 @@ impl Config {
         } else {
             "normal".into()
         };
+        let skin = self.art_skin.trim().to_ascii_lowercase();
+        self.art_skin = if skin == "ring" {
+            "ring".into()
+        } else {
+            "ip".into()
+        };
         self
     }
 }
@@ -143,7 +159,9 @@ const DEFAULT_CONFIG_JSON: &str = r#"{
     "codex": true,
     "claude": true,
     "deepseek": true,
-    "grok": false
+    "grok": false,
+    "cursor": false,
+    "antigravity": false
   },
   "deepSeekApiKey": "",
   "claudeCredentialsPath": "",
@@ -153,9 +171,12 @@ const DEFAULT_CONFIG_JSON: &str = r#"{
   "claudeCodeRefreshMaxBudgetUsd": 0.03,
   "codexAuthPath": "",
   "grokCredentialsPath": "",
+  "cursorCredentialsPath": "",
+  "antigravityCredentialsPath": "",
   "mockMode": "",
   "windowMode": "normal",
-  "lowPowerMode": false
+  "lowPowerMode": false,
+  "artSkin": "ip"
 }
 "#;
 
@@ -247,6 +268,8 @@ mod tests {
         assert!(config.enabled_providers.claude);
         assert!(config.enabled_providers.deepseek);
         assert!(!config.enabled_providers.grok);
+        assert!(!config.enabled_providers.cursor);
+        assert!(!config.enabled_providers.antigravity);
         assert_eq!(
             config.refresh_interval_minutes,
             DEFAULT_REFRESH_INTERVAL_MINUTES
@@ -270,6 +293,8 @@ mod tests {
         assert!(!config.enabled_providers.claude);
         assert!(!config.enabled_providers.deepseek);
         assert!(!config.enabled_providers.grok);
+        assert!(!config.enabled_providers.cursor);
+        assert!(!config.enabled_providers.antigravity);
     }
 
     #[test]
@@ -281,6 +306,8 @@ mod tests {
         assert!(!selection.claude);
         assert!(selection.deepseek);
         assert!(!selection.grok);
+        assert!(!selection.cursor);
+        assert!(!selection.antigravity);
     }
 
     #[test]
@@ -300,6 +327,8 @@ mod tests {
             claude: false,
             deepseek: true,
             grok: true,
+            cursor: false,
+            antigravity: false,
         };
 
         save_judge_demo_selection_to(&path, selection).expect("save demo selection");
@@ -334,6 +363,19 @@ mod tests {
 
         assert!(!defaulted.low_power_mode);
         assert!(enabled.low_power_mode);
+    }
+
+    #[test]
+    fn art_skin_defaults_to_ip_and_clamps_unknown_values() {
+        let defaulted: Config =
+            serde_json::from_str(r#"{}"#).expect("empty object uses field defaults");
+        assert_eq!(defaulted.art_skin, "ip");
+
+        let ring: Config = serde_json::from_str(r#"{"artSkin":"RING"}"#).expect("ring skin");
+        assert_eq!(ring.clamp().art_skin, "ring");
+
+        let junk: Config = serde_json::from_str(r#"{"artSkin":"neon"}"#).expect("unknown skin");
+        assert_eq!(junk.clamp().art_skin, "ip");
     }
 
     #[test]

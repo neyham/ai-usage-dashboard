@@ -49,8 +49,6 @@ const AUTH_REFRESH_LOCK_WAIT: StdDuration = StdDuration::from_secs(30);
 const SETTINGS_TIMEOUT: StdDuration = StdDuration::from_secs(2);
 const MAX_AUTH_BYTES: usize = 64 * 1024;
 const MAX_JWT_PAYLOAD_BYTES: usize = 16 * 1024;
-#[cfg(windows)]
-const WSL_PROCESS_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 
 struct GrokAuth {
     token: String,
@@ -591,42 +589,10 @@ fn reserve_auth_refresh_at(
 
 fn build_auth_refresh_command(configured: &str) -> anyhow::Result<Command> {
     if !configured.is_empty() {
-        if let Some(spec) = parse_wsl_spec(configured)? {
-            #[cfg(windows)]
-            {
-                return build_wsl_auth_refresh_command(&spec);
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = spec;
-                bail!("Grok wsl: credential paths require Windows");
-            }
-        }
-
-        #[cfg(windows)]
-        if configured.starts_with(r"\\") {
-            bail!("Grok UNC credentials require an explicit wsl: path for renewal");
-        }
         return build_native_auth_refresh_command(Path::new(configured));
     }
 
-    let path = default_auth_path()?;
-    #[cfg(windows)]
-    {
-        match std::fs::metadata(&path) {
-            Ok(_) => build_native_auth_refresh_command(&path),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                Ok(build_default_wsl_auth_refresh_command())
-            }
-            Err(err) => {
-                Err(err).with_context(|| format!("inspect Grok auth at {}", path.display()))
-            }
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        build_native_auth_refresh_command(&path)
-    }
+    build_native_auth_refresh_command(&default_auth_path()?)
 }
 
 fn default_auth_path() -> anyhow::Result<PathBuf> {
@@ -663,52 +629,6 @@ fn build_native_auth_refresh_command(auth_path: &Path) -> anyhow::Result<Command
     command.env("USERPROFILE", home);
     add_auth_refresh_args(&mut command);
     Ok(command)
-}
-
-#[cfg(any(windows, test))]
-fn wsl_home_and_cli(auth_path: &str) -> anyhow::Result<(String, String)> {
-    let Some(home) = auth_path.strip_suffix("/.grok/auth.json") else {
-        bail!("Grok WSL auth path is not the official .grok/auth.json location");
-    };
-    let home = if home.is_empty() { "/" } else { home };
-    let cli = if home == "/" {
-        "/.grok/bin/grok".to_string()
-    } else {
-        format!("{home}/.grok/bin/grok")
-    };
-    Ok((home.to_string(), cli))
-}
-
-#[cfg(windows)]
-fn build_wsl_auth_refresh_command(spec: &WslSpec) -> anyhow::Result<Command> {
-    let (home, cli) = wsl_home_and_cli(&spec.path)?;
-    let mut command = Command::new("wsl.exe");
-    command
-        .arg("-d")
-        .arg(&spec.distro)
-        .arg("--")
-        .arg("env")
-        .arg(format!("HOME={home}"))
-        .arg("timeout")
-        .arg("--kill-after=1s")
-        .arg("19s")
-        .arg(cli);
-    add_auth_refresh_args(&mut command);
-    Ok(command)
-}
-
-#[cfg(windows)]
-fn build_default_wsl_auth_refresh_command() -> Command {
-    let mut command = Command::new("wsl.exe");
-    command.args([
-        "-d",
-        "Ubuntu",
-        "--",
-        "sh",
-        "-lc",
-        "exec timeout --kill-after=1s 19s \"$HOME/.grok/bin/grok\" --no-auto-update models",
-    ]);
-    command
 }
 
 fn add_auth_refresh_args(command: &mut Command) {
@@ -762,35 +682,10 @@ fn hide_command_window(_command: &mut Command) {}
 
 fn read_auth_text(configured: &str) -> anyhow::Result<String> {
     if !configured.is_empty() {
-        if let Some(spec) = parse_wsl_spec(configured)? {
-            #[cfg(windows)]
-            {
-                return read_wsl_path(&spec.distro, &spec.path);
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = spec;
-                bail!("Grok wsl: credential paths require Windows");
-            }
-        }
         return read_file_limited(Path::new(configured));
     }
 
-    let path = default_auth_path()?;
-    #[cfg(windows)]
-    {
-        match std::fs::metadata(&path) {
-            Ok(_) => read_file_limited(&path),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => read_default_wsl_auth(),
-            Err(err) => {
-                Err(err).with_context(|| format!("inspect Grok auth at {}", path.display()))
-            }
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        read_file_limited(&path)
-    }
+    read_file_limited(&default_auth_path()?)
 }
 
 fn read_file_limited(path: &Path) -> anyhow::Result<String> {
@@ -809,94 +704,6 @@ fn read_bounded_utf8(reader: impl Read) -> anyhow::Result<String> {
         bail!("Grok auth.json exceeds {MAX_AUTH_BYTES} bytes");
     }
     String::from_utf8(bytes).context("Grok auth.json is not UTF-8")
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct WslSpec {
-    distro: String,
-    path: String,
-}
-
-fn parse_wsl_spec(value: &str) -> anyhow::Result<Option<WslSpec>> {
-    let Some(spec) = value.strip_prefix("wsl:") else {
-        return Ok(None);
-    };
-    let (raw_distro, raw_path) = spec
-        .split_once(':')
-        .context("Grok WSL path must be wsl:<distro>:<absolute-path>")?;
-    if raw_distro.chars().any(char::is_control) || raw_path.chars().any(char::is_control) {
-        bail!("Grok WSL credential spec contains control characters");
-    }
-    let distro = raw_distro.trim();
-    let path = raw_path.trim();
-    if distro.is_empty() {
-        bail!("Grok WSL distribution is invalid");
-    }
-    if !path.starts_with('/') {
-        bail!("Grok WSL credential path must be absolute");
-    }
-    Ok(Some(WslSpec {
-        distro: distro.to_string(),
-        path: path.to_string(),
-    }))
-}
-
-#[cfg(windows)]
-fn read_wsl_path(distro: &str, path: &str) -> anyhow::Result<String> {
-    let mut command = Command::new("wsl.exe");
-    command.args(["-d", distro, "--", "cat", "--", path]);
-    read_wsl_command(command)
-}
-
-#[cfg(windows)]
-fn read_default_wsl_auth() -> anyhow::Result<String> {
-    let mut command = Command::new("wsl.exe");
-    command.args([
-        "-d",
-        "Ubuntu",
-        "--",
-        "sh",
-        "-lc",
-        "cat -- \"$HOME/.grok/auth.json\"",
-    ]);
-    read_wsl_command(command)
-}
-
-#[cfg(windows)]
-fn read_wsl_command(mut command: Command) -> anyhow::Result<String> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("start WSL Grok credential reader")?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("capture WSL Grok credential output")?;
-    let reader = std::thread::spawn(move || read_bounded_utf8(stdout));
-    let deadline = Instant::now() + WSL_PROCESS_TIMEOUT;
-
-    let status = loop {
-        if let Some(status) = child.try_wait().context("poll WSL Grok reader")? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = reader.join();
-            bail!("WSL Grok credential reader timed out");
-        }
-        std::thread::sleep(StdDuration::from_millis(25));
-    };
-
-    let text = reader
-        .join()
-        .map_err(|_| anyhow!("join WSL Grok credential output reader"))??;
-    if !status.success() {
-        bail!("WSL Grok credential reader failed");
-    }
-    Ok(text)
 }
 
 #[cfg(test)]
@@ -998,14 +805,12 @@ fn compare_candidates(left: &AuthCandidate, right: &AuthCandidate) -> Ordering {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(windows)]
-    use super::{build_default_wsl_auth_refresh_command, build_wsl_auth_refresh_command};
     use super::{
         finish_optional_settings, grok_api_request, grok_home_from_auth_path, parse_auth_at,
-        parse_auth_state_at, parse_credits, parse_monthly, parse_settings_plan, parse_wsl_spec,
+        parse_auth_state_at, parse_credits, parse_monthly, parse_settings_plan,
         plan_from_access_token, read_bounded_utf8, reserve_auth_refresh_at, service_from_responses,
-        wsl_home_and_cli, AuthState, WslSpec, ACCESS_UNAVAILABLE, BILLING_URL, CREDITS_URL,
-        GROK_CLIENT_SURFACE, LOGIN_REQUIRED, MAX_AUTH_BYTES, SETTINGS_URL,
+        AuthState, ACCESS_UNAVAILABLE, BILLING_URL, CREDITS_URL, GROK_CLIENT_SURFACE,
+        LOGIN_REQUIRED, MAX_AUTH_BYTES, SETTINGS_URL,
     };
     #[cfg(unix)]
     use super::{read_auth_with_refresh_dir, renew_auth_with_official_cli};
@@ -1158,7 +963,7 @@ mod tests {
             .with_ymd_and_hms(2026, 7, 25, 1, 0, 0)
             .single()
             .expect("valid test time");
-        let source = "wsl:TestDistro:/home/test-user/.grok/auth.json";
+        let source = "/home/test-user/.grok/auth.json";
 
         assert!(reserve_auth_refresh_at(&dir, source, now).expect("reserve first Grok refresh"));
         assert!(
@@ -1170,7 +975,7 @@ mod tests {
                 .expect("reserve Grok refresh after backoff")
         );
         assert!(
-            reserve_auth_refresh_at(&dir, "wsl:OtherDistro:/home/other/.grok/auth.json", now)
+            reserve_auth_refresh_at(&dir, "/home/other/.grok/auth.json", now)
                 .expect("different Grok source has an independent backoff")
         );
 
@@ -1410,69 +1215,6 @@ EOF
             Path::new("/home/test-user")
         );
         assert!(grok_home_from_auth_path(Path::new("/home/test-user/private/auth.json")).is_err());
-        assert_eq!(
-            wsl_home_and_cli("/home/test-user/.grok/auth.json").expect("official WSL Grok path"),
-            (
-                "/home/test-user".to_string(),
-                "/home/test-user/.grok/bin/grok".to_string()
-            )
-        );
-        assert!(wsl_home_and_cli("/home/test-user/private/auth.json").is_err());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn wsl_refresh_command_uses_parameterized_arguments_without_a_shell() {
-        let command = build_wsl_auth_refresh_command(&WslSpec {
-            distro: "Test Distro;ignored".into(),
-            path: "/home/test user/.grok/auth.json".into(),
-        })
-        .expect("safe WSL refresh command");
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-
-        assert_eq!(command.get_program().to_string_lossy(), "wsl.exe");
-        assert_eq!(
-            args,
-            [
-                "-d",
-                "Test Distro;ignored",
-                "--",
-                "env",
-                "HOME=/home/test user",
-                "timeout",
-                "--kill-after=1s",
-                "19s",
-                "/home/test user/.grok/bin/grok",
-                "--no-auto-update",
-                "models",
-            ]
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn default_wsl_refresh_command_contains_only_fixed_shell_text() {
-        let command = build_default_wsl_auth_refresh_command();
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-
-        assert_eq!(command.get_program().to_string_lossy(), "wsl.exe");
-        assert_eq!(
-            args,
-            [
-                "-d",
-                "Ubuntu",
-                "--",
-                "sh",
-                "-lc",
-                "exec timeout --kill-after=1s 19s \"$HOME/.grok/bin/grok\" --no-auto-update models",
-            ]
-        );
     }
 
     #[test]
@@ -1793,24 +1535,6 @@ EOF
             );
             assert!(request.headers().get("x-grok-client-version").is_none());
         }
-    }
-
-    #[test]
-    fn wsl_spec_requires_distro_and_absolute_path() {
-        assert_eq!(
-            parse_wsl_spec("wsl:TestDistro:/home/test-user/.grok/auth.json").expect("valid spec"),
-            Some(WslSpec {
-                distro: "TestDistro".into(),
-                path: "/home/test-user/.grok/auth.json".into(),
-            })
-        );
-        assert!(parse_wsl_spec("wsl::/home/test-user/.grok/auth.json").is_err());
-        assert!(parse_wsl_spec("wsl:Ubuntu:relative/auth.json").is_err());
-        assert!(parse_wsl_spec("wsl:Ubuntu\n:/home/test-user/.grok/auth.json").is_err());
-        assert_eq!(
-            parse_wsl_spec("/home/user/.grok/auth.json").expect("normal path"),
-            None
-        );
     }
 
     #[test]

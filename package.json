@@ -1,9 +1,9 @@
 {
   "name": "ai-usage-dashboard",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.7.0",
   "license": "MIT",
-  "description": "Local, cross-platform quota cockpit for Claude Code, Codex, Grok Build, and DeepSeek API balance",
+  "description": "Local, cross-platform quota cockpit for Claude Code, Codex, Grok Build, Cursor, Antigravity, and DeepSeek API balance",
   "type": "module",
   "repository": {
     "type": "git",

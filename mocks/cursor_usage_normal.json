@@ -1,0 +1,32 @@
+{
+  "billingCycleStart": "2026-07-13T01:13:05.000Z",
+  "billingCycleEnd": "2026-08-13T01:13:05.000Z",
+  "membershipType": "ultra",
+  "limitType": "user",
+  "isUnlimited": false,
+  "autoModelSelectedDisplayMessage": "You've used 24% of your included total usage",
+  "namedModelSelectedDisplayMessage": "You've used 41% of your included API usage",
+  "individualUsage": {
+    "plan": {
+      "enabled": true,
+      "used": 9600,
+      "limit": 40000,
+      "remaining": 30400,
+      "breakdown": {
+        "included": 9600,
+        "bonus": 0,
+        "total": 9600
+      },
+      "autoPercentUsed": 8,
+      "apiPercentUsed": 41,
+      "totalPercentUsed": 24
+    },
+    "onDemand": {
+      "enabled": false,
+      "used": 0,
+      "limit": null,
+      "remaining": null
+    }
+  },
+  "teamUsage": {}
+}

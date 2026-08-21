@@ -2,6 +2,11 @@ node_modules/
 dist/
 dist-ssr/
 HANDOFF.md
+MAINTENANCE.md
+docs/ip-as-logo-redesign.md
+docs/visual-redesign-spec.zh-CN.md
+docs/assets/mascots/
+docs/assets/mascots-ip/
 *.local
 
 # Local environment and application state
