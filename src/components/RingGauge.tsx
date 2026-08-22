@@ -30,11 +30,13 @@ function toneOf(percent: number | undefined): "ok" | "warn" | "danger" | "idle" 
 }
 
 function peakOf(outer?: RingWindow, inner?: RingWindow): number | undefined {
-  const values = [outer?.percent, inner?.percent].filter(
-    (value): value is number => typeof value === "number" && Number.isFinite(value),
-  );
-  if (values.length === 0) return undefined;
-  return Math.max(...values);
+  return peakWindow(outer, inner)?.percent;
+}
+
+function peakWindow(outer?: RingWindow, inner?: RingWindow): RingWindow | undefined {
+  if (!outer) return inner;
+  if (!inner) return outer;
+  return inner.percent > outer.percent ? inner : outer;
 }
 
 function polar(radius: number, mathDeg: number): { x: number; y: number } {
@@ -142,11 +144,7 @@ export function RingGauge({
   const innerTrack = ip ? (compact ? 10 : 12) : INNER_WIDTH;
   const innerFill = ip ? 8 : INNER_WIDTH;
   const shownInner = compact ? undefined : inner;
-  const shownOuter = compact
-    ? outer || inner
-      ? { percent: peakOf(outer, inner) ?? 0, label: outer?.label ?? inner?.label ?? "" }
-      : undefined
-    : outer;
+  const shownOuter = compact ? peakWindow(outer, inner) : outer;
   const rings = shownInner ? 2 : 1;
   const tone = toneOf(peakOf(shownOuter, shownInner));
   const ticks = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];

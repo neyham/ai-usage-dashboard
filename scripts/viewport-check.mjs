@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { copyFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,7 @@ const port = Number(process.env.UI_TEST_PORT ?? 1432);
 const baseUrl = `http://127.0.0.1:${port}`;
 const artifactDir =
   process.env.UI_ARTIFACT_DIR ?? join(tmpdir(), "ai-usage-dashboard-surface-results");
+const readmeAssetDir = join(root, "docs", "assets");
 
 const viewports = [
   { name: "default", width: 1600, height: 900 },
@@ -73,21 +74,24 @@ const baseSummary = {
       usageResetLocal: "08-11 08:00",
       monthlyPercent: 28,
       monthlyResetLocal: "09-01 08:00",
+      resetCreditsAvailable: 1,
+      resetCreditsExpireLocal: "09-13 00:00",
     },
     cursor: {
       status: "NOMINAL",
       fromCache: false,
       dataMayBeStale: false,
       plan: "Ultra",
-      usagePercent: 24,
+      usagePercent: 8,
       usageResetLocal: "08-13 09:13",
+      includedPercent: 24,
       apiPercent: 41,
     },
     antigravity: {
       status: "NOMINAL",
       fromCache: false,
       dataMayBeStale: false,
-      plan: "Antigravity",
+      plan: "Google AI Pro",
       fiveHourPercent: 27,
       sevenDayPercent: 21,
       fiveHourResetLocal: "08-19 14:20",
@@ -344,6 +348,12 @@ async function installTauriMock(
 }
 
 async function legendWindows(page, panelSelector) {
+  const bars = page.locator(`${panelSelector} .ip-bar`);
+  if ((await bars.count()) > 0) {
+    return bars.evaluateAll((els) =>
+      els.map((el) => el.getAttribute("data-window")).filter(Boolean),
+    );
+  }
   return page
     .locator(`${panelSelector} .gauge-legend-item`)
     .evaluateAll((els) => els.map((el) => el.getAttribute("data-window")).filter(Boolean));
@@ -1029,7 +1039,12 @@ async function checkCursorPanel(browser) {
   await contentPage.locator(".panel-cursor").waitFor();
   assert.equal(await contentPage.locator(".panel").count(), 4);
   assert.equal(await contentPage.locator(".panel-cursor .panel-plan").textContent(), "ULTRA");
-  assert.deepEqual(await legendWindows(contentPage, ".panel-cursor"), ["MONTH", "API"]);
+  assert.equal(await contentPage.locator(".panel-cursor").getAttribute("data-meter"), "ring");
+  assert.deepEqual(await legendWindows(contentPage, ".panel-cursor"), ["INCLUDED", "AUTO", "API"]);
+  const cursorLegend = (await contentPage.locator(".panel-cursor .gauge-legend").textContent()) ?? "";
+  assert.match(cursorLegend, /INCLUDED 24/);
+  assert.match(cursorLegend, /AUTO 8/);
+  assert.match(cursorLegend, /API 41/);
   assert.deepEqual(await inspectLayout(contentPage, { width: 1600, height: 900 }), []);
   await contentContext.close();
 
@@ -1191,7 +1206,7 @@ async function checkAntigravityPanel(browser) {
   await contentPage.goto(baseUrl, { waitUntil: "networkidle" });
   await contentPage.locator(".panel-antigravity").waitFor();
   assert.equal(await contentPage.locator(".panel").count(), 4);
-  assert.equal(await contentPage.locator(".panel-antigravity .panel-plan").count(), 0);
+  await assertPlanPill(contentPage, ".panel-antigravity", "GOOGLE AI PRO");
   assert.deepEqual(await legendWindows(contentPage, ".panel-antigravity"), ["7D", "5H"]);
   assert.match(
     (await contentPage.locator(".panel-antigravity .gauge-legend").textContent()) ?? "",
@@ -1204,6 +1219,10 @@ async function checkAntigravityPanel(browser) {
   assert.doesNotMatch(
     (await contentPage.locator(".panel-antigravity .gauge-legend").textContent()) ?? "",
     /RESET/,
+  );
+  assert.match(
+    (await contentPage.locator(".panel-antigravity .gauge-readout").textContent()) ?? "",
+    /21/,
   );
   assert.deepEqual(await inspectLayout(contentPage, { width: 1600, height: 900 }), []);
   await contentContext.close();
@@ -1628,9 +1647,70 @@ async function checkIpPlanCards(browser) {
     await assertPlanPill(page, ".panel-grok", "SUPERGROK HEAVY");
     await assertPlanPill(page, ".panel-cursor", "ULTRA");
     await assertPlanPill(page, ".panel-codex", "PRO");
+    assert.match(
+      (await page.locator(".panel-grok .reset-credits").textContent()) ?? "",
+      /BANKED RESETS/,
+    );
     await assertIpTitles(page);
     assert.deepEqual(await inspectLayout(page, viewport), []);
     await page.screenshot({ path: join(artifactDir, "ip-plan-five-split.png"), fullPage: true });
+    await context.close();
+  }
+
+  {
+    const summary = {
+      ...baseSummary,
+      enabledProviders: {
+        codex: true,
+        claude: true,
+        deepseek: false,
+        grok: true,
+        cursor: true,
+        antigravity: true,
+      },
+    };
+    const { context, page } = await open(summary);
+    assert.equal(await page.locator(".panels").getAttribute("data-layout"), "five-split");
+    assert.equal(await page.locator(".panel-antigravity").getAttribute("data-meter"), "ring");
+    assert.equal(await page.locator(".panel-antigravity").getAttribute("data-plan-size"), "M");
+    await assertPlanPill(page, ".panel-antigravity", "GOOGLE AI PRO");
+    assert.match(
+      (await page.locator(".panel-antigravity .gauge-readout").textContent()) ?? "",
+      /21/,
+    );
+    assert.doesNotMatch(
+      (await page.locator(".panel-antigravity").textContent()) ?? "",
+      /\bFREE\b/,
+    );
+    await page.screenshot({
+      path: join(artifactDir, "ip-plan-ag-compact-ring.png"),
+      fullPage: true,
+    });
+    await context.close();
+  }
+
+  {
+    const summary = {
+      ...baseSummary,
+      enabledProviders: {
+        codex: true,
+        claude: true,
+        deepseek: false,
+        grok: true,
+        cursor: true,
+        antigravity: true,
+      },
+      services: {
+        ...baseSummary.services,
+        antigravity: { ...baseSummary.services.antigravity, plan: "Antigravity" },
+      },
+    };
+    const { context, page } = await open(summary);
+    assert.equal(await page.locator(".panel-antigravity .panel-plan").count(), 0);
+    assert.doesNotMatch(
+      (await page.locator(".panel-antigravity").textContent()) ?? "",
+      /\bFREE\b/,
+    );
     await context.close();
   }
 
@@ -1769,7 +1849,6 @@ async function checkArtSkin(browser) {
   await page.goto(baseUrl, { waitUntil: "networkidle" });
   await page.locator('.dashboard[data-art="ip"]').waitFor();
   assert.equal(await page.locator(".panel-mascot").first().getAttribute("data-pack"), "ip");
-  const ipSrc = await page.locator(".panel-mascot").first().getAttribute("src");
   assert.equal(await page.locator(".panel[data-emerge]").count(), await page.locator(".panel").count());
   assert.equal(await page.locator(".rail").evaluate((el) => getComputedStyle(el).display), "none");
   const ipFill = await page.evaluate(() => {
@@ -1794,16 +1873,24 @@ async function checkArtSkin(browser) {
     .click();
   await page.locator(".settings-save").click();
   await page.locator('.dashboard[data-art="ring"]').waitFor();
-  assert.equal(await page.locator(".panel-mascot").first().getAttribute("data-pack"), "ring");
-  const ringSrc = await page.locator(".panel-mascot").first().getAttribute("src");
-  assert.notEqual(ringSrc, ipSrc);
+  assert.equal(
+    await page.locator(".panel-deepseek .ip-bars").evaluate((el) => getComputedStyle(el).alignItems),
+    "center",
+  );
+  assert.equal(
+    await page.locator(".panel-deepseek .ip-bars-peak").evaluate((el) => getComputedStyle(el).textAlign),
+    "center",
+  );
+  assert.equal(await page.locator(".panel-mascot").count(), 0);
+  assert.ok((await page.locator(".ip-bars").count()) >= 1);
+  assert.equal(await page.locator(".gauge-stage").count(), 0);
   assert.deepEqual(await page.evaluate(() => window.__DASHBOARD_TEST__.saveCalls[0]), {
     enabledProviders: null,
     windowMode: null,
     artSkin: "ring",
   });
   assert.deepEqual(pageErrors, [], "art-skin page errors");
-  await page.screenshot({ path: join(artifactDir, "art-skin-ip.png"), fullPage: true });
+  await page.screenshot({ path: join(artifactDir, "art-skin-ring.png"), fullPage: true });
   await context.close();
 
   const fiveSplit = {
@@ -1858,7 +1945,11 @@ async function checkArtSkin(browser) {
   const grokFlip = await splitPage
     .locator(".panel-grok .ip-portrait")
     .evaluate((element) => getComputedStyle(element).transform);
-  assert.match(grokFlip, /matrix3?d?\(-1/, `Grok portrait should be mirrored, got ${grokFlip}`);
+  assert.doesNotMatch(
+    grokFlip,
+    /matrix3?d?\(-1/,
+    `Grok portrait should face the usage bars unflipped, got ${grokFlip}`,
+  );
   assert.match(
     (await splitPage.locator(".panel-grok .ip-bar-reset").first().textContent()) ?? "",
     /RESET/,
@@ -1990,6 +2081,88 @@ async function checkJudgeDemo(browser) {
   }
 }
 
+async function captureReadmeScreenshots(browser) {
+  const fiveSplit = {
+    ...baseSummary,
+    enabledProviders: {
+      ...baseSummary.enabledProviders,
+      cursor: true,
+    },
+  };
+  const allSix = {
+    ...baseSummary,
+    enabledProviders: {
+      codex: true,
+      claude: true,
+      deepseek: true,
+      grok: true,
+      cursor: true,
+      antigravity: true,
+    },
+  };
+
+  async function openShot(summary, { width, height, skin }) {
+    const context = await browser.newContext({
+      viewport: { width, height },
+      deviceScaleFactor: 2,
+      reducedMotion: "reduce",
+      colorScheme: "dark",
+    });
+    const page = await context.newPage();
+    await installTauriMock(page, summary, "normal", false, false, skin);
+    await page.goto(baseUrl, { waitUntil: "networkidle" });
+    await page.locator(".panel").first().waitFor();
+    await page.locator(`.dashboard[data-art="${skin}"]`).waitFor();
+    return { context, page };
+  }
+
+  await mkdir(readmeAssetDir, { recursive: true });
+
+  {
+    const { context, page } = await openShot(fiveSplit, { width: 1600, height: 900, skin: "ip" });
+    assert.equal(await page.locator(".panel").count(), 5);
+    assert.equal(await page.locator(".panels").getAttribute("data-layout"), "five-split");
+    assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
+    await page.screenshot({ path: join(readmeAssetDir, "dashboard.png") });
+    await context.close();
+  }
+
+  {
+    const { context, page } = await openShot(allSix, { width: 1600, height: 1000, skin: "ip" });
+    assert.equal(await page.locator(".panel").count(), 6);
+    const meters = await page.locator(".panel").evaluateAll((els) =>
+      els.map((el) => el.getAttribute("data-meter")),
+    );
+    assert.equal(meters.length, 6);
+    assert.ok(
+      meters.every((meter) => meter === "ring"),
+      `expected six IP rings, got ${meters.join(",")}`,
+    );
+    assert.deepEqual(await inspectLayout(page, { width: 1600, height: 1000 }), []);
+    await page.screenshot({ path: join(readmeAssetDir, "dashboard-six-rings.png") });
+    await context.close();
+  }
+
+  {
+    const { context, page } = await openShot(allSix, { width: 1600, height: 1000, skin: "ring" });
+    assert.equal(await page.locator(".panel").count(), 6);
+    assert.equal(await page.locator(".panel-mascot").count(), 0);
+    assert.ok((await page.locator(".ip-bars").count()) >= 6);
+    assert.deepEqual(await inspectLayout(page, { width: 1600, height: 1000 }), []);
+    await page.screenshot({ path: join(readmeAssetDir, "dashboard-eva.png") });
+    await context.close();
+  }
+
+  const mascotDir = join(readmeAssetDir, "mascots-ip");
+  await mkdir(mascotDir, { recursive: true });
+  for (const kind of ["codex", "claude", "deepseek", "grok", "cursor", "antigravity"]) {
+    await copyFile(
+      join(root, "src", "assets", "mascots-ip", `${kind}-idle.png`),
+      join(mascotDir, `${kind}-idle.png`),
+    );
+  }
+}
+
 async function launchTestBrowser() {
   try {
     return await chromium.launch({ headless: true });
@@ -2047,7 +2220,9 @@ try {
   await checkJudgeDemo(browser);
   process.stdout.write(`PASS isolated judge demo across Surface/compact/Snap layouts\n`);
   await checkKeyboardAndScreensaver(browser);
-  process.stdout.write(`PASS keyboard and screensaver input\nScreenshots: ${artifactDir}\n`);
+  process.stdout.write(`PASS keyboard and screensaver input\n`);
+  await captureReadmeScreenshots(browser);
+  process.stdout.write(`PASS README synthetic screenshots\nScreenshots: ${artifactDir}\n`);
 } finally {
   await browser?.close();
   if (server.exitCode === null) server.kill("SIGTERM");

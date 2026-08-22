@@ -189,7 +189,8 @@ mod tests {
             Some("SuperGrok Heavy")
         );
         assert!((summary.services.grok.monthly_percent.unwrap_or_default() - 28.0).abs() < 1e-9);
-        assert_eq!(summary.services.cursor.usage_percent, Some(24.0));
+        assert_eq!(summary.services.cursor.usage_percent, Some(8.0));
+        assert_eq!(summary.services.cursor.included_percent, Some(24.0));
         assert_eq!(summary.services.cursor.api_percent, Some(41.0));
         assert_eq!(summary.services.cursor.plan.as_deref(), Some("Ultra"));
         assert!(

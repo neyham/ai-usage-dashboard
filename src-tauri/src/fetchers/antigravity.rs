@@ -38,7 +38,14 @@ const AUTH_READ_TIMEOUT: StdDuration = StdDuration::from_secs(16);
 const KEYRING_TIMEOUT: StdDuration = StdDuration::from_secs(8);
 const TOKEN_EXPIRY_MARGIN_SECS: i64 = 60;
 const MAX_AUTH_BYTES: usize = 64 * 1024;
-const MAX_OAUTH_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_OAUTH_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
+const OAUTH_SCAN_CHUNK: usize = 1024 * 1024;
+const OAUTH_SCAN_OVERLAP: usize = 160;
+const OAUTH_SECRET_PREFIX: &str = "GOCSPX-";
+const OAUTH_SECRET_BODY_MIN: usize = 20;
+const OAUTH_SECRET_BODY_MAX: usize = 40;
+const OAUTH_SECRET_BODY_GUESSES: &[usize] = &[24, 28, 32, 36];
+const OAUTH_PAIR_CARTESIAN_MAX: usize = 16;
 const KEYRING_SERVICE: &str = "gemini";
 const KEYRING_ACCOUNT: &str = "antigravity";
 #[cfg(not(windows))]
@@ -149,8 +156,8 @@ async fn service_from_quota_and_plan(
     quota_body: &str,
 ) -> Result<AntigravityService, FetchError> {
     let mut service = parse_usage(quota_body).map_err(FetchError::Other)?;
-    if let Ok(plan) = fetch_plan(client, access_token).await {
-        service.plan = plan;
+    if let Ok(Some(plan)) = fetch_plan(client, access_token).await {
+        service.plan = Some(plan);
     }
     Ok(service)
 }
@@ -224,7 +231,7 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<AntigravityService> {
         status: "NOMINAL".into(),
         from_cache: false,
         data_may_be_stale: false,
-        plan: None,
+        plan: parse_plan(body),
         five_hour_percent,
         seven_day_percent,
         five_hour_reset_local: five_hour
@@ -238,25 +245,57 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<AntigravityService> {
 
 fn parse_plan(body: &str) -> Option<String> {
     let root: Value = serde_json::from_str(body).ok()?;
-    let current = root
-        .get("currentTier")
-        .and_then(|tier| tier.get("name"))
+    let current = tier_label(root.get("currentTier"));
+    let paid = tier_label(root.get("paidTier"));
+    let nested = first_plan_in_value(&root);
+    match (current, paid, nested) {
+        (_, Some(paid), _) if paid != "Free" => Some(paid.to_string()),
+        (Some(current), _, _) if current != "Free" => Some(current.to_string()),
+        (_, _, Some(nested)) if nested != "Free" => Some(nested.to_string()),
+        (Some(current), _, _) => Some(current.to_string()),
+        (_, Some(paid), _) => Some(paid.to_string()),
+        (_, _, Some(nested)) => Some(nested.to_string()),
+        _ => None,
+    }
+}
+
+fn first_plan_in_value(value: &Value) -> Option<&'static str> {
+    match value {
+        Value::String(text) => canonical_plan_label(text),
+        Value::Object(map) => {
+            for key in ["name", "id", "tier", "tierId", "displayName"] {
+                if let Some(label) = map.get(key).and_then(first_plan_in_value) {
+                    return Some(label);
+                }
+            }
+            map.values().find_map(first_plan_in_value)
+        }
+        Value::Array(items) => items.iter().find_map(first_plan_in_value),
+        _ => None,
+    }
+}
+
+fn tier_label(tier: Option<&Value>) -> Option<&'static str> {
+    let tier = tier?;
+    tier.get("name")
         .and_then(Value::as_str)
-        .and_then(canonical_plan_label);
-    let paid = root
-        .get("paidTier")
-        .and_then(|tier| tier.get("name"))
-        .and_then(Value::as_str)
-        .and_then(canonical_plan_label);
-    current.or(paid).map(str::to_string)
+        .and_then(canonical_plan_label)
+        .or_else(|| {
+            tier.get("id")
+                .and_then(Value::as_str)
+                .and_then(canonical_plan_label)
+        })
 }
 
 fn canonical_plan_label(value: &str) -> Option<&'static str> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "antigravity" => Some("Antigravity"),
-        "free" | "free-tier" | "free tier" => Some("Free"),
-        "google ai pro" | "ai pro" | "pro" => Some("Google AI Pro"),
-        "google ai ultra" | "ai ultra" | "ultra" => Some("Google AI Ultra"),
+    match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        // Product name, not a subscription. Paid labels come from paidTier.
+        "antigravity" => None,
+        "free" | "free-tier" | "free tier" | "legacy" | "legacy-tier" => Some("Free"),
+        "google ai pro" | "ai pro" | "pro" | "standard" | "standard-tier" => Some("Google AI Pro"),
+        "google ai ultra" | "ai ultra" | "ultra" | "premium" | "premium-tier" => {
+            Some("Google AI Ultra")
+        }
         _ => None,
     }
 }
@@ -452,7 +491,7 @@ fn push_unique_client(clients: &mut Vec<OAuthClient>, client: OAuthClient) {
 fn discover_oauth_clients() -> Vec<OAuthClient> {
     let mut clients = Vec::new();
     for path in oauth_artifact_candidates() {
-        if let Some(client) = oauth_client_from_artifact(&path) {
+        for client in oauth_clients_from_artifact(&path) {
             push_unique_client(&mut clients, client);
         }
     }
@@ -503,10 +542,15 @@ fn installed_antigravity_artifacts() -> Vec<PathBuf> {
     }
     #[cfg(target_os = "linux")]
     {
-        vec![
+        let mut paths = vec![
             PathBuf::from("/usr/bin/agy"),
             PathBuf::from("/usr/local/bin/agy"),
-        ]
+            PathBuf::from("/opt/Antigravity/agy"),
+        ];
+        if let Some(home) = dirs::home_dir() {
+            paths.push(home.join(".local").join("bin").join("agy"));
+        }
+        paths
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
@@ -532,33 +576,109 @@ fn which_command(name: &str) -> Option<PathBuf> {
     None
 }
 
-fn oauth_client_from_artifact(path: &Path) -> Option<OAuthClient> {
-    let meta = std::fs::metadata(path).ok()?;
+fn oauth_clients_from_artifact(path: &Path) -> Vec<OAuthClient> {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Vec::new();
+    };
     if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_OAUTH_ARTIFACT_BYTES {
-        return None;
+        return Vec::new();
     }
-    let file = std::fs::File::open(path).ok()?;
-    let mut bytes = Vec::new();
-    file.take(MAX_OAUTH_ARTIFACT_BYTES)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    parse_oauth_client_from_bytes(&bytes)
+    if meta.len() <= OAUTH_SCAN_CHUNK as u64 {
+        let Ok(file) = std::fs::File::open(path) else {
+            return Vec::new();
+        };
+        let mut bytes = Vec::new();
+        if file
+            .take(MAX_OAUTH_ARTIFACT_BYTES)
+            .read_to_end(&mut bytes)
+            .is_err()
+        {
+            return Vec::new();
+        }
+        return parse_oauth_clients_from_bytes(&bytes);
+    }
+    scan_oauth_clients_streaming(path)
 }
 
-fn parse_oauth_client_from_bytes(data: &[u8]) -> Option<OAuthClient> {
-    if let Ok(text) = std::str::from_utf8(data) {
-        if let Some(client) = parse_oauth_client_from_text(text) {
-            return Some(client);
+fn scan_oauth_clients_streaming(path: &Path) -> Vec<OAuthClient> {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let mut carry = Vec::with_capacity(OAUTH_SCAN_CHUNK + OAUTH_SCAN_OVERLAP);
+    let mut buf = vec![0_u8; OAUTH_SCAN_CHUNK];
+    let mut client_ids = Vec::new();
+    let mut client_secrets = Vec::new();
+    loop {
+        let Ok(read) = file.read(&mut buf) else {
+            return Vec::new();
+        };
+        if read == 0 {
+            break;
+        }
+        carry.extend_from_slice(&buf[..read]);
+        for id in find_ascii_client_ids(&carry) {
+            if !client_ids.contains(&id) {
+                client_ids.push(id);
+            }
+        }
+        for secret in find_ascii_client_secrets(&carry) {
+            if !client_secrets.contains(&secret) {
+                client_secrets.push(secret);
+            }
+        }
+        if carry.len() > OAUTH_SCAN_OVERLAP {
+            carry.drain(..carry.len() - OAUTH_SCAN_OVERLAP);
         }
     }
-    let client_id = find_ascii_client_id(data)?;
-    let client_secret = find_ascii_client_secret(data)?;
-    Some(OAuthClient {
-        client_id,
-        client_secret,
-    })
+    pair_oauth_clients(client_ids, client_secrets)
 }
 
+fn parse_oauth_clients_from_bytes(data: &[u8]) -> Vec<OAuthClient> {
+    if let Ok(text) = std::str::from_utf8(data) {
+        let ids = find_text_client_ids(text);
+        let secrets = find_text_client_secrets(text);
+        let paired = pair_oauth_clients(ids, secrets);
+        if !paired.is_empty() {
+            return paired;
+        }
+    }
+    pair_oauth_clients(find_ascii_client_ids(data), find_ascii_client_secrets(data))
+}
+
+fn pair_oauth_clients(ids: Vec<String>, secrets: Vec<String>) -> Vec<OAuthClient> {
+    let mut clients = Vec::new();
+    if ids.is_empty() || secrets.is_empty() {
+        return clients;
+    }
+    let product = ids.len().saturating_mul(secrets.len());
+    let cartesian = product <= OAUTH_PAIR_CARTESIAN_MAX || ids.len() != secrets.len();
+    if cartesian {
+        for client_id in &ids {
+            for client_secret in &secrets {
+                push_unique_client(
+                    &mut clients,
+                    OAuthClient {
+                        client_id: client_id.clone(),
+                        client_secret: client_secret.clone(),
+                    },
+                );
+            }
+        }
+        return clients;
+    }
+    for (client_id, client_secret) in ids.into_iter().zip(secrets) {
+        push_unique_client(
+            &mut clients,
+            OAuthClient {
+                client_id,
+                client_secret,
+            },
+        );
+    }
+    clients
+}
+
+#[cfg(test)]
 fn parse_oauth_client_from_text(text: &str) -> Option<OAuthClient> {
     let client_id = find_text_client_id(text)?;
     let client_secret = find_text_client_secret(text)?;
@@ -568,9 +688,15 @@ fn parse_oauth_client_from_text(text: &str) -> Option<OAuthClient> {
     })
 }
 
+#[cfg(test)]
 fn find_text_client_id(text: &str) -> Option<String> {
+    find_text_client_ids(text).into_iter().next()
+}
+
+fn find_text_client_ids(text: &str) -> Vec<String> {
     let needle = ".apps.googleusercontent.com";
     let mut search_from = 0;
+    let mut found = Vec::new();
     while let Some(rel) = text[search_from..].find(needle) {
         let end = search_from + rel + needle.len();
         let prefix = &text[..search_from + rel];
@@ -579,22 +705,25 @@ fn find_text_client_id(text: &str) -> Option<String> {
             .map(|idx| idx + 1)
             .unwrap_or(0);
         let candidate = &text[start..end];
-        if candidate
-            .chars()
-            .next()
-            .is_some_and(|ch| ch.is_ascii_digit())
-            && candidate.contains('-')
-        {
-            return Some(candidate.to_string());
+        if let Some(id) = normalize_client_id(candidate) {
+            if !found.contains(&id) {
+                found.push(id);
+            }
         }
         search_from = end;
     }
-    None
+    found
 }
 
+#[cfg(test)]
 fn find_text_client_secret(text: &str) -> Option<String> {
-    let needle = "GOCSPX-";
+    find_text_client_secrets(text).into_iter().next()
+}
+
+fn find_text_client_secrets(text: &str) -> Vec<String> {
+    let needle = OAUTH_SECRET_PREFIX;
     let mut search_from = 0;
+    let mut found = Vec::new();
     while let Some(rel) = text[search_from..].find(needle) {
         let start = search_from + rel;
         let rest = &text[start + needle.len()..];
@@ -602,17 +731,18 @@ fn find_text_client_secret(text: &str) -> Option<String> {
             .chars()
             .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-')
             .count();
-        if taken >= 20 {
-            return Some(text[start..start + needle.len() + taken].to_string());
+        if taken >= OAUTH_SECRET_BODY_MIN {
+            push_secret_variants(&text[start..start + needle.len() + taken], &mut found);
         }
         search_from = start + needle.len();
     }
-    None
+    found
 }
 
-fn find_ascii_client_id(data: &[u8]) -> Option<String> {
+fn find_ascii_client_ids(data: &[u8]) -> Vec<String> {
     let needle = b".apps.googleusercontent.com";
     let mut search_from = 0;
+    let mut found = Vec::new();
     while let Some(rel) = find_bytes(&data[search_from..], needle) {
         let end = search_from + rel + needle.len();
         let mut start = search_from + rel;
@@ -625,37 +755,77 @@ fn find_ascii_client_id(data: &[u8]) -> Option<String> {
             }
         }
         if let Ok(candidate) = std::str::from_utf8(&data[start..end]) {
-            if candidate
-                .chars()
-                .next()
-                .is_some_and(|ch| ch.is_ascii_digit())
-                && candidate.contains('-')
-            {
-                return Some(candidate.to_string());
+            if let Some(id) = normalize_client_id(candidate) {
+                if !found.iter().any(|existing| existing == &id) {
+                    found.push(id);
+                }
             }
         }
         search_from = end;
     }
-    None
+    found
 }
 
-fn find_ascii_client_secret(data: &[u8]) -> Option<String> {
+fn find_ascii_client_secrets(data: &[u8]) -> Vec<String> {
     let needle = b"GOCSPX-";
     let mut search_from = 0;
+    let mut found = Vec::new();
     while let Some(rel) = find_bytes(&data[search_from..], needle) {
         let start = search_from + rel;
         let mut end = start + needle.len();
         while end < data.len() && is_oauth_secret_byte(data[end]) {
             end += 1;
         }
-        if end >= start + needle.len() + 20 {
+        if end >= start + needle.len() + OAUTH_SECRET_BODY_MIN {
             if let Ok(secret) = std::str::from_utf8(&data[start..end]) {
-                return Some(secret.to_string());
+                push_secret_variants(secret, &mut found);
             }
         }
         search_from = start + needle.len();
     }
-    None
+    found
+}
+
+fn normalize_client_id(candidate: &str) -> Option<String> {
+    let start = candidate.find(|ch: char| ch.is_ascii_digit())?;
+    let trimmed = &candidate[start..];
+    is_plausible_client_id(trimmed).then(|| trimmed.to_string())
+}
+
+fn is_plausible_client_id(candidate: &str) -> bool {
+    candidate.contains('-')
+        && candidate.ends_with(".apps.googleusercontent.com")
+        && candidate.len() >= 28
+        && candidate.len() <= 128
+        && candidate
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_digit())
+}
+
+fn push_secret_variants(raw: &str, found: &mut Vec<String>) {
+    if !raw.starts_with(OAUTH_SECRET_PREFIX) {
+        return;
+    }
+    let body = raw.len() - OAUTH_SECRET_PREFIX.len();
+    if (OAUTH_SECRET_BODY_MIN..=OAUTH_SECRET_BODY_MAX).contains(&body) {
+        if !found.iter().any(|existing| existing == raw) {
+            found.push(raw.to_string());
+        }
+        return;
+    }
+    if body <= OAUTH_SECRET_BODY_MAX {
+        return;
+    }
+    for &guess in OAUTH_SECRET_BODY_GUESSES {
+        if guess > body {
+            continue;
+        }
+        let candidate = &raw[..OAUTH_SECRET_PREFIX.len() + guess];
+        if !found.iter().any(|existing| existing == candidate) {
+            found.push(candidate.to_string());
+        }
+    }
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1035,7 +1205,8 @@ mod tests {
 
     #[test]
     fn plan_labels_are_allowlisted() {
-        assert_eq!(canonical_plan_label("Antigravity"), Some("Antigravity"));
+        assert_eq!(canonical_plan_label("Antigravity"), None);
+        assert_eq!(canonical_plan_label("free"), Some("Free"));
         assert_eq!(canonical_plan_label("Google AI Pro"), Some("Google AI Pro"));
         assert_eq!(canonical_plan_label("ultra"), Some("Google AI Ultra"));
         assert_eq!(canonical_plan_label("mystery"), None);
@@ -1044,7 +1215,19 @@ mod tests {
                 r#"{"currentTier":{"name":"Antigravity"},"paidTier":{"name":"Google AI Pro"}}"#
             )
             .as_deref(),
-            Some("Antigravity")
+            Some("Google AI Pro")
+        );
+        assert_eq!(
+            parse_plan(r#"{"currentTier":{"id":"google ai ultra"}}"#).as_deref(),
+            Some("Google AI Ultra")
+        );
+        assert_eq!(
+            parse_plan(r#"{"currentTier":{"name":"Antigravity"}}"#).as_deref(),
+            None
+        );
+        assert_eq!(
+            parse_plan(r#"{"currentTier":{"name":"legacy"}}"#).as_deref(),
+            Some("Free")
         );
     }
 
@@ -1131,5 +1314,24 @@ mod tests {
         let client = super::parse_oauth_client_from_text(&hay).expect("artifact client");
         assert_eq!(client.client_id, client_id);
         assert!(client.client_secret.starts_with("GOCSPX-"));
+    }
+
+    #[test]
+    fn oauth_scan_strips_binary_garbage_around_google_client() {
+        let client_id = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+        let client_secret = format!("GOCSPX-{}", "abcdefghijklmnopqrstuvwxyz12");
+        let mut hay = Vec::new();
+        hay.extend_from_slice(b"xxit");
+        hay.extend_from_slice(client_id.as_bytes());
+        hay.extend_from_slice(b"YY");
+        hay.extend_from_slice(client_secret.as_bytes());
+        hay.extend_from_slice(b"EXTRAGARBAGE123");
+        let clients = super::parse_oauth_clients_from_bytes(&hay);
+        assert!(
+            clients.iter().any(
+                |client| client.client_id == client_id && client.client_secret == client_secret
+            ),
+            "expected stripped client, got {clients:?}"
+        );
     }
 }

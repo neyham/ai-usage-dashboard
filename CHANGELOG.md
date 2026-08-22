@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [0.8.0] - 2026-08-22
+
+### Changed
+
+- Restyle Grok, Cursor, and Codex IP mascots to the same dumpling clay-chibi
+  娘 look as DeepSeek: simple oval eyes, round bodies, matte toy shading.
+  Grok is a close-up dumpling Mars girl with a rocket hair clip; Cursor is a
+  long-haired mouse girl without a tail; Codex is a mint headset operator in
+  a listening pose.
+- Show Antigravity's real Google AI plan instead of the product name. The
+  product name `Antigravity` is not a plan and is no longer labeled Free;
+  Google AI Pro/Ultra come from `paidTier` or a real tier id. The featured
+  quota number is the 7-day window. Compact Antigravity cards keep the ring
+  gauge. Token refresh scans a large installed `agy` binary and strips
+  neighboring bytes that would otherwise corrupt the OAuth client.
+- Show Cursor Included, Auto, and API usage as three labeled percentages
+  instead of a blended monthly figure. Compact Cursor cards use the ring
+  gauge; wide cards keep the three bars in the panel accent.
+- Show Grok banked usage-limit resets when the account has any remaining.
+- Classic EVA skin no longer draws mascots. It uses segmented NERV-style
+  progress bars.
+- Compact IP rings draw the hotter of the outer/inner windows so a spent 5H
+  quota is not hidden behind a calm 7D arc.
+- Refresh README screenshots: five-panel IP, six compact IP rings, and the
+  classic EVA skin.
+
 ## [0.7.0] - 2026-08-21
 
 ### Added

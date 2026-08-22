@@ -49,6 +49,7 @@ type AnyService = (
   usageResetLocal?: string;
   monthlyPercent?: number;
   monthlyResetLocal?: string;
+  includedPercent?: number;
   apiPercent?: number;
   onDemandPercent?: number;
 };
@@ -72,6 +73,14 @@ function legendText(win: GaugeWindow, compact = false): string {
     : `${win.label} ${formatPercent(win.percent)}`;
 }
 
+function displayPlan(plan?: string): string | undefined {
+  if (!plan?.trim()) return undefined;
+  if (plan.trim().toLowerCase() === "antigravity") {
+    return undefined;
+  }
+  return plan;
+}
+
 function toneOfPeak(peak: number | null): "ok" | "warn" | "danger" | undefined {
   if (peak == null) return undefined;
   if (peak >= 88) return "danger";
@@ -83,6 +92,7 @@ function windowsFor(kind: Kind, service: AnyService): {
   outer?: GaugeWindow;
   inner?: GaugeWindow;
   extra: GaugeWindow[];
+  legend?: GaugeWindow[];
 } {
   if (kind === "deepseek") return { extra: [] };
 
@@ -94,11 +104,26 @@ function windowsFor(kind: Kind, service: AnyService): {
   }
 
   if (kind === "cursor") {
-    const month = windowOf("MONTH", service.usagePercent, service.usageResetLocal);
+    const included = windowOf("INCLUDED", service.includedPercent, service.usageResetLocal);
+    const auto = windowOf(
+      typeof service.apiPercent === "number" || typeof service.includedPercent === "number"
+        ? "AUTO"
+        : "MONTH",
+      service.usagePercent,
+      service.usageResetLocal,
+    );
     const api = windowOf("API", service.apiPercent);
     const onDemand = windowOf("EXTRA", service.onDemandPercent);
-    if (month && api) return { outer: month, inner: api, extra: onDemand ? [onDemand] : [] };
-    return { outer: month ?? api, extra: onDemand ? [onDemand] : [] };
+    const lanes = [included, auto, api, onDemand].filter(
+      (win): win is GaugeWindow => Boolean(win),
+    );
+    const ranked = [...lanes].sort((left, right) => right.percent - left.percent);
+    return {
+      outer: ranked[0],
+      inner: ranked[1],
+      extra: ranked.slice(2),
+      legend: lanes,
+    };
   }
 
   const five = windowOf("5H", service.fiveHourPercent, service.fiveHourResetLocal);
@@ -115,7 +140,7 @@ function useIpMeter(
   artSkin: ArtSkin,
   slot: string | undefined,
 ): {
-  meter: "ring" | "bar";
+  wide: boolean;
   ipLayout: "stack" | "split";
   panelRef: RefObject<HTMLElement>;
 } {
@@ -141,7 +166,7 @@ function useIpMeter(
   }, [artSkin, slotted]);
 
   return {
-    meter: artSkin === "ip" && wide ? "bar" : "ring",
+    wide,
     ipLayout,
     panelRef,
   };
@@ -189,7 +214,7 @@ export function ServicePanel({
   placement?: GridSlot;
   artSkin?: ArtSkin;
 }) {
-  const { meter, ipLayout, panelRef } = useIpMeter(artSkin, slot);
+  const { wide, ipLayout, panelRef } = useIpMeter(artSkin, slot);
   const titleId = `panel-${kind}-title`;
   const percents = [
     service.fiveHourPercent,
@@ -197,20 +222,25 @@ export function ServicePanel({
     service.extraUsagePercent,
     service.usagePercent,
     service.monthlyPercent,
+    service.includedPercent,
     service.apiPercent,
     service.onDemandPercent,
   ];
   const mood = mascotMood(service.status, percents);
   const peak = peakPercent(percents);
-  const portrait = mascotSrc(kind, mood, artSkin);
-  const { outer, inner, extra } = windowsFor(kind, service);
-  const legend = [outer, inner, ...extra].filter((win): win is GaugeWindow => Boolean(win));
+  const portrait = artSkin === "ip" ? mascotSrc(kind, mood, artSkin) : "";
+  const { outer, inner, extra, legend: orderedLegend } = windowsFor(kind, service);
+  const legend =
+    orderedLegend ??
+    [outer, inner, ...extra].filter((win): win is GaugeWindow => Boolean(win));
+  const meter: "ring" | "bar" = artSkin !== "ip" || wide ? "bar" : "ring";
   const resetCredits = service.resetCreditsAvailable;
   const hasUsage = Boolean(outer || inner);
+  const planLabel = displayPlan(service.plan);
   const showPlan =
     (kind === "codex" || kind === "grok" || kind === "cursor" || kind === "antigravity") &&
-    Boolean(service.plan) &&
-    !(artSkin === "ip" && service.plan?.trim().toUpperCase() === title.toUpperCase());
+    Boolean(planLabel) &&
+    !(artSkin === "ip" && planLabel?.trim().toUpperCase() === title.toUpperCase());
   const panelTone =
     artSkin !== "ip"
       ? undefined
@@ -232,6 +262,13 @@ export function ServicePanel({
       </span>
     ) : (
       <span className="balance-number">--</span>
+    );
+  } else if (kind === "antigravity" && typeof service.sevenDayPercent === "number") {
+    readout = (
+      <>
+        {formatPercent(service.sevenDayPercent)}
+        <i>%</i>
+      </>
     );
   } else if (peak != null) {
     readout = (
@@ -282,8 +319,8 @@ export function ServicePanel({
             <h2 className="panel-title" id={titleId}>
               {title}
             </h2>
-            {artSkin === "ip" && showPlan && service.plan && (
-              <span className="panel-plan">{service.plan.toUpperCase()}</span>
+            {artSkin === "ip" && showPlan && planLabel && (
+              <span className="panel-plan">{planLabel.toUpperCase()}</span>
             )}
           </div>
           <span className="panel-sub">
@@ -291,39 +328,19 @@ export function ServicePanel({
           </span>
         </div>
         <div className="panel-head-right">
-          {artSkin !== "ip" && showPlan && service.plan && (
-            <span className="panel-plan">{service.plan.toUpperCase()}</span>
+          {artSkin !== "ip" && showPlan && planLabel && (
+            <span className="panel-plan">{planLabel.toUpperCase()}</span>
           )}
           <span className="panel-code">{code}</span>
         </div>
       </header>
 
       <div className="panel-body">
-        <div className="gauge-slot">
-          {meter === "bar" ? (
-            <div className="ip-portrait" data-mood={mood} role="img" aria-label={ariaLabel}>
-              {portrait && (
-                <img
-                  className="panel-mascot"
-                  src={portrait}
-                  alt=""
-                  data-mascot={mood}
-                  data-pack={artSkin}
-                  draggable={false}
-                />
-              )}
-            </div>
-          ) : (
-            <RingGauge
-              outer={kind === "deepseek" ? undefined : outer}
-              inner={kind === "deepseek" ? undefined : inner}
-              readout={readout}
-              mood={mood}
-              ariaLabel={ariaLabel}
-              artSkin={artSkin}
-            >
-              {portrait && (
-                <>
+        {artSkin === "ip" && (
+          <div className="gauge-slot">
+            {meter === "bar" ? (
+              <div className="ip-portrait" data-mood={mood} role="img" aria-label={ariaLabel}>
+                {portrait && (
                   <img
                     className="panel-mascot"
                     src={portrait}
@@ -332,16 +349,41 @@ export function ServicePanel({
                     data-pack={artSkin}
                     draggable={false}
                   />
-                  <span className="mascot-halo" aria-hidden />
-                </>
-              )}
-            </RingGauge>
-          )}
-        </div>
+                )}
+              </div>
+            ) : (
+              <RingGauge
+                outer={kind === "deepseek" ? undefined : outer}
+                inner={kind === "deepseek" ? undefined : inner}
+                readout={readout}
+                mood={mood}
+                ariaLabel={ariaLabel}
+                artSkin={artSkin}
+              >
+                {portrait && (
+                  <>
+                    <img
+                      className="panel-mascot"
+                      src={portrait}
+                      alt=""
+                      data-mascot={mood}
+                      data-pack={artSkin}
+                      draggable={false}
+                    />
+                    <span className="mascot-halo" aria-hidden />
+                  </>
+                )}
+              </RingGauge>
+            )}
+          </div>
+        )}
         {meter === "bar" && (
           <UsageBars
+            skin={artSkin === "ip" ? "ip" : "ring"}
             windows={kind === "deepseek" ? [] : legend}
             mood={mood}
+            ariaLabel={ariaLabel}
+            featuredLabel={kind === "antigravity" ? "7D" : undefined}
             balance={
               kind === "deepseek"
                 ? { currency: service.currency, amount: service.balance }
@@ -373,7 +415,7 @@ export function ServicePanel({
             <span className="usage-unavailable">USAGE DATA UNAVAILABLE</span>
           )}
         </div>
-        {kind === "codex" && typeof resetCredits === "number" && resetCredits > 0 && (
+        {(kind === "codex" || kind === "grok") && typeof resetCredits === "number" && resetCredits > 0 && (
           <div
             className="reset-credits"
             role="status"

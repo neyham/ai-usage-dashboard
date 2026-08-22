@@ -19,7 +19,7 @@ const WINDOW_MODES: Array<{ value: WindowMode; label: string; code: string }> = 
 
 const ART_SKINS: Array<{ value: ArtSkin; label: string; code: string }> = [
   { value: "ip", label: "IP SLABS", code: "IP" },
-  { value: "ring", label: "RING GAUGE", code: "RING" },
+  { value: "ring", label: "CLASSIC EVA", code: "EVA" },
 ];
 
 export function ProviderSettings({
