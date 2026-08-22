@@ -12,7 +12,7 @@ use crate::cache::cache_dir;
 use crate::config::Config;
 use crate::fs_util::{atomic_write, OsFileLock};
 use crate::models::GrokService;
-use crate::util::{clamp_percent, local_label, parse_datetime_str};
+use crate::util::{clamp_percent, fmt_local, local_label, parse_datetime_str};
 use anyhow::{anyhow, bail, Context};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, Utc};
@@ -35,6 +35,11 @@ use std::time::Instant;
 const BILLING_URL: &str = "https://cli-chat-proxy.grok.com/v1/billing";
 const CREDITS_URL: &str = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
 const SETTINGS_URL: &str = "https://cli-chat-proxy.grok.com/v1/settings";
+const RESETS_URLS: &[&str] = &[
+    "https://cli-chat-proxy.grok.com/prod_mc_billing.ConsumerUiSvc/GetRemainingResets",
+    "https://grok.com/prod_mc_billing.ConsumerUiSvc/GetRemainingResets",
+    "https://grok.com/grok_api_v2.ConsumerUiSvc/GetRemainingResets",
+];
 const GROK_CLIENT_SURFACE: &str = "grok-build";
 const LOGIN_REQUIRED: &str = "GROK LOGIN REQUIRED";
 const SESSION_EXPIRED: &str = "GROK SESSION EXPIRED";
@@ -47,6 +52,7 @@ const AUTH_REFRESH_STATE_FILE: &str = "grok-auth-refresh-attempt";
 const AUTH_REFRESH_LOCK_FILE: &str = "grok-auth-refresh.lock";
 const AUTH_REFRESH_LOCK_WAIT: StdDuration = StdDuration::from_secs(30);
 const SETTINGS_TIMEOUT: StdDuration = StdDuration::from_secs(2);
+const RESETS_TIMEOUT: StdDuration = StdDuration::from_secs(3);
 const MAX_AUTH_BYTES: usize = 64 * 1024;
 const MAX_JWT_PAYLOAD_BYTES: usize = 16 * 1024;
 
@@ -86,6 +92,11 @@ struct PeriodUsage {
 struct MonthlyUsage {
     percent: f64,
     reset_local: Option<String>,
+}
+
+struct ResetInventory {
+    available: u64,
+    earliest_expiry_local: Option<String>,
 }
 
 pub async fn fetch(config: &Config, client: &Client) -> Result<GrokService, FetchError> {
@@ -141,6 +152,7 @@ async fn fetch_for_auth(
         client.clone(),
         auth.token.clone(),
     ));
+    let resets_task = tokio::spawn(request_optional_resets(client.clone(), auth.token.clone()));
     let credits_result = credits_task
         .await
         .map_err(|err| anyhow!("join Grok credits request: {err}"))?;
@@ -150,6 +162,7 @@ async fn fetch_for_auth(
     let settings_result = settings_task
         .await
         .map_err(|err| anyhow!("join Grok settings request: {err}"))?;
+    let resets = resets_task.await.ok().flatten();
 
     let unauthorized =
         response_has_status(&credits_result, 401) || response_has_status(&monthly_result, 401);
@@ -160,6 +173,7 @@ async fn fetch_for_auth(
             &credits_result,
             &monthly_result,
             &settings_result,
+            resets.as_ref(),
         ),
         unauthorized,
     ))
@@ -171,6 +185,7 @@ fn service_from_responses(
     credits_result: &anyhow::Result<Resp>,
     monthly_result: &anyhow::Result<Resp>,
     settings_result: &anyhow::Result<Resp>,
+    resets: Option<&ResetInventory>,
 ) -> Result<GrokService, FetchError> {
     let period = successful_body(credits_result)
         .map(parse_credits)
@@ -186,6 +201,8 @@ fn service_from_responses(
     let plan = successful_body(settings_result)
         .and_then(|body| parse_settings_plan(body).ok().flatten())
         .or_else(|| fallback_plan.map(str::to_string));
+    let from_settings = successful_body(settings_result).and_then(parse_remaining_resets_json);
+    let resets = resets.or(from_settings.as_ref());
 
     if period.is_none() && monthly.is_none() {
         if response_has_status(credits_result, 401) || response_has_status(monthly_result, 401) {
@@ -220,7 +237,7 @@ fn service_from_responses(
         };
     }
 
-    Ok(service_from_usage(period, monthly, plan))
+    Ok(service_from_usage(period, monthly, plan, resets))
 }
 
 async fn request_grok_api(
@@ -237,6 +254,143 @@ async fn request_optional_settings(client: Client, token: String) -> anyhow::Res
         SETTINGS_TIMEOUT,
     )
     .await
+}
+
+async fn request_optional_resets(client: Client, token: String) -> Option<ResetInventory> {
+    tokio::time::timeout(RESETS_TIMEOUT, request_remaining_resets(client, token))
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn request_remaining_resets(client: Client, token: String) -> Option<ResetInventory> {
+    for url in RESETS_URLS {
+        let json = client
+            .post(*url)
+            .bearer_auth(&token)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .header("x-grok-client-surface", GROK_CLIENT_SURFACE)
+            .body("{}")
+            .send()
+            .await
+            .ok();
+        if let Some(json) = json {
+            if json.status().is_success() {
+                if let Ok(text) = json.text().await {
+                    if let Some(inventory) = parse_remaining_resets_json(&text) {
+                        return Some(inventory);
+                    }
+                }
+            }
+        }
+
+        let grpc = client
+            .post(*url)
+            .bearer_auth(&token)
+            .header("Content-Type", "application/grpc-web+proto")
+            .header("x-grpc-web", "1")
+            .header("x-grok-client-surface", GROK_CLIENT_SURFACE)
+            .body(vec![0_u8; 5])
+            .send()
+            .await
+            .ok();
+        if let Some(grpc) = grpc {
+            if grpc.status().is_success() {
+                if let Ok(bytes) = grpc.bytes().await {
+                    if let Some(inventory) = parse_remaining_resets_bytes(&bytes) {
+                        return Some(inventory);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_remaining_resets_json(body: &str) -> Option<ResetInventory> {
+    let root: Value = serde_json::from_str(body).ok()?;
+    parse_remaining_resets_value(&root)
+}
+
+fn parse_remaining_resets_bytes(bytes: &[u8]) -> Option<ResetInventory> {
+    let payload = unwrap_grpc_web(bytes);
+    if let Ok(text) = std::str::from_utf8(payload) {
+        let trimmed = text.trim_start_matches('\0').trim();
+        if trimmed.starts_with('{') {
+            return parse_remaining_resets_json(trimmed);
+        }
+    }
+    None
+}
+
+fn unwrap_grpc_web(bytes: &[u8]) -> &[u8] {
+    if bytes.len() >= 5 && bytes[0] & 0x7f == 0 {
+        let len = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
+        if 5 + len <= bytes.len() {
+            return &bytes[5..5 + len];
+        }
+    }
+    bytes
+}
+
+fn parse_remaining_resets_value(root: &Value) -> Option<ResetInventory> {
+    let tokens = root
+        .get("tokens")
+        .or_else(|| root.get("stillRedeemable"))
+        .or_else(|| root.get("still_redeemable"))
+        .and_then(Value::as_array)?;
+    let now = Utc::now().timestamp();
+    let mut available = 0_u64;
+    let mut earliest: Option<DateTime<Utc>> = None;
+    for token in tokens {
+        if token
+            .get("tokenId")
+            .or_else(|| token.get("token_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| id.len() >= 4)
+            .is_none()
+        {
+            continue;
+        }
+        let expiry = token
+            .get("validityEnd")
+            .or_else(|| token.get("validity_end"))
+            .and_then(|value| {
+                value
+                    .as_str()
+                    .and_then(parse_datetime_str)
+                    .or_else(|| {
+                        value
+                            .get("seconds")
+                            .and_then(Value::as_i64)
+                            .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0))
+                    })
+                    .or_else(|| {
+                        value
+                            .as_i64()
+                            .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0))
+                    })
+            });
+        if let Some(expiry) = expiry {
+            if expiry.timestamp() <= now {
+                continue;
+            }
+            earliest = Some(match earliest {
+                Some(current) if current <= expiry => current,
+                _ => expiry,
+            });
+        }
+        available += 1;
+    }
+    if available == 0 {
+        return None;
+    }
+    Some(ResetInventory {
+        available,
+        earliest_expiry_local: earliest.map(fmt_local),
+    })
 }
 
 async fn finish_optional_settings<F>(request: F, timeout: StdDuration) -> anyhow::Result<Resp>
@@ -265,13 +419,14 @@ fn grok_api_request(client: &Client, token: &str, url: &str) -> RequestBuilder {
 pub(crate) fn parse_usage(credits_body: &str, monthly_body: &str) -> anyhow::Result<GrokService> {
     let period = Some(parse_credits(credits_body)?);
     let monthly = parse_monthly(monthly_body)?;
-    Ok(service_from_usage(period, monthly, None))
+    Ok(service_from_usage(period, monthly, None, None))
 }
 
 fn service_from_usage(
     period: Option<PeriodUsage>,
     monthly: Option<MonthlyUsage>,
     plan: Option<String>,
+    resets: Option<&ResetInventory>,
 ) -> GrokService {
     GrokService {
         status: "NOMINAL".into(),
@@ -284,6 +439,11 @@ fn service_from_usage(
         usage_reset_local: period.and_then(|usage| usage.reset_local),
         monthly_percent: monthly.as_ref().map(|usage| usage.percent),
         monthly_reset_local: monthly.and_then(|usage| usage.reset_local),
+        reset_credits_available: resets
+            .filter(|inventory| inventory.available > 0)
+            .map(|inventory| inventory.available),
+        reset_credits_expire_local: resets
+            .and_then(|inventory| inventory.earliest_expiry_local.clone()),
     }
 }
 
@@ -807,10 +967,10 @@ fn compare_candidates(left: &AuthCandidate, right: &AuthCandidate) -> Ordering {
 mod tests {
     use super::{
         finish_optional_settings, grok_api_request, grok_home_from_auth_path, parse_auth_at,
-        parse_auth_state_at, parse_credits, parse_monthly, parse_settings_plan,
-        plan_from_access_token, read_bounded_utf8, reserve_auth_refresh_at, service_from_responses,
-        AuthState, ACCESS_UNAVAILABLE, BILLING_URL, CREDITS_URL, GROK_CLIENT_SURFACE,
-        LOGIN_REQUIRED, MAX_AUTH_BYTES, SETTINGS_URL,
+        parse_auth_state_at, parse_credits, parse_monthly, parse_remaining_resets_json,
+        parse_settings_plan, plan_from_access_token, read_bounded_utf8, reserve_auth_refresh_at,
+        service_from_responses, AuthState, ACCESS_UNAVAILABLE, BILLING_URL, CREDITS_URL,
+        GROK_CLIENT_SURFACE, LOGIN_REQUIRED, MAX_AUTH_BYTES, SETTINGS_URL,
     };
     #[cfg(unix)]
     use super::{read_auth_with_refresh_dir, renew_auth_with_official_cli};
@@ -1374,6 +1534,7 @@ EOF
             &credits,
             &monthly,
             &settings,
+            None,
         )
         .expect("credits remain usable");
         assert_eq!(service.usage_percent, Some(12.0));
@@ -1428,9 +1589,15 @@ EOF
             retry_after: None,
         });
 
-        let service =
-            service_from_responses(false, Some("SuperGrok"), &credits, &monthly, &settings)
-                .expect("credits remain usable");
+        let service = service_from_responses(
+            false,
+            Some("SuperGrok"),
+            &credits,
+            &monthly,
+            &settings,
+            None,
+        )
+        .expect("credits remain usable");
         assert_eq!(service.plan.as_deref(), Some("SuperGrok Heavy"));
     }
 
@@ -1453,9 +1620,27 @@ EOF
             retry_after: None,
         });
 
-        let service = service_from_responses(false, None, &credits, &unavailable, &unavailable)
-            .expect("credits remain usable");
+        let service =
+            service_from_responses(false, None, &credits, &unavailable, &unavailable, None)
+                .expect("credits remain usable");
         assert_eq!(service.plan, None);
+    }
+
+    #[test]
+    fn remaining_resets_count_valid_tokens_without_keeping_ids() {
+        let inventory = parse_remaining_resets_json(
+            r#"{
+                "tokens": [
+                    {"tokenId":"tok_keep_01","validityEnd":"2030-09-13T00:00:00Z"},
+                    {"tokenId":"tok_keep_02","validityEnd":"2030-08-01T00:00:00Z"},
+                    {"tokenId":"tok_expired","validityEnd":"2020-01-01T00:00:00Z"}
+                ]
+            }"#,
+        )
+        .expect("valid remaining resets");
+        assert_eq!(inventory.available, 2);
+        assert!(inventory.earliest_expiry_local.is_some());
+        assert!(parse_remaining_resets_json(r#"{"tokens":[]}"#).is_none());
     }
 
     #[test]
@@ -1472,7 +1657,7 @@ EOF
         });
 
         assert!(matches!(
-            service_from_responses(false, None, &unauthorized, &malformed, &malformed),
+            service_from_responses(false, None, &unauthorized, &malformed, &malformed, None),
             Err(FetchError::Auth {
                 message: LOGIN_REQUIRED
             })
@@ -1493,7 +1678,7 @@ EOF
         });
 
         assert!(matches!(
-            service_from_responses(false, None, &forbidden, &malformed, &malformed),
+            service_from_responses(false, None, &forbidden, &malformed, &malformed, None),
             Err(FetchError::Auth {
                 message: ACCESS_UNAVAILABLE
             })

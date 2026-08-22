@@ -162,6 +162,10 @@ pub struct GrokService {
     pub monthly_percent: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub monthly_reset_local: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reset_credits_available: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reset_credits_expire_local: Option<String>,
 }
 
 impl Default for GrokService {
@@ -177,6 +181,8 @@ impl Default for GrokService {
             usage_reset_local: None,
             monthly_percent: None,
             monthly_reset_local: None,
+            reset_credits_available: None,
+            reset_credits_expire_local: None,
         }
     }
 }
@@ -194,6 +200,8 @@ pub struct CursorService {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub usage_reset_local: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub included_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub api_percent: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub on_demand_percent: Option<f64>,
@@ -208,6 +216,7 @@ impl Default for CursorService {
             plan: None,
             usage_percent: None,
             usage_reset_local: None,
+            included_percent: None,
             api_percent: None,
             on_demand_percent: None,
         }

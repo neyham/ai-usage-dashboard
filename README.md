@@ -14,7 +14,11 @@ local desktop view.
 
 **Windows · macOS · Linux · No dashboard account · No analytics or telemetry**
 
-![Five-panel AI Usage Dashboard in the default IP color-slab skin, showing synthetic Grok, Cursor, Codex, Antigravity, and DeepSeek data](docs/assets/dashboard.png)
+![Five-panel AI Usage Dashboard in the default IP color-slab skin, showing synthetic Grok, Cursor, Codex, Claude, and DeepSeek data](docs/assets/dashboard.png)
+
+![Six-panel IP skin with a ring gauge on every card](docs/assets/dashboard-six-rings.png)
+
+![Classic EVA segmented-bar skin with all six providers](docs/assets/dashboard-eva.png)
 
 > Production UI rendered with bundled synthetic fixtures. No account information
 > or provider credentials are shown.
@@ -56,9 +60,9 @@ or macOS Gatekeeper may require manual confirmation.
 | --- | --- |
 | Claude Code | Available usage windows, reset times, extra usage, cooldown, and cache state |
 | Codex | Usage windows, reset times, plan, banked resets, and earliest expiry |
-| Grok Build | Server-reported credit period, reset time, plan, and optional monthly allowance |
-| Cursor | Included monthly usage, named-model API usage, plan, and billing-cycle reset |
-| Antigravity | Gemini 5-hour and weekly quota, reset times, and plan |
+| Grok Build | Server-reported credit period, reset time, plan, optional monthly allowance, and banked usage-limit resets when available |
+| Cursor | Included, Auto, and named-model API usage, plan, and billing-cycle reset |
+| Antigravity | Gemini 5-hour and 7-day quota, reset times, and Google AI plan |
 | DeepSeek | API balance and insufficient-balance state |
 
 - Each provider refreshes independently; one outage does not erase the others.
@@ -67,8 +71,10 @@ or macOS Gatekeeper may require manual confirmation.
   single top-tier plan (SuperGrok Heavy, Cursor Ultra/Enterprise, or
   Google AI Ultra) occupies the left half; two top-tier plans split the
   top row.
-- The default skin is IP color slabs. Display Settings can switch to the
-  circular ring-gauge HUD. The choice is saved as `artSkin` in `config.json`.
+- The default skin is IP color slabs. Compact cards keep the dual ring;
+  wide top-tier cards use labeled bars. Display Settings can switch to the
+  classic EVA segmented-bar HUD (no mascots). The choice is saved as
+  `artSkin` in `config.json`.
 - Use a normal window or borderless fullscreen on every platform.
 - Enable Low Power Mode to stop animation and heavy compositing, update the
   clock once per minute, and use a 15-minute automatic-refresh minimum.
@@ -76,7 +82,7 @@ or macOS Gatekeeper may require manual confirmation.
 
 ## Compatibility and limitations
 
-Version `0.7.0` is the current multi-platform release: Windows (WinGet + NSIS),
+Version `0.8.0` is the current multi-platform release: Windows (WinGet + NSIS),
 Linux (`.deb` / AppImage), and macOS (`.dmg`). Screensaver and scheduled-idle
 helpers remain Windows-only. Published installers are not code-signed. Community
 WinGet indexes can lag a new GitHub release until the version manifest is
@@ -110,8 +116,8 @@ reporting a vulnerability or suspected credential exposure.
 
 ## Additional installation notes
 
-Pin a version with `VERSION=0.7.0` before the install script, for example
-`VERSION=0.7.0 sh install-linux.sh`.
+Pin a version with `VERSION=0.8.0` before the install script, for example
+`VERSION=0.8.0 sh install-linux.sh`.
 
 ### Windows (WinGet and direct installer)
 
@@ -370,7 +376,7 @@ clamped to safe bounds:
 | `claudeCodeRefreshTimeoutSeconds` | 5 to 120 seconds |
 | `claudeCodeRefreshMaxBudgetUsd` | USD 0.001 to USD 0.10 |
 
-`artSkin` is `"ip"` (color slabs, default) or `"ring"` (circular gauge HUD).
+`artSkin` is `"ip"` (color slabs, default) or `"ring"` (classic EVA bars).
 Change it from **Display Settings**.
 
 `lowPowerMode` can also be changed from **Display Settings**. It disables

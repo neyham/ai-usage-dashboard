@@ -111,16 +111,24 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<CursorService> {
     let pooled = team.and_then(|value| value.get("pooled"));
     let on_demand = individual.and_then(|value| value.get("onDemand"));
 
-    let usage_percent = percent_from_usage(plan_usage)
+    let api_percent = api_percent(plan_usage);
+    let auto = auto_percent(plan_usage);
+    let included_percent = if auto.is_some() || api_percent.is_some() {
+        plan_included_percent(plan_usage)
+    } else {
+        None
+    };
+    let usage_percent = auto
+        .or_else(|| percent_from_usage(plan_usage))
         .or_else(|| percent_from_usage(overall))
         .or_else(|| percent_from_usage(pooled));
-    let api_percent = plan_usage
-        .and_then(|value| value.get("apiPercentUsed"))
-        .and_then(number_value)
-        .map(clamp_percent);
     let on_demand_percent = on_demand_percent(on_demand);
 
-    if usage_percent.is_none() && api_percent.is_none() && on_demand_percent.is_none() {
+    if usage_percent.is_none()
+        && included_percent.is_none()
+        && api_percent.is_none()
+        && on_demand_percent.is_none()
+    {
         bail!("Cursor usage-summary returned no usable usage windows");
     }
 
@@ -131,9 +139,31 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<CursorService> {
         plan,
         usage_percent,
         usage_reset_local: reset_local,
+        included_percent,
         api_percent,
         on_demand_percent,
     })
+}
+
+fn auto_percent(usage: Option<&Value>) -> Option<f64> {
+    usage
+        .and_then(|value| value.get("autoPercentUsed"))
+        .and_then(number_value)
+        .map(clamp_percent)
+}
+
+fn plan_included_percent(usage: Option<&Value>) -> Option<f64> {
+    usage
+        .and_then(|value| value.get("totalPercentUsed"))
+        .and_then(number_value)
+        .map(clamp_percent)
+}
+
+fn api_percent(usage: Option<&Value>) -> Option<f64> {
+    usage
+        .and_then(|value| value.get("apiPercentUsed"))
+        .and_then(number_value)
+        .map(clamp_percent)
 }
 
 fn percent_from_usage(usage: Option<&Value>) -> Option<f64> {
@@ -141,14 +171,8 @@ fn percent_from_usage(usage: Option<&Value>) -> Option<f64> {
     if let Some(percent) = usage.get("totalPercentUsed").and_then(number_value) {
         return Some(clamp_percent(percent));
     }
-
-    let auto = usage.get("autoPercentUsed").and_then(number_value);
-    let api = usage.get("apiPercentUsed").and_then(number_value);
-    match (auto, api) {
-        (Some(auto), Some(api)) => return Some(clamp_percent((auto + api) / 2.0)),
-        (Some(auto), None) => return Some(clamp_percent(auto)),
-        (None, Some(api)) => return Some(clamp_percent(api)),
-        (None, None) => {}
+    if let Some(percent) = usage.get("autoPercentUsed").and_then(number_value) {
+        return Some(clamp_percent(percent));
     }
 
     let used = usage.get("used").and_then(number_value)?;
@@ -649,13 +673,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_usage_prefers_total_percent_and_named_api_lane() {
+    fn parse_usage_keeps_auto_and_named_api_lanes_separate() {
         let service = parse_usage(include_str!("../../../mocks/cursor_usage_normal.json"))
             .expect("bundled Cursor fixture");
 
         assert_eq!(service.status, "NOMINAL");
         assert_eq!(service.plan.as_deref(), Some("Ultra"));
-        assert_eq!(service.usage_percent, Some(24.0));
+        assert_eq!(service.usage_percent, Some(8.0));
+        assert_eq!(service.included_percent, Some(24.0));
         assert_eq!(service.api_percent, Some(41.0));
         assert!(service.on_demand_percent.is_none());
         assert!(service.usage_reset_local.is_some());
@@ -701,12 +726,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_usage_averages_auto_and_api_lanes_when_total_is_missing() {
+    fn parse_usage_uses_auto_lane_when_total_is_missing() {
         let percent = percent_from_usage(Some(&json!({
             "autoPercentUsed": 10.0,
             "apiPercentUsed": 30.0
         })));
-        assert_eq!(percent, Some(20.0));
+        assert_eq!(percent, Some(10.0));
     }
 
     #[test]

@@ -7,10 +7,6 @@ const AUTH_STATUS =
   /AUTH|LOGIN|REFRESH|KEY MISSING|NOT CONFIG|CREDENTIAL|SESSION EXPIRED|ACCESS UNAVAILABLE|TEAM USAGE UNAVAILABLE/i;
 const OVER_STATUS = /INSUFFICIENT|DEPLETED|EXHAUSTED/i;
 
-const artRing = import.meta.glob("./assets/mascots/*.png", {
-  eager: true,
-  import: "default",
-}) as Record<string, string>;
 const artIp = import.meta.glob("./assets/mascots-ip/*.png", {
   eager: true,
   import: "default",
@@ -57,9 +53,10 @@ export function mascotSrc(
   mood: MascotMood,
   skin: ArtSkin = "ip",
 ): string {
-  const pack = skin === "ip" ? artIp : artRing;
-  const folder = skin === "ip" ? "mascots-ip" : "mascots";
-  return pack[`./assets/${folder}/${kind}-${mood}.png`];
+  if (skin !== "ip") {
+    return "";
+  }
+  return artIp[`./assets/mascots-ip/${kind}-${mood}.png`] ?? "";
 }
 
 export function moodColorVar(mood: MascotMood): "--accent" | "--warn" | "--danger" {

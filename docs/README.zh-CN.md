@@ -9,6 +9,10 @@
 
 ![默认 IP 色块皮肤下的五面板 AI Usage Dashboard，使用合成数据](assets/dashboard.png)
 
+![六个面板都使用圆环的 IP 皮肤](assets/dashboard-six-rings.png)
+
+![经典 EVA 分段进度条皮肤，六个 provider](assets/dashboard-eva.png)
+
 > 图片来自正式 UI 和内置合成数据，不包含真实账号信息或 provider credential。
 
 它面向同时使用多个 AI coding 工具的个人开发者，用于查看当前状态；它不是历史
@@ -20,17 +24,17 @@
 | --- | --- |
 | Claude Code | 可用额度窗口、重置时间、extra usage、cooldown 和缓存状态 |
 | Codex | 额度窗口、重置时间、套餐、banked resets 及最早到期时间 |
-| Grok Build | 服务端返回的 credit period、重置时间、套餐和可选月度 allowance |
-| Cursor | 套餐内月度用量、named-model API 用量、套餐和账期重置时间 |
-| Antigravity | Gemini 5 小时和每周额度、重置时间、套餐 |
+| Grok Build | 服务端返回的 credit period、重置时间、套餐、可选月度 allowance，以及可用的 banked usage-limit reset |
+| Cursor | Included、Auto、named-model API 用量、套餐和账期重置时间 |
+| Antigravity | Gemini 5 小时和 7 天额度、重置时间、Google AI 套餐 |
 | DeepSeek | API 余额和余额不足状态 |
 
 - 各个 provider 独立刷新；其中一个失败不会清空其他面板。
 - 可以自由选择 0–6 个面板。五个面板会铺满；若只有一个顶级套餐
   （SuperGrok Heavy、Cursor Ultra/Enterprise 或 Google AI Ultra），
   它会占左半通高；两个顶级套餐则平分上排。
-- 默认皮肤是 IP 色块。可在显示设置中切回圆环 HUD；选择会写入
-  `config.json` 的 `artSkin`。
+- 默认皮肤是 IP 色块。小卡用双环，宽的顶级卡用进度条。可在显示设置中切到
+  经典 EVA 分段进度条（无看板娘）；选择会写入 `config.json` 的 `artSkin`。
 - 三个平台均支持普通窗口和无边框全屏。
 - 可以在显示设置中开启低功耗模式：停止动画和高开销合成效果，将时钟更新
   降为每分钟一次，并把自动刷新间隔下限设为 15 分钟；手动刷新不受影响。
@@ -86,7 +90,7 @@ Windows 安装包目前会添加 **AI Usage Dashboard (Judge Demo)** 开始菜�
 
 ## 兼容性与限制
 
-- 当前版本为 `v0.7.0`：Windows、Linux、macOS。WinGet 社区源在新 GitHub
+- 当前版本为 `v0.8.0`：Windows、Linux、macOS。WinGet 社区源在新 GitHub
   Release 之后可能短暂滞后。
 - 屏保和闲置启动工具仅支持 Windows。
 - 项目使用 provider CLI 的 credential 格式和用量 endpoint，其中一部分不是公开

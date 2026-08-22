@@ -61,6 +61,8 @@ export interface GrokService {
   usageResetLocal?: string;
   monthlyPercent?: number;
   monthlyResetLocal?: string;
+  resetCreditsAvailable?: number;
+  resetCreditsExpireLocal?: string;
 }
 
 export interface CursorService {
@@ -70,6 +72,7 @@ export interface CursorService {
   plan?: string;
   usagePercent?: number;
   usageResetLocal?: string;
+  includedPercent?: number;
   apiPercent?: number;
   onDemandPercent?: number;
 }
