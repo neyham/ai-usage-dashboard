@@ -19,7 +19,7 @@ ReleaseDate: 2026-08-26
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/neyham/ai-usage-dashboard/releases/download/v0.8.1/AI-Usage-Dashboard_0.8.1_x64-setup.exe
-    InstallerSha256:  F6FDB5117C4CCC1E2FC2979D8C48BCD9BA91AE6D26F7A549F1A938984559D16D
+    InstallerSha256: F6FDB5117C4CCC1E2FC2979D8C48BCD9BA91AE6D26F7A549F1A938984559D16D
     AppsAndFeaturesEntries:
       - DisplayName: AI Usage Dashboard
         DisplayVersion: 0.8.1
