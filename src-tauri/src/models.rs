@@ -205,6 +205,10 @@ pub struct CursorService {
     pub api_percent: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub on_demand_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub grok_bot_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub grok_bot_reset_local: Option<String>,
 }
 
 impl Default for CursorService {
@@ -219,6 +223,8 @@ impl Default for CursorService {
             included_percent: None,
             api_percent: None,
             on_demand_percent: None,
+            grok_bot_percent: None,
+            grok_bot_reset_local: None,
         }
     }
 }

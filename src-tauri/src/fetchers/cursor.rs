@@ -1,8 +1,10 @@
 //! Cursor usage fetcher. Credentials are read from the official CLI or the
 //! Cursor desktop app and are never cached or sent to the renderer. The
 //! dashboard does not refresh Cursor tokens or write credential files. The
-//! usage-summary endpoint is not a public API, so incompatible responses
-//! degrade to last-known-good sanitized data.
+//! usage-summary and GetSandUsageStatus endpoints are not public APIs, so
+//! incompatible responses degrade to last-known-good sanitized data. Grok Bot
+//! quota is attached from GetSandUsageStatus on the same login; a missing or
+//! failed Bot response does not fail the Cursor panel.
 
 use super::{require_success, send_with_one_retry, FetchError, MSG_LOGIN_REQUIRED};
 use crate::config::Config;
@@ -23,6 +25,8 @@ use std::time::Duration as StdDuration;
 use std::time::Instant;
 
 const USAGE_URL: &str = "https://cursor.com/api/usage-summary";
+const SAND_USAGE_URL: &str =
+    "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus";
 const LOGIN_REQUIRED: &str = MSG_LOGIN_REQUIRED;
 const SESSION_EXPIRED: &str = "SESSION EXPIRED";
 const AUTH_READ_TIMEOUT: StdDuration = StdDuration::from_secs(16);
@@ -80,11 +84,22 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<CursorService, Fe
         Err(error) => return Err(error.into()),
     };
 
+    let sand_client = client.clone();
+    let sand_token = auth.token.clone();
+    let sand_task = tokio::spawn(async move {
+        send_with_one_retry(|| sand_usage_request(&sand_client, &sand_token)).await
+    });
     let resp = send_with_one_retry(|| usage_request(client, &auth))
         .await
         .map_err(FetchError::Other)?;
     require_success(&resp, "Cursor usage")?;
-    parse_usage(&resp.body).map_err(FetchError::Other)
+    let mut service = parse_usage(&resp.body).map_err(FetchError::Other)?;
+    let sand_res = match sand_task.await {
+        Ok(Ok(sand)) => Some(sand),
+        _ => None,
+    };
+    apply_sand_usage(sand_res.as_ref(), &mut service);
+    Ok(service)
 }
 
 fn usage_request(client: &Client, auth: &CursorAuth) -> RequestBuilder {
@@ -142,7 +157,47 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<CursorService> {
         included_percent,
         api_percent,
         on_demand_percent,
+        grok_bot_percent: None,
+        grok_bot_reset_local: None,
     })
+}
+
+fn sand_usage_request(client: &Client, token: &str) -> RequestBuilder {
+    client
+        .post(SAND_USAGE_URL)
+        .header("Content-Type", "application/json")
+        .header("connect-protocol-version", "1")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("x-cursor-client-type", "sand")
+        .header("x-cursor-client-version", "0.24.0")
+        .body("{}")
+}
+
+fn apply_sand_usage(resp: Option<&super::Resp>, service: &mut CursorService) {
+    let Some(resp) = resp else {
+        return;
+    };
+    if !resp.is_success() {
+        return;
+    }
+    if let Some((percent, reset)) = parse_sand_usage(&resp.body) {
+        service.grok_bot_percent = Some(percent);
+        service.grok_bot_reset_local = reset;
+    }
+}
+
+pub(crate) fn parse_sand_usage(body: &str) -> Option<(f64, Option<String>)> {
+    let root: Value = serde_json::from_str(body).ok()?;
+    let percent = root
+        .get("usagePercent")
+        .or_else(|| root.get("usage_percent"))
+        .and_then(number_value)
+        .map(clamp_percent)?;
+    let reset = root
+        .get("nextResetTimestampUtc")
+        .or_else(|| root.get("next_reset_timestamp_utc"))
+        .and_then(local_label);
+    Some((percent, reset))
 }
 
 fn auto_percent(usage: Option<&Value>) -> Option<f64> {
@@ -641,12 +696,13 @@ fn hide_command_window(_command: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_plan_label, cookie_header, helper_status_is_missing, is_safe_user_id,
-        is_vscdb_path, jwt_claims, load_auth_file, load_configured_auth, load_vscdb_auth,
-        normalize_stored_token, parse_access_token, parse_auth_text, parse_usage,
-        percent_from_usage, select_auth_state, sqlite_file_uri, AuthError, AuthState, CursorAuth,
-        ITEM_ACCESS_TOKEN,
+        apply_sand_usage, canonical_plan_label, cookie_header, helper_status_is_missing,
+        is_safe_user_id, is_vscdb_path, jwt_claims, load_auth_file, load_configured_auth,
+        load_vscdb_auth, normalize_stored_token, parse_access_token, parse_auth_text,
+        parse_sand_usage, parse_usage, percent_from_usage, select_auth_state, sqlite_file_uri,
+        AuthError, AuthState, CursorAuth, ITEM_ACCESS_TOKEN,
     };
+    use crate::fetchers::Resp;
     use base64::Engine as _;
     use chrono::Utc;
     use rusqlite::Connection;
@@ -673,6 +729,55 @@ mod tests {
     }
 
     #[test]
+    fn parse_sand_usage_reads_percent_and_reset() {
+        let parsed = parse_sand_usage(include_str!("../../../mocks/grok_bot_usage_normal.json"))
+            .expect("sand usage");
+        assert_eq!(parsed.0, 37.5);
+        assert!(parsed.1.is_some());
+        let snake = parse_sand_usage(
+            r#"{"usage_percent":110,"next_reset_timestamp_utc":"2026-09-01T00:00:00Z"}"#,
+        )
+        .expect("snake_case sand usage");
+        assert_eq!(snake.0, 100.0);
+        assert!(snake.1.is_some());
+        assert!(parse_sand_usage("{}").is_none());
+        assert!(parse_sand_usage("not-json").is_none());
+        assert!(parse_sand_usage(r#"{"nextResetTimestampUtc":"2026-09-01T00:00:00Z"}"#).is_none());
+    }
+
+    #[test]
+    fn sand_failure_leaves_included_auto_and_api_alone() {
+        let mut service = parse_usage(include_str!("../../../mocks/cursor_usage_normal.json"))
+            .expect("bundled Cursor fixture");
+        apply_sand_usage(None, &mut service);
+        apply_sand_usage(
+            Some(&Resp {
+                status: 503,
+                body: include_str!("../../../mocks/grok_bot_usage_normal.json").into(),
+                retry_after: None,
+            }),
+            &mut service,
+        );
+        assert_eq!(service.usage_percent, Some(8.0));
+        assert_eq!(service.included_percent, Some(24.0));
+        assert_eq!(service.api_percent, Some(41.0));
+        assert!(service.grok_bot_percent.is_none());
+
+        apply_sand_usage(
+            Some(&Resp {
+                status: 200,
+                body: include_str!("../../../mocks/grok_bot_usage_normal.json").into(),
+                retry_after: None,
+            }),
+            &mut service,
+        );
+        assert_eq!(service.grok_bot_percent, Some(37.5));
+        assert_eq!(service.usage_percent, Some(8.0));
+        assert_eq!(service.included_percent, Some(24.0));
+        assert_eq!(service.api_percent, Some(41.0));
+    }
+
+    #[test]
     fn parse_usage_keeps_auto_and_named_api_lanes_separate() {
         let service = parse_usage(include_str!("../../../mocks/cursor_usage_normal.json"))
             .expect("bundled Cursor fixture");
@@ -684,6 +789,8 @@ mod tests {
         assert_eq!(service.api_percent, Some(41.0));
         assert!(service.on_demand_percent.is_none());
         assert!(service.usage_reset_local.is_some());
+        assert!(service.grok_bot_percent.is_none());
+        assert!(service.grok_bot_reset_local.is_none());
     }
 
     #[test]

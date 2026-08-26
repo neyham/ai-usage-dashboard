@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [0.8.1] - 2026-08-26
+
+### Added
+
+- Show **Grok Bot** quota on the Cursor card (same `GetSandUsageStatus` feed
+  the Telegram daily-monitor uses). Cursor Included/Auto/API stay as they are;
+  a missing Bot response does not fail the Cursor panel.
+
+### Changed
+
+- Cursor Included and Auto share one billing-cycle reset label instead of
+  printing the same time twice. Usage bars keep even row height.
+
 ## [0.8.0] - 2026-08-22
 
 ### Changed

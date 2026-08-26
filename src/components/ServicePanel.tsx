@@ -52,6 +52,8 @@ type AnyService = (
   includedPercent?: number;
   apiPercent?: number;
   onDemandPercent?: number;
+  grokBotPercent?: number;
+  grokBotResetLocal?: string;
 };
 
 type GaugeWindow = RingWindow & { reset?: string };
@@ -64,6 +66,17 @@ function formatPercent(value: number): string {
 function windowOf(label: string, percent?: number, reset?: string): GaugeWindow | undefined {
   if (typeof percent !== "number" || Number.isNaN(percent)) return undefined;
   return { label, percent, reset };
+}
+
+/** Keep a shared reset time on the first lane only so Included/Auto do not repeat it. */
+function withUniqueResets(windows: GaugeWindow[]): GaugeWindow[] {
+  const seen = new Set<string>();
+  return windows.map((win) => {
+    if (!win.reset) return win;
+    if (seen.has(win.reset)) return { label: win.label, percent: win.percent };
+    seen.add(win.reset);
+    return win;
+  });
 }
 
 function legendText(win: GaugeWindow, compact = false): string {
@@ -114,8 +127,9 @@ function windowsFor(kind: Kind, service: AnyService): {
     );
     const api = windowOf("API", service.apiPercent);
     const onDemand = windowOf("EXTRA", service.onDemandPercent);
-    const lanes = [included, auto, api, onDemand].filter(
-      (win): win is GaugeWindow => Boolean(win),
+    const grokBot = windowOf("GROK BOT", service.grokBotPercent, service.grokBotResetLocal);
+    const lanes = withUniqueResets(
+      [included, auto, api, onDemand, grokBot].filter((win): win is GaugeWindow => Boolean(win)),
     );
     const ranked = [...lanes].sort((left, right) => right.percent - left.percent);
     return {
@@ -225,6 +239,7 @@ export function ServicePanel({
     service.includedPercent,
     service.apiPercent,
     service.onDemandPercent,
+    service.grokBotPercent,
   ];
   const mood = mascotMood(service.status, percents);
   const peak = peakPercent(percents);

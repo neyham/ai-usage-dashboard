@@ -1,6 +1,6 @@
 [package]
 name = "ai-usage-dashboard"
-version = "0.8.0"
+version = "0.8.1"
 description = "Local, cross-platform quota cockpit for Claude Code, Codex, Grok Build, Cursor, Antigravity, and DeepSeek API balance"
 authors = ["neyham"]
 license = "MIT"

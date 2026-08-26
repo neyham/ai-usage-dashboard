@@ -86,6 +86,8 @@ const baseSummary = {
       usageResetLocal: "08-13 09:13",
       includedPercent: 24,
       apiPercent: 41,
+      grokBotPercent: 38,
+      grokBotResetLocal: "09-01 08:00",
     },
     antigravity: {
       status: "NOMINAL",
@@ -1040,11 +1042,22 @@ async function checkCursorPanel(browser) {
   assert.equal(await contentPage.locator(".panel").count(), 4);
   assert.equal(await contentPage.locator(".panel-cursor .panel-plan").textContent(), "ULTRA");
   assert.equal(await contentPage.locator(".panel-cursor").getAttribute("data-meter"), "ring");
-  assert.deepEqual(await legendWindows(contentPage, ".panel-cursor"), ["INCLUDED", "AUTO", "API"]);
+  assert.deepEqual(await legendWindows(contentPage, ".panel-cursor"), [
+    "INCLUDED",
+    "AUTO",
+    "API",
+    "GROK BOT",
+  ]);
   const cursorLegend = (await contentPage.locator(".panel-cursor .gauge-legend").textContent()) ?? "";
   assert.match(cursorLegend, /INCLUDED 24/);
   assert.match(cursorLegend, /AUTO 8/);
   assert.match(cursorLegend, /API 41/);
+  assert.match(cursorLegend, /GROK BOT 38/);
+  assert.equal(
+    (cursorLegend.match(/08-13 09:13/g) ?? []).length,
+    1,
+    "Included/Auto share one billing-cycle reset",
+  );
   assert.deepEqual(await inspectLayout(contentPage, { width: 1600, height: 900 }), []);
   await contentContext.close();
 
@@ -1069,6 +1082,10 @@ async function checkCursorPanel(browser) {
   assert.equal(await layoutPage.locator(".panel-cursor").getAttribute("data-slot"), "top-right");
   assert.equal(await layoutPage.locator(".panel-grok").getAttribute("data-plan-size"), "L");
   assert.equal(await layoutPage.locator(".panel-cursor").getAttribute("data-plan-size"), "L");
+  const cursorResets = (await layoutPage.locator(".panel-cursor .ip-bar-reset").allTextContents())
+    .map((text) => text.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  assert.deepEqual(cursorResets, ["RESET 08-13 09:13", "RESET 09-01 08:00"]);
   assert.deepEqual(await inspectLayout(layoutPage, { width: 1824, height: 1216 }), []);
   await layoutPage.screenshot({ path: join(artifactDir, "cursor-five-panels.png"), fullPage: true });
   await layoutContext.close();

@@ -15,6 +15,7 @@ const DEEPSEEK_JSON: &str = include_str!("../../mocks/deepseek_normal.json");
 const GROK_CREDITS_JSON: &str = include_str!("../../mocks/grok_credits_normal.json");
 const GROK_MONTHLY_JSON: &str = include_str!("../../mocks/grok_monthly_normal.json");
 const CURSOR_JSON: &str = include_str!("../../mocks/cursor_usage_normal.json");
+const GROK_BOT_JSON: &str = include_str!("../../mocks/grok_bot_usage_normal.json");
 const ANTIGRAVITY_JSON: &str = include_str!("../../mocks/antigravity_quota_normal.json");
 
 pub fn summary(mode: &str, enabled: EnabledProviders) -> Option<UsageSummary> {
@@ -67,6 +68,10 @@ fn summary_from_payloads(
     else {
         return mock_data_error_summary(enabled);
     };
+    if let Some((percent, reset)) = cursor::parse_sand_usage(GROK_BOT_JSON) {
+        cursor.grok_bot_percent = Some(percent);
+        cursor.grok_bot_reset_local = reset;
+    }
     if codex.reset_credits_available.unwrap_or(0) > 0 {
         codex.reset_credits_expire_local = Some(fmt_local(Utc::now() + Duration::days(21)));
     }
@@ -192,6 +197,8 @@ mod tests {
         assert_eq!(summary.services.cursor.usage_percent, Some(8.0));
         assert_eq!(summary.services.cursor.included_percent, Some(24.0));
         assert_eq!(summary.services.cursor.api_percent, Some(41.0));
+        assert_eq!(summary.services.cursor.grok_bot_percent, Some(37.5));
+        assert!(summary.services.cursor.grok_bot_reset_local.is_some());
         assert_eq!(summary.services.cursor.plan.as_deref(), Some("Ultra"));
         assert!(
             (summary

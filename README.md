@@ -61,7 +61,7 @@ or macOS Gatekeeper may require manual confirmation.
 | Claude Code | Available usage windows, reset times, extra usage, cooldown, and cache state |
 | Codex | Usage windows, reset times, plan, banked resets, and earliest expiry |
 | Grok Build | Server-reported credit period, reset time, plan, optional monthly allowance, and banked usage-limit resets when available |
-| Cursor | Included, Auto, and named-model API usage, plan, and billing-cycle reset |
+| Cursor | Included, Auto, named-model API usage, Grok Bot quota, plan, and billing-cycle reset |
 | Antigravity | Gemini 5-hour and 7-day quota, reset times, and Google AI plan |
 | DeepSeek | API balance and insufficient-balance state |
 
@@ -82,7 +82,7 @@ or macOS Gatekeeper may require manual confirmation.
 
 ## Compatibility and limitations
 
-Version `0.8.0` is the current multi-platform release: Windows (WinGet + NSIS),
+Version `0.8.1` is the current multi-platform release: Windows (WinGet + NSIS),
 Linux (`.deb` / AppImage), and macOS (`.dmg`). Screensaver and scheduled-idle
 helpers remain Windows-only. Published installers are not code-signed. Community
 WinGet indexes can lag a new GitHub release until the version manifest is
@@ -116,8 +116,8 @@ reporting a vulnerability or suspected credential exposure.
 
 ## Additional installation notes
 
-Pin a version with `VERSION=0.8.0` before the install script, for example
-`VERSION=0.8.0 sh install-linux.sh`.
+Pin a version with `VERSION=0.8.1` before the install script, for example
+`VERSION=0.8.1 sh install-linux.sh`.
 
 ### Windows (WinGet and direct installer)
 
@@ -242,7 +242,9 @@ leave its password field blank to keep the existing value.
 Sign in with the official Claude Code, Codex, Grok Build, Cursor, and
 Antigravity (`agy`) clients before enabling their panels. Grok, Cursor, and
 Antigravity are disabled by default so an upgrade never starts reading a newly
-introduced credential source without an explicit selection.
+introduced credential source without an explicit selection. Enable Cursor from
+**Display Settings** (gear) or by setting `enabledProviders.cursor` to `true`
+in `config.json`.
 
 The direct settings field stores DeepSeek's key as plaintext in the per-user
 configuration file. The app never pre-fills or returns that value to the UI;
@@ -276,7 +278,9 @@ machine. On macOS the CLI stores the access token in the login Keychain
 desktop app keeps a session token in `state.vscdb`. The dashboard only reads
 the access token, builds a session cookie for `cursor.com/api/usage-summary`,
 and never extracts a refresh token, writes credential files, or asks the
-official Cursor CLI to renew. An expired session is reported as
+official Cursor CLI to renew. The same token also queries
+`GetSandUsageStatus` for Grok Bot quota on the Cursor card; a missing Bot
+response does not fail Included / Auto / API. An expired session is reported as
 `SESSION EXPIRED`. These are not public APIs; incompatible responses fail
 closed to sanitized last-known-good data.
 

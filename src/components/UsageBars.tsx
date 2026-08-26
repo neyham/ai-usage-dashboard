@@ -97,7 +97,7 @@ export function UsageBars({
               style={{ width: `${clampPercent(win.percent)}%` }}
             />
           </div>
-          {win.reset ? <span className="ip-bar-reset">RESET {win.reset}</span> : null}
+          <span className="ip-bar-reset">{win.reset ? `RESET ${win.reset}` : "\u00a0"}</span>
         </div>
       ))}
     </div>
