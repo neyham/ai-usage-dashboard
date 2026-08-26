@@ -25,7 +25,7 @@
 | Claude Code | 可用额度窗口、重置时间、extra usage、cooldown 和缓存状态 |
 | Codex | 额度窗口、重置时间、套餐、banked resets 及最早到期时间 |
 | Grok Build | 服务端返回的 credit period、重置时间、套餐、可选月度 allowance，以及可用的 banked usage-limit reset |
-| Cursor | Included、Auto、named-model API 用量、套餐和账期重置时间 |
+| Cursor | Included、Auto、named-model API 用量、Grok Bot 配额、套餐和账期重置时间。Bot 查不到时不影响 Included / Auto / API |
 | Antigravity | Gemini 5 小时和 7 天额度、重置时间、Google AI 套餐 |
 | DeepSeek | API 余额和余额不足状态 |
 
@@ -90,7 +90,7 @@ Windows 安装包目前会添加 **AI Usage Dashboard (Judge Demo)** 开始菜�
 
 ## 兼容性与限制
 
-- 当前版本为 `v0.8.0`：Windows、Linux、macOS。WinGet 社区源在新 GitHub
+- 当前版本为 `v0.8.1`：Windows、Linux、macOS。WinGet 社区源在新 GitHub
   Release 之后可能短暂滞后。
 - 屏保和闲置启动工具仅支持 Windows。
 - 项目使用 provider CLI 的 credential 格式和用量 endpoint，其中一部分不是公开

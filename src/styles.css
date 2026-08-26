@@ -1724,7 +1724,8 @@ body {
   padding: 4px 4px 4px 8px;
 }
 .dashboard[data-art="ip"] .panel[data-meter="bar"] .ip-bars[data-count="3"],
-.dashboard[data-art="ip"] .panel[data-meter="bar"] .ip-bars[data-count="4"] {
+.dashboard[data-art="ip"] .panel[data-meter="bar"] .ip-bars[data-count="4"],
+.dashboard[data-art="ip"] .panel[data-meter="bar"] .ip-bars[data-count="5"] {
   gap: 6px;
 }
 .dashboard[data-art="ip"] .panel[data-meter="bar"][data-emerge="right"] .ip-bars {
@@ -1805,13 +1806,22 @@ body {
   color: inherit;
   opacity: 0.72;
 }
+.dashboard[data-art="ip"] .ip-bar {
+  display: grid;
+  grid-template-rows: 1.2em 10px 1.15em;
+  gap: 3px;
+  min-width: 0;
+}
 .dashboard[data-art="ip"] .ip-bar-meta {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
   gap: 8px;
+  min-width: 0;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--cream, #fff8f0);
+  white-space: nowrap;
   text-shadow:
     0 1px 0 #121212,
     1px 0 0 #121212,
@@ -1821,6 +1831,10 @@ body {
 .dashboard[data-art="ip"] .ip-bar-label,
 .dashboard[data-art="ip"] .ip-bar-percent {
   color: var(--cream, #fff8f0);
+}
+.dashboard[data-art="ip"] .ip-bar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .dashboard[data-art="ip"] .ip-bar-percent {
   font-variant-numeric: tabular-nums;
@@ -1852,8 +1866,12 @@ body {
 .dashboard[data-art="ip"] .ip-bar-reset {
   font-family: var(--mono);
   font-size: 9px;
+  line-height: 1.15em;
   color: var(--cream, #fff8f0);
   opacity: 0.78;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   text-shadow:
     0 1px 0 #121212,
     1px 0 0 #121212,
@@ -2194,6 +2212,12 @@ body {
   min-height: 0;
   padding: 6px 2px;
 }
+.dashboard[data-art="ring"] .ip-bar {
+  display: grid;
+  grid-template-rows: auto 16px 1.15em;
+  gap: 4px;
+  min-width: 0;
+}
 .dashboard[data-art="ring"] .ip-bar-meta {
   display: flex;
   justify-content: space-between;
@@ -2222,7 +2246,6 @@ body {
 }
 .dashboard[data-art="ring"] .ip-bar-track {
   height: 16px;
-  margin-top: 5px;
   background: repeating-linear-gradient(
     90deg,
     rgba(255, 255, 255, 0.07) 0 7px,
@@ -2250,11 +2273,14 @@ body {
 }
 .dashboard[data-art="ring"] .ip-bar-reset {
   display: block;
-  margin-top: 4px;
   font-family: var(--mono);
   font-size: 9px;
+  line-height: 1.15em;
   letter-spacing: 0.06em;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .dashboard[data-art="ring"] .ip-bars[data-kind="balance"] {
   align-items: center;

@@ -75,6 +75,8 @@ export interface CursorService {
   includedPercent?: number;
   apiPercent?: number;
   onDemandPercent?: number;
+  grokBotPercent?: number;
+  grokBotResetLocal?: string;
 }
 
 export interface AntigravityService {
