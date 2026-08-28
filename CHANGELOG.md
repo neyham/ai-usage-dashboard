@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Two enabled panels stack as wide landscape cards instead of two portrait
+  columns, so the IP skin can use labeled bars with the mascot on the side.
+
 ## [0.8.1] - 2026-08-26
 
 ### Added

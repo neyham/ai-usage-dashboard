@@ -2099,11 +2099,15 @@ async function checkJudgeDemo(browser) {
 }
 
 async function captureReadmeScreenshots(browser) {
-  const fiveSplit = {
+  const twoStacked = {
     ...baseSummary,
     enabledProviders: {
-      ...baseSummary.enabledProviders,
+      codex: false,
+      claude: false,
+      deepseek: false,
+      grok: true,
       cursor: true,
+      antigravity: false,
     },
   };
   const allSix = {
@@ -2136,9 +2140,17 @@ async function captureReadmeScreenshots(browser) {
   await mkdir(readmeAssetDir, { recursive: true });
 
   {
-    const { context, page } = await openShot(fiveSplit, { width: 1600, height: 900, skin: "ip" });
-    assert.equal(await page.locator(".panel").count(), 5);
-    assert.equal(await page.locator(".panels").getAttribute("data-layout"), "five-split");
+    const { context, page } = await openShot(twoStacked, { width: 1600, height: 900, skin: "ip" });
+    assert.equal(await page.locator(".panel").count(), 2);
+    assert.equal(await page.locator(".panel-grok").getAttribute("data-meter"), "bar");
+    assert.equal(await page.locator(".panel-cursor").getAttribute("data-meter"), "bar");
+    const stacked = await page.locator(".panels").evaluate((el) => {
+      const grok = el.querySelector(".panel-grok")?.getBoundingClientRect();
+      const cursor = el.querySelector(".panel-cursor")?.getBoundingClientRect();
+      if (!grok || !cursor) return false;
+      return cursor.top >= grok.bottom - 2 && Math.abs(grok.left - cursor.left) < 2;
+    });
+    assert.equal(stacked, true, "two IP cards stack as landscape rows");
     assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
     await page.screenshot({ path: join(readmeAssetDir, "dashboard.png") });
     await context.close();
