@@ -6,7 +6,7 @@
 
 | 文件 | 画面 |
 |------|------|
-| `docs/assets/dashboard.png` | 默认 IP 皮肤，**上下两张横向大卡**（Grok SuperGrok Heavy / Cursor Ultra，条形用量） |
+| `docs/assets/dashboard.png` | 默认 IP 皮肤，**Grok \| Cursor 左右并排圆环海报** |
 | `docs/assets/dashboard-six-rings.png` | IP 皮肤，**六宫格圆环** |
 | `docs/assets/dashboard-eva.png` | EVA 皮肤，六面板分段条 |
 
