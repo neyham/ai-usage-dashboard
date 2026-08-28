@@ -2099,13 +2099,7 @@ async function checkJudgeDemo(browser) {
 }
 
 async function captureReadmeScreenshots(browser) {
-  const fiveSplit = {
-    ...baseSummary,
-    enabledProviders: {
-      ...baseSummary.enabledProviders,
-      cursor: true,
-    },
-  };
+  const fourPanel = baseSummary;
   const allSix = {
     ...baseSummary,
     enabledProviders: {
@@ -2136,9 +2130,10 @@ async function captureReadmeScreenshots(browser) {
   await mkdir(readmeAssetDir, { recursive: true });
 
   {
-    const { context, page } = await openShot(fiveSplit, { width: 1600, height: 900, skin: "ip" });
-    assert.equal(await page.locator(".panel").count(), 5);
-    assert.equal(await page.locator(".panels").getAttribute("data-layout"), "five-split");
+    const { context, page } = await openShot(fourPanel, { width: 1600, height: 900, skin: "ip" });
+    assert.equal(await page.locator(".panel").count(), 4);
+    assert.equal(await page.locator(".panels").getAttribute("data-count"), "4");
+    assert.equal(await page.locator(".panels").getAttribute("data-layout"), "equal");
     assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
     await page.screenshot({ path: join(readmeAssetDir, "dashboard.png") });
     await context.close();
@@ -2198,46 +2193,50 @@ await mkdir(artifactDir, { recursive: true });
 const server = startServer();
 let browser;
 
+const readmeShotsOnly = process.argv.includes("--readme-shots");
+
 try {
   await waitForServer(server);
   browser = await launchTestBrowser();
 
-  for (const [stateName, summary] of Object.entries(summaries)) {
-    for (const viewport of viewports) {
-      await checkScenario(browser, stateName, summary, viewport);
-      process.stdout.write(`PASS ${stateName.padEnd(10)} ${viewport.width}x${viewport.height}\n`);
+  if (!readmeShotsOnly) {
+    for (const [stateName, summary] of Object.entries(summaries)) {
+      for (const viewport of viewports) {
+        await checkScenario(browser, stateName, summary, viewport);
+        process.stdout.write(`PASS ${stateName.padEnd(10)} ${viewport.width}x${viewport.height}\n`);
+      }
     }
+    await checkProviderSelection(browser);
+    process.stdout.write(`PASS provider selection and 0/1/2/3/4-panel layouts\n`);
+    await checkCursorPanel(browser);
+    process.stdout.write(`PASS Cursor panel meters and 5-panel layout\n`);
+    await checkAntigravityPanel(browser);
+    process.stdout.write(`PASS Antigravity Gemini meters and 6-panel layout\n`);
+    await checkMascotMoods(browser);
+    process.stdout.write(`PASS Q-version mascot moods follow usage and auth\n`);
+    await checkSettingsTransactions(browser);
+    process.stdout.write(`PASS transactional settings, CLI override, focus, and save failures\n`);
+    await checkDeepSeekKeySettings(browser);
+    process.stdout.write(`PASS direct DeepSeek key settings and redacted test telemetry\n`);
+    await checkAuthStatusChips(browser);
+    process.stdout.write(`PASS provider auth-status chip mapping\n`);
+    await checkRateLimitStatusChips(browser);
+    process.stdout.write(`PASS rate-limit status overrides stale freshness\n`);
+    await checkFullscreenThreeColumns(browser);
+    process.stdout.write(`PASS fullscreen three-column layout across Surface/Full HD sizes\n`);
+    await checkUsageVariants(browser);
+    process.stdout.write(`PASS dynamic Codex and Claude usage-window variants\n`);
+    await checkLowPowerMode(browser);
+    process.stdout.write(`PASS low-power motion, compositing, clock, and persistence behavior\n`);
+    await checkArtSkin(browser);
+    process.stdout.write(`PASS art-skin ring/ip toggle, mascot pack, and persistence\n`);
+    await checkIpPlanCards(browser);
+    process.stdout.write(`PASS IP large/small cards across subscription plans\n`);
+    await checkJudgeDemo(browser);
+    process.stdout.write(`PASS isolated judge demo across Surface/compact/Snap layouts\n`);
+    await checkKeyboardAndScreensaver(browser);
+    process.stdout.write(`PASS keyboard and screensaver input\n`);
   }
-  await checkProviderSelection(browser);
-  process.stdout.write(`PASS provider selection and 0/1/2/3/4-panel layouts\n`);
-  await checkCursorPanel(browser);
-  process.stdout.write(`PASS Cursor panel meters and 5-panel layout\n`);
-  await checkAntigravityPanel(browser);
-  process.stdout.write(`PASS Antigravity Gemini meters and 6-panel layout\n`);
-  await checkMascotMoods(browser);
-  process.stdout.write(`PASS Q-version mascot moods follow usage and auth\n`);
-  await checkSettingsTransactions(browser);
-  process.stdout.write(`PASS transactional settings, CLI override, focus, and save failures\n`);
-  await checkDeepSeekKeySettings(browser);
-  process.stdout.write(`PASS direct DeepSeek key settings and redacted test telemetry\n`);
-  await checkAuthStatusChips(browser);
-  process.stdout.write(`PASS provider auth-status chip mapping\n`);
-  await checkRateLimitStatusChips(browser);
-  process.stdout.write(`PASS rate-limit status overrides stale freshness\n`);
-  await checkFullscreenThreeColumns(browser);
-  process.stdout.write(`PASS fullscreen three-column layout across Surface/Full HD sizes\n`);
-  await checkUsageVariants(browser);
-  process.stdout.write(`PASS dynamic Codex and Claude usage-window variants\n`);
-  await checkLowPowerMode(browser);
-  process.stdout.write(`PASS low-power motion, compositing, clock, and persistence behavior\n`);
-  await checkArtSkin(browser);
-  process.stdout.write(`PASS art-skin ring/ip toggle, mascot pack, and persistence\n`);
-  await checkIpPlanCards(browser);
-  process.stdout.write(`PASS IP large/small cards across subscription plans\n`);
-  await checkJudgeDemo(browser);
-  process.stdout.write(`PASS isolated judge demo across Surface/compact/Snap layouts\n`);
-  await checkKeyboardAndScreensaver(browser);
-  process.stdout.write(`PASS keyboard and screensaver input\n`);
   await captureReadmeScreenshots(browser);
   process.stdout.write(`PASS README synthetic screenshots\nScreenshots: ${artifactDir}\n`);
 } finally {

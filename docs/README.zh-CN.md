@@ -7,7 +7,7 @@
 
 **Windows · macOS · Linux · 无看板账号 · 无 analytics 或 telemetry**
 
-![默认 IP 色块皮肤下的五面板 AI Usage Dashboard，使用合成数据](assets/dashboard.png)
+![默认 IP 色块皮肤下的四面板 AI Usage Dashboard，使用合成数据](assets/dashboard.png)
 
 ![六个面板都使用圆环的 IP 皮肤](assets/dashboard-six-rings.png)
 
