@@ -14,7 +14,7 @@ local desktop view.
 
 **Windows · macOS · Linux · No dashboard account · No analytics or telemetry**
 
-![Four-panel AI Usage Dashboard in the default IP color-slab skin, showing synthetic Codex, Claude, DeepSeek, and Grok data](docs/assets/dashboard.png)
+![Two stacked landscape cards in the default IP color-slab skin, showing synthetic Grok and Cursor data](docs/assets/dashboard.png)
 
 ![Six-panel IP skin with a ring gauge on every card](docs/assets/dashboard-six-rings.png)
 
@@ -67,10 +67,10 @@ or macOS Gatekeeper may require manual confirmation.
 
 - Each provider refreshes independently; one outage does not erase the others.
 - Last-known-good data stays visible and is marked when it may be stale.
-- Choose any zero-to-six provider layout. Five panels fill the board; a
-  single top-tier plan (SuperGrok Heavy, Cursor Ultra/Enterprise, or
-  Google AI Ultra) occupies the left half; two top-tier plans split the
-  top row.
+- Choose any zero-to-six provider layout. Two panels stack as wide
+  landscape cards. Five panels fill the board; a single top-tier plan
+  (SuperGrok Heavy, Cursor Ultra/Enterprise, or Google AI Ultra) occupies
+  the left half; two top-tier plans split the top row.
 - The default skin is IP color slabs. Compact cards keep the dual ring;
   wide top-tier cards use labeled bars. Display Settings can switch to the
   classic EVA segmented-bar HUD (no mascots). The choice is saved as
