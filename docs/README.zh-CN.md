@@ -7,7 +7,7 @@
 
 **Windows · macOS · Linux · 无看板账号 · 无 analytics 或 telemetry**
 
-![默认 IP 色块皮肤下上下两张横向大卡，使用合成的 Grok 与 Cursor 数据](assets/dashboard.png)
+![默认 IP 色块皮肤下 Grok 与 Cursor 左右并排的圆环海报卡，使用合成数据](assets/dashboard.png)
 
 ![六个面板都使用圆环的 IP 皮肤](assets/dashboard-six-rings.png)
 
@@ -30,9 +30,10 @@
 | DeepSeek | API 余额和余额不足状态 |
 
 - 各个 provider 独立刷新；其中一个失败不会清空其他面板。
-- 可以自由选择 0–6 个面板。两个面板上下叠成横向宽卡。五个面板会铺满；
-  若只有一个顶级套餐（SuperGrok Heavy、Cursor Ultra/Enterprise 或
-  Google AI Ultra），它会占左半通高；两个顶级套餐则平分上排。
+- 可以自由选择 0–6 个面板。两个面板左右并排；三个面板是 T 字（上通栏 +
+  下两张）；四个面板是 2×2 横向卡。五个面板会铺满；若只有一个顶级套餐
+  （SuperGrok Heavy、Cursor Ultra/Enterprise 或 Google AI Ultra），它会占
+  左半通高；两个顶级套餐则平分上排。
 - 默认皮肤是 IP 色块。小卡用双环，宽的顶级卡用进度条。可在显示设置中切到
   经典 EVA 分段进度条（无看板娘）；选择会写入 `config.json` 的 `artSkin`。
 - 三个平台均支持普通窗口和无边框全屏。

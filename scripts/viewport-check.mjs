@@ -498,6 +498,82 @@ async function inspectLayout(page, viewport, { expectHiddenCursor = false } = {}
   }, { ...viewport, expectHiddenCursor });
 }
 
+async function assertTwoPanelSide(page) {
+  const geometry = await page.locator(".panels").evaluate((el) => {
+    const panels = [...el.querySelectorAll(".panel")].map((panel) => {
+      const rect = panel.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+    });
+    return {
+      count: el.getAttribute("data-count"),
+      columns: getComputedStyle(el).gridTemplateColumns.split(/\s+/).filter(Boolean).length,
+      panels,
+    };
+  });
+  assert.equal(geometry.count, "2");
+  assert.equal(geometry.columns, 2, "two panels use two columns");
+  assert.equal(geometry.panels.length, 2);
+  const [first, second] = geometry.panels;
+  assert.ok(Math.abs(first.top - second.top) <= 2, "two panels share one row");
+  assert.ok(second.left >= first.right - 2, "second panel sits beside the first");
+}
+
+async function assertThreePanelT(page) {
+  const geometry = await page.locator(".panels").evaluate((el) => {
+    const panels = [...el.querySelectorAll(".panel")].map((panel) => {
+      const rect = panel.getBoundingClientRect();
+      return {
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+        width: rect.width,
+      };
+    });
+    return {
+      count: el.getAttribute("data-count"),
+      columns: getComputedStyle(el).gridTemplateColumns.split(/\s+/).filter(Boolean).length,
+      rows: getComputedStyle(el).gridTemplateRows.split(/\s+/).filter(Boolean).length,
+      panels,
+    };
+  });
+  assert.equal(geometry.count, "3");
+  assert.equal(geometry.columns, 2, "three panels use two columns");
+  assert.equal(geometry.rows, 2, "three panels use two rows");
+  assert.equal(geometry.panels.length, 3);
+  const [first, second, third] = geometry.panels;
+  assert.ok(first.width > second.width + 2, "first panel is the full-width top row");
+  assert.ok(second.top >= first.bottom - 2, "second panel sits below the top row");
+  assert.ok(Math.abs(second.top - third.top) <= 2, "bottom panels share one row");
+  assert.ok(third.left >= second.right - 2, "third panel sits beside the second");
+}
+
+async function assertFourPanelGrid(page) {
+  const geometry = await page.locator(".panels").evaluate((el) => {
+    const panels = [...el.querySelectorAll(".panel")].map((panel) => {
+      const rect = panel.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+    });
+    return {
+      count: el.getAttribute("data-count"),
+      columns: getComputedStyle(el).gridTemplateColumns.split(/\s+/).filter(Boolean).length,
+      rows: getComputedStyle(el).gridTemplateRows.split(/\s+/).filter(Boolean).length,
+      panels,
+    };
+  });
+  assert.equal(geometry.count, "4");
+  assert.equal(geometry.columns, 2, "four panels use two columns");
+  assert.equal(geometry.rows, 2, "four panels use two rows");
+  assert.equal(geometry.panels.length, 4);
+  const [first, second, third] = geometry.panels;
+  assert.ok(Math.abs(first.top - second.top) <= 2, "second panel shares the first row");
+  assert.ok(second.left >= first.right - 2, "second panel sits beside the first");
+  assert.ok(
+    third.top >= Math.max(first.bottom, second.bottom) - 2,
+    "third panel is on the second row",
+  );
+}
+
 async function assertPlanPill(page, panelSelector, text) {
   const plan = page.locator(`${panelSelector} .panel-plan`);
   assert.equal((await plan.textContent())?.trim(), text, `${panelSelector} plan text`);
@@ -607,6 +683,7 @@ async function checkProviderSelection(browser) {
   await page.goto(baseUrl, { waitUntil: "networkidle" });
   await page.locator(".panel").first().waitFor();
   assert.equal(await page.locator(".panel").count(), 4);
+  await assertFourPanelGrid(page);
   assert.deepEqual(await legendWindows(page, ".panel-grok"), ["7D", "MONTH"]);
   assert.equal(await page.locator(".panel-grok .panel-plan").textContent(), "SUPERGROK HEAVY");
 
@@ -626,6 +703,7 @@ async function checkProviderSelection(browser) {
   );
   assert.equal(await page.locator(".panel").count(), 3);
   assert.equal(await page.locator(".panel-claude").count(), 0);
+  await assertThreePanelT(page);
   // Return to windowed so later layout checks keep an interactive cursor.
   await page.locator(".tm-settings").click();
   await page.locator(".settings-dialog").waitFor();
@@ -636,6 +714,7 @@ async function checkProviderSelection(browser) {
     await page.locator(".dashboard").evaluate((el) => el.classList.contains("mode-fullscreen")),
     false,
   );
+  await assertThreePanelT(page);
   assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
   await page.screenshot({ path: join(artifactDir, "provider-selection-three.png"), fullPage: true });
 
@@ -643,6 +722,7 @@ async function checkProviderSelection(browser) {
   await page.locator(".provider-option.provider-deepseek").click();
   await page.locator(".settings-save").click();
   assert.equal(await page.locator(".panel").count(), 2);
+  await assertTwoPanelSide(page);
   assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
   await page.screenshot({ path: join(artifactDir, "provider-selection-two.png"), fullPage: true });
 
@@ -672,6 +752,7 @@ async function checkProviderSelection(browser) {
   await page.locator(".provider-option.provider-grok").click();
   await page.locator(".settings-save").click();
   assert.equal(await page.locator(".panel").count(), 4);
+  await assertFourPanelGrid(page);
   assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
 
   const saves = await page.evaluate(() => window.__DASHBOARD_TEST__.savedSelections);
@@ -693,7 +774,7 @@ async function checkProviderSelection(browser) {
   await context.close();
 }
 
-async function checkFullscreenThreeColumns(browser) {
+async function checkFullscreenThreePanelT(browser) {
   const summary = {
     ...baseSummary,
     enabledProviders: {
@@ -722,29 +803,7 @@ async function checkFullscreenThreeColumns(browser) {
     await page.goto(baseUrl, { waitUntil: "networkidle" });
     await page.locator(".dashboard.mode-fullscreen").waitFor();
     assert.equal(await page.locator(".panel").count(), 3);
-
-    const grid = await page.locator(".panels").evaluate((element) => {
-      const panels = [...element.querySelectorAll(".panel")].map((panel) =>
-        panel.getBoundingClientRect(),
-      );
-      return {
-        columns: getComputedStyle(element).gridTemplateColumns
-          .split(/\s+/)
-          .filter(Boolean).length,
-        lefts: panels.map((panel) => panel.left),
-        tops: panels.map((panel) => panel.top),
-      };
-    });
-    assert.equal(grid.columns, 3, `${viewport.name} fullscreen column count`);
-    assert.equal(
-      new Set(grid.lefts.map((left) => Math.round(left))).size,
-      3,
-      `${viewport.name} fullscreen panel columns`,
-    );
-    assert.ok(
-      Math.max(...grid.tops) - Math.min(...grid.tops) <= 1,
-      `${viewport.name} fullscreen panels must share one row`,
-    );
+    await assertThreePanelT(page);
     assert.deepEqual(
       await inspectLayout(
         page,
@@ -757,7 +816,7 @@ async function checkFullscreenThreeColumns(browser) {
 
     if (viewport.name === "surface-200") {
       await page.screenshot({
-        path: join(artifactDir, "fullscreen-three-columns.png"),
+        path: join(artifactDir, "fullscreen-three-panel-t.png"),
         fullPage: true,
       });
     }
@@ -1040,8 +1099,10 @@ async function checkCursorPanel(browser) {
   await contentPage.goto(baseUrl, { waitUntil: "networkidle" });
   await contentPage.locator(".panel-cursor").waitFor();
   assert.equal(await contentPage.locator(".panel").count(), 4);
+  await assertFourPanelGrid(contentPage);
   assert.equal(await contentPage.locator(".panel-cursor .panel-plan").textContent(), "ULTRA");
-  assert.equal(await contentPage.locator(".panel-cursor").getAttribute("data-meter"), "ring");
+  await contentPage.locator('.panel-cursor[data-meter="bar"]').waitFor();
+  assert.equal(await contentPage.locator(".panel-cursor").getAttribute("data-meter"), "bar");
   assert.deepEqual(await legendWindows(contentPage, ".panel-cursor"), [
     "INCLUDED",
     "AUTO",
@@ -1223,6 +1284,8 @@ async function checkAntigravityPanel(browser) {
   await contentPage.goto(baseUrl, { waitUntil: "networkidle" });
   await contentPage.locator(".panel-antigravity").waitFor();
   assert.equal(await contentPage.locator(".panel").count(), 4);
+  await assertFourPanelGrid(contentPage);
+  await contentPage.locator('.panel-antigravity[data-meter="bar"]').waitFor();
   await assertPlanPill(contentPage, ".panel-antigravity", "GOOGLE AI PRO");
   assert.deepEqual(await legendWindows(contentPage, ".panel-antigravity"), ["7D", "5H"]);
   assert.match(
@@ -1238,7 +1301,7 @@ async function checkAntigravityPanel(browser) {
     /RESET/,
   );
   assert.match(
-    (await contentPage.locator(".panel-antigravity .gauge-readout").textContent()) ?? "",
+    (await contentPage.locator(".panel-antigravity .ip-bars-peak").textContent()) ?? "",
     /21/,
   );
   assert.deepEqual(await inspectLayout(contentPage, { width: 1600, height: 900 }), []);
@@ -1369,15 +1432,15 @@ async function checkMascotMoods(browser) {
     const src = await mascot.getAttribute("src");
     assert.match(src ?? "", /claude-/);
     if (testCase.name === "over") {
-      assert.equal(await page.locator(".panel-claude .gauge-stage").getAttribute("data-tone"), "danger");
+      assert.equal(await page.locator(".panel-claude .ip-bars").getAttribute("data-tone"), "danger");
       assert.equal(
-        await page.locator(".panel-claude .gauge-readout").evaluate((el) => el.classList.contains("is-pulse")),
+        await page.locator(".panel-claude .ip-bars-peak").evaluate((el) => el.classList.contains("is-pulse")),
         true,
       );
-      assert.match((await page.locator(".panel-claude .gauge-readout").textContent()) ?? "", /91/);
+      assert.match((await page.locator(".panel-claude .ip-bars-peak").textContent()) ?? "", /91/);
     }
     if (testCase.name === "tense") {
-      assert.equal(await page.locator(".panel-claude .gauge-stage").getAttribute("data-tone"), "warn");
+      assert.equal(await page.locator(".panel-claude .ip-bars").getAttribute("data-tone"), "warn");
     }
     assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
     await context.close();
@@ -1502,6 +1565,17 @@ async function checkUsageVariants(browser) {
 }
 
 async function checkLowPowerMode(browser) {
+  const sixRings = {
+    ...summaries.normal,
+    enabledProviders: {
+      codex: true,
+      claude: true,
+      deepseek: true,
+      grok: true,
+      cursor: true,
+      antigravity: true,
+    },
+  };
   const context = await browser.newContext({
     viewport: { width: 1368, height: 912 },
     reducedMotion: "no-preference",
@@ -1510,7 +1584,7 @@ async function checkLowPowerMode(browser) {
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  await installTauriMock(page, summaries.normal);
+  await installTauriMock(page, sixRings);
   await page.goto(baseUrl, { waitUntil: "networkidle" });
   await page.locator('.dashboard[data-low-power="false"]').waitFor();
   await page.locator(".gauge-stage[data-mood='focus'] .panel-mascot").first().waitFor();
@@ -1547,7 +1621,7 @@ async function checkLowPowerMode(browser) {
     await page.locator(".scanlines").evaluate((element) => getComputedStyle(element).display),
     "none",
   );
-  assert.equal(await page.locator(".gauge-stage").count(), 4);
+  assert.equal(await page.locator(".gauge-stage").count(), 6);
   assert.equal(await page.locator(".clock").getAttribute("data-cadence"), "minute");
   assert.match((await page.locator(".clock").textContent()) ?? "", /^\d{2}:\d{2}$/);
   assert.equal(
@@ -2099,7 +2173,7 @@ async function checkJudgeDemo(browser) {
 }
 
 async function captureReadmeScreenshots(browser) {
-  const twoStacked = {
+  const twoSide = {
     ...baseSummary,
     enabledProviders: {
       codex: false,
@@ -2140,19 +2214,36 @@ async function captureReadmeScreenshots(browser) {
   await mkdir(readmeAssetDir, { recursive: true });
 
   {
-    const { context, page } = await openShot(twoStacked, { width: 1600, height: 900, skin: "ip" });
+    const { context, page } = await openShot(twoSide, { width: 1600, height: 900, skin: "ip" });
     assert.equal(await page.locator(".panel").count(), 2);
-    assert.equal(await page.locator(".panel-grok").getAttribute("data-meter"), "bar");
-    assert.equal(await page.locator(".panel-cursor").getAttribute("data-meter"), "bar");
-    const stacked = await page.locator(".panels").evaluate((el) => {
-      const grok = el.querySelector(".panel-grok")?.getBoundingClientRect();
-      const cursor = el.querySelector(".panel-cursor")?.getBoundingClientRect();
-      if (!grok || !cursor) return false;
-      return cursor.top >= grok.bottom - 2 && Math.abs(grok.left - cursor.left) < 2;
-    });
-    assert.equal(stacked, true, "two IP cards stack as landscape rows");
+    await assertTwoPanelSide(page);
+    await page.locator('.panel-grok[data-meter="ring"]').waitFor();
+    await page.locator('.panel-cursor[data-meter="ring"]').waitFor();
+    assert.equal(await page.locator(".panel-grok").getAttribute("data-meter"), "ring");
+    assert.equal(await page.locator(".panel-cursor").getAttribute("data-meter"), "ring");
     assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
     await page.screenshot({ path: join(readmeAssetDir, "dashboard.png") });
+    await page.screenshot({ path: join(artifactDir, "two-panel-side.png"), scale: "css" });
+    await context.close();
+  }
+
+  {
+    const threeT = {
+      ...baseSummary,
+      enabledProviders: {
+        codex: true,
+        claude: true,
+        deepseek: true,
+        grok: false,
+        cursor: false,
+        antigravity: false,
+      },
+    };
+    const { context, page } = await openShot(threeT, { width: 1600, height: 900, skin: "ip" });
+    assert.equal(await page.locator(".panel").count(), 3);
+    await assertThreePanelT(page);
+    assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
+    await page.screenshot({ path: join(artifactDir, "three-panel-t.png"), scale: "css" });
     await context.close();
   }
 
@@ -2236,8 +2327,8 @@ try {
   process.stdout.write(`PASS provider auth-status chip mapping\n`);
   await checkRateLimitStatusChips(browser);
   process.stdout.write(`PASS rate-limit status overrides stale freshness\n`);
-  await checkFullscreenThreeColumns(browser);
-  process.stdout.write(`PASS fullscreen three-column layout across Surface/Full HD sizes\n`);
+  await checkFullscreenThreePanelT(browser);
+  process.stdout.write(`PASS fullscreen three-panel T layout across Surface/Full HD sizes\n`);
   await checkUsageVariants(browser);
   process.stdout.write(`PASS dynamic Codex and Claude usage-window variants\n`);
   await checkLowPowerMode(browser);

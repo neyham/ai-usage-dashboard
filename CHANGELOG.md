@@ -6,8 +6,12 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
-- Two enabled panels stack as wide landscape cards instead of two portrait
-  columns, so the IP skin can use labeled bars with the mascot on the side.
+- Two enabled panels sit side by side as near-square ring cards instead of
+  stacking as landscape bars.
+- Three enabled panels use a T: the first provider spans the top row; the
+  other two sit side by side below.
+- Four enabled panels use a 2×2 grid of landscape cards instead of four
+  portrait columns.
 
 ## [0.8.1] - 2026-08-26
 
