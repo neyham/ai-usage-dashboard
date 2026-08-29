@@ -14,7 +14,7 @@ local desktop view.
 
 **Windows · macOS · Linux · No dashboard account · No analytics or telemetry**
 
-![Two side-by-side ring cards in the default IP color-slab skin, showing synthetic Grok and Cursor data](docs/assets/dashboard.png)
+![Four-panel 2×2 landscape cards in the default IP color-slab skin, showing synthetic Codex, Claude, DeepSeek, and Grok data](docs/assets/dashboard.png)
 
 ![Six-panel IP skin with a ring gauge on every card](docs/assets/dashboard-six-rings.png)
 

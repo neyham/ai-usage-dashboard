@@ -7,7 +7,7 @@
 
 **Windows · macOS · Linux · 无看板账号 · 无 analytics 或 telemetry**
 
-![默认 IP 色块皮肤下 Grok 与 Cursor 左右并排的圆环海报卡，使用合成数据](assets/dashboard.png)
+![默认 IP 色块皮肤下四面板 2×2 横向卡，使用合成的 Codex、Claude、DeepSeek 与 Grok 数据](assets/dashboard.png)
 
 ![六个面板都使用圆环的 IP 皮肤](assets/dashboard-six-rings.png)
 
