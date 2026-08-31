@@ -78,7 +78,32 @@ impl From<AuthError> for FetchError {
     }
 }
 
-pub async fn fetch(config: &Config, client: &Client) -> Result<CursorService, FetchError> {
+fn cursor_http_client(timeout_seconds: u64) -> anyhow::Result<Client> {
+    // cursor.com sits behind a WAF that has 403'd the shared rustls client
+    // while the same cookie succeeds with OpenSSL/SecureTransport/SChannel.
+    Ok(Client::builder()
+        .timeout(StdDuration::from_secs(timeout_seconds))
+        .connect_timeout(StdDuration::from_secs(timeout_seconds))
+        .user_agent(super::BROWSER_UA)
+        .http1_only()
+        .use_native_tls()
+        .build()?)
+}
+
+fn is_retryable_cursor_auth(error: &FetchError) -> bool {
+    match error {
+        FetchError::Auth { message }
+            if message == &super::MSG_AUTH_EXPIRED || message == &super::MSG_AUTH_FORBIDDEN =>
+        {
+            true
+        }
+        FetchError::Other(_) => true,
+        FetchError::Auth { .. } | FetchError::RateLimited { .. } => false,
+    }
+}
+
+pub async fn fetch(config: &Config, _shared: &Client) -> Result<CursorService, FetchError> {
+    let client = cursor_http_client(config.network_timeout_seconds).map_err(FetchError::Other)?;
     let configured = config.cursor_credentials_path.trim().to_string();
     let auths = match read_auth_candidates(configured).await {
         Ok(auths) => auths,
@@ -90,7 +115,7 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<CursorService, Fe
     for auth in auths {
         let mut accepted: Option<super::Resp> = None;
         for cookie in cookie_header_candidates(&auth) {
-            let resp = send_with_one_retry(|| usage_request(client, &cookie))
+            let resp = send_with_one_retry(|| usage_request(&client, &cookie))
                 .await
                 .map_err(FetchError::Other)?;
             match require_success(&resp, "Cursor usage") {
@@ -98,10 +123,7 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<CursorService, Fe
                     accepted = Some(resp);
                     break;
                 }
-                Err(error @ FetchError::Auth { message })
-                    if message == super::MSG_AUTH_EXPIRED
-                        || message == super::MSG_AUTH_FORBIDDEN =>
-                {
+                Err(error) if is_retryable_cursor_auth(&error) => {
                     last_auth_error = Some(error);
                 }
                 Err(error) => return Err(error),
@@ -133,12 +155,13 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<CursorService, Fe
 }
 
 fn usage_request(client: &Client, cookie: &str) -> RequestBuilder {
-    // CodexBar's usage-summary GET sends only Accept + Cookie. Origin is a CSRF
-    // header for POSTs such as get-sand-usage-status, not this GET.
+    // 0.8.2's working Surface request sent Origin on this GET. CodexBar omits it;
+    // keep Origin so a rustls/WAF path that requires it still matches 0.8.2.
     client
         .get(USAGE_URL)
         .header("Accept", "application/json")
         .header("Cookie", cookie)
+        .header("Origin", "https://cursor.com")
 }
 
 pub(crate) fn parse_usage(body: &str) -> anyhow::Result<CursorService> {
@@ -325,7 +348,7 @@ fn cookie_header_encoded(auth: &CursorAuth, percent_encode_separator: bool) -> S
 }
 
 fn cookie_header_candidates(auth: &CursorAuth) -> [String; 2] {
-    [cookie_header(auth), cookie_header_encoded(auth, false)]
+    [cookie_header_encoded(auth, false), cookie_header(auth)]
 }
 
 async fn read_auth_candidates(configured: String) -> Result<Vec<CursorAuth>, AuthError> {
@@ -1221,15 +1244,15 @@ mod tests {
             cookie_header(&auth),
             "WorkosCursorSessionToken=user_01ABC%3A%3Aheader.payload.sig"
         );
-        let [percent, raw] = cookie_header_candidates(&auth);
-        assert_eq!(
-            percent,
-            "WorkosCursorSessionToken=user_01ABC%3A%3Aheader.payload.sig"
-        );
+        let [raw, percent] = cookie_header_candidates(&auth);
         assert_eq!(
             raw,
             "WorkosCursorSessionToken=user_01ABC::header.payload.sig"
         );
         assert!(!raw.contains("%3A%3A"));
+        assert_eq!(
+            percent,
+            "WorkosCursorSessionToken=user_01ABC%3A%3Aheader.payload.sig"
+        );
     }
 }

@@ -91,7 +91,7 @@ Windows 安装包目前会添加 **AI Usage Dashboard (Judge Demo)** 开始菜�
 
 ## 兼容性与限制
 
-- 当前版本为 `v0.8.3`：Windows、Linux、macOS。WinGet 社区源在新 GitHub
+- 当前版本为 `v0.8.4`：Windows、Linux、macOS。WinGet 社区源在新 GitHub
   Release 之后可能短暂滞后。
 - 屏保和闲置启动工具仅支持 Windows。
 - 项目使用 provider CLI 的 credential 格式和用量 endpoint，其中一部分不是公开

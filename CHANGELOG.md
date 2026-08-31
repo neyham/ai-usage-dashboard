@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [0.8.4] - 2026-08-31
+
+### Fixed
+
+- Cursor: call `usage-summary` with the OS TLS stack and HTTP/1.1, send
+  `Origin` on the GET (same request that worked in 0.8.2), and try decoded
+  `::` before `%3A%3A`. The 0.8.3 rustls GET without `Origin` still came back
+  `AUTH FORBIDDEN` for a session cookie that OpenSSL accepted.
+
 ## [0.8.3] - 2026-08-31
 
 ### Fixed

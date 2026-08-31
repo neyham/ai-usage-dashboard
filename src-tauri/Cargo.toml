@@ -1,6 +1,6 @@
 [package]
 name = "ai-usage-dashboard"
-version = "0.8.3"
+version = "0.8.4"
 description = "Local, cross-platform quota cockpit for Claude Code, Codex, Grok Build, Cursor, Antigravity, and DeepSeek API balance"
 authors = ["neyham"]
 license = "MIT"
@@ -20,7 +20,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "native-tls"] }
 tokio = { version = "1", features = ["time", "rt", "sync"] }
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
