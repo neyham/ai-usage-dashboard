@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [0.8.3] - 2026-08-31
+
+### Fixed
+
+- Cursor: if `usage-summary` rejects an unexpired CLI session (`401`/`403`),
+  try the next login source instead of sticking on `AUTH FORBIDDEN`. Linux also
+  reads `~/.cursor/auth.json` and the `cursor-access-token` secret-tool item.
+  Session cookies now use the cursor.com / CodexBar form
+  `WorkosCursorSessionToken={userId}%3A%3A{token}` (retrying decoded `::` if
+  that encoding is rejected) and no longer send `Origin` on the GET.
+
 ## [0.8.2] - 2026-08-28
 
 ### Changed

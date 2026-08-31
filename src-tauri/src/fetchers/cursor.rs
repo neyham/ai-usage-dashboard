@@ -1,10 +1,12 @@
 //! Cursor usage fetcher. Credentials are read from the official CLI or the
 //! Cursor desktop app and are never cached or sent to the renderer. The
 //! dashboard does not refresh Cursor tokens or write credential files. The
-//! usage-summary and GetSandUsageStatus endpoints are not public APIs, so
-//! incompatible responses degrade to last-known-good sanitized data. Grok Bot
-//! quota is attached from GetSandUsageStatus on the same login; a missing or
-//! failed Bot response does not fail the Cursor panel.
+//! usage-summary cookie uses the same `userId%3A%3Atoken` encoding as CodexBar
+//! and cursor.com; a 401/403 retries the decoded `::` form and the next local
+//! login. The usage-summary and GetSandUsageStatus endpoints are not public
+//! APIs, so incompatible responses degrade to last-known-good sanitized data.
+//! Grok Bot quota is attached from GetSandUsageStatus on the same login; a
+//! missing or failed Bot response does not fail the Cursor panel.
 
 use super::{require_success, send_with_one_retry, FetchError, MSG_LOGIN_REQUIRED};
 use crate::config::Config;
@@ -18,10 +20,10 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::{Command, Stdio};
 use std::time::Duration as StdDuration;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::time::Instant;
 
 const USAGE_URL: &str = "https://cursor.com/api/usage-summary";
@@ -30,14 +32,18 @@ const SAND_USAGE_URL: &str =
 const LOGIN_REQUIRED: &str = MSG_LOGIN_REQUIRED;
 const SESSION_EXPIRED: &str = "SESSION EXPIRED";
 const AUTH_READ_TIMEOUT: StdDuration = StdDuration::from_secs(16);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const KEYCHAIN_TIMEOUT: StdDuration = StdDuration::from_secs(8);
 const MAX_AUTH_BYTES: usize = 64 * 1024;
 const MAX_JWT_PAYLOAD_BYTES: usize = 16 * 1024;
 const TOKEN_EXPIRY_MARGIN_SECS: i64 = 60;
 const ITEM_ACCESS_TOKEN: &str = "cursorAuth/accessToken";
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 const HELPER_NOT_FOUND_EXIT_CODE: i32 = 44;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const KEYCHAIN_ACCOUNT: &str = "cursor-user";
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const KEYCHAIN_ACCESS_TOKEN_SERVICE: &str = "cursor-access-token";
 
 struct CursorAuth {
     token: String,
@@ -74,14 +80,42 @@ impl From<AuthError> for FetchError {
 
 pub async fn fetch(config: &Config, client: &Client) -> Result<CursorService, FetchError> {
     let configured = config.cursor_credentials_path.trim().to_string();
-    let auth = match read_auth(configured).await {
-        Ok(AuthState::Active(auth)) => auth,
-        Ok(AuthState::Expired) => {
-            return Err(FetchError::Auth {
-                message: SESSION_EXPIRED,
-            });
-        }
+    let auths = match read_auth_candidates(configured).await {
+        Ok(auths) => auths,
         Err(error) => return Err(error.into()),
+    };
+
+    let mut last_auth_error: Option<FetchError> = None;
+    let mut selected: Option<(CursorAuth, super::Resp)> = None;
+    for auth in auths {
+        let mut accepted: Option<super::Resp> = None;
+        for cookie in cookie_header_candidates(&auth) {
+            let resp = send_with_one_retry(|| usage_request(client, &cookie))
+                .await
+                .map_err(FetchError::Other)?;
+            match require_success(&resp, "Cursor usage") {
+                Ok(()) => {
+                    accepted = Some(resp);
+                    break;
+                }
+                Err(error @ FetchError::Auth { message })
+                    if message == super::MSG_AUTH_EXPIRED
+                        || message == super::MSG_AUTH_FORBIDDEN =>
+                {
+                    last_auth_error = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if let Some(resp) = accepted {
+            selected = Some((auth, resp));
+            break;
+        }
+    }
+    let Some((auth, resp)) = selected else {
+        return Err(last_auth_error.unwrap_or(FetchError::Auth {
+            message: LOGIN_REQUIRED,
+        }));
     };
 
     let sand_client = client.clone();
@@ -89,10 +123,6 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<CursorService, Fe
     let sand_task = tokio::spawn(async move {
         send_with_one_retry(|| sand_usage_request(&sand_client, &sand_token)).await
     });
-    let resp = send_with_one_retry(|| usage_request(client, &auth))
-        .await
-        .map_err(FetchError::Other)?;
-    require_success(&resp, "Cursor usage")?;
     let mut service = parse_usage(&resp.body).map_err(FetchError::Other)?;
     let sand_res = match sand_task.await {
         Ok(Ok(sand)) => Some(sand),
@@ -102,12 +132,13 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<CursorService, Fe
     Ok(service)
 }
 
-fn usage_request(client: &Client, auth: &CursorAuth) -> RequestBuilder {
+fn usage_request(client: &Client, cookie: &str) -> RequestBuilder {
+    // CodexBar's usage-summary GET sends only Accept + Cookie. Origin is a CSRF
+    // header for POSTs such as get-sand-usage-status, not this GET.
     client
         .get(USAGE_URL)
         .header("Accept", "application/json")
-        .header("Cookie", cookie_header(auth))
-        .header("Origin", "https://cursor.com")
+        .header("Cookie", cookie)
 }
 
 pub(crate) fn parse_usage(body: &str) -> anyhow::Result<CursorService> {
@@ -277,51 +308,100 @@ fn number_value(value: &Value) -> Option<f64> {
 }
 
 fn cookie_header(auth: &CursorAuth) -> String {
+    cookie_header_encoded(auth, true)
+}
+
+fn cookie_header_encoded(auth: &CursorAuth, percent_encode_separator: bool) -> String {
+    let separator = if percent_encode_separator {
+        "%3A%3A"
+    } else {
+        "::"
+    };
     format!(
-        "WorkosCursorSessionToken={user_id}::{token}",
+        "WorkosCursorSessionToken={user_id}{separator}{token}",
         user_id = auth.user_id,
         token = auth.token
     )
 }
 
-async fn read_auth(configured: String) -> Result<AuthState, AuthError> {
+fn cookie_header_candidates(auth: &CursorAuth) -> [String; 2] {
+    [cookie_header(auth), cookie_header_encoded(auth, false)]
+}
+
+async fn read_auth_candidates(configured: String) -> Result<Vec<CursorAuth>, AuthError> {
     tokio::time::timeout(
         AUTH_READ_TIMEOUT,
-        tokio::task::spawn_blocking(move || load_auth(&configured)),
+        tokio::task::spawn_blocking(move || load_auth_candidates(&configured)),
     )
     .await
     .map_err(|_| AuthError::Invalid)?
     .map_err(|_| AuthError::Invalid)?
 }
 
-fn load_auth(configured: &str) -> Result<AuthState, AuthError> {
+fn load_auth_candidates(configured: &str) -> Result<Vec<CursorAuth>, AuthError> {
     if !configured.is_empty() {
-        return load_configured_auth(configured);
+        return match load_configured_auth(configured) {
+            Ok(AuthState::Active(auth)) => Ok(vec![auth]),
+            Ok(AuthState::Expired) => Err(AuthError::Expired),
+            Err(error) => Err(error),
+        };
     }
 
     let mut saw_expired = false;
     let mut saw_invalid = false;
-    if let Some(path) = cli_auth_path() {
-        if let Some(auth) =
-            consider_auth_source(load_auth_file(&path), &mut saw_expired, &mut saw_invalid)
-        {
-            return Ok(AuthState::Active(auth));
-        }
+    let mut active = Vec::new();
+    for path in cli_auth_paths() {
+        collect_active_auth(
+            load_auth_file(&path),
+            &mut saw_expired,
+            &mut saw_invalid,
+            &mut active,
+        );
     }
-    #[cfg(target_os = "macos")]
-    if let Some(auth) =
-        consider_auth_source(load_keychain_auth(), &mut saw_expired, &mut saw_invalid)
-    {
-        return Ok(AuthState::Active(auth));
-    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    collect_active_auth(
+        load_keychain_auth(),
+        &mut saw_expired,
+        &mut saw_invalid,
+        &mut active,
+    );
     if let Some(path) = desktop_vscdb_path() {
-        if let Some(auth) =
-            consider_auth_source(load_vscdb_auth(&path), &mut saw_expired, &mut saw_invalid)
-        {
-            return Ok(AuthState::Active(auth));
-        }
+        collect_active_auth(
+            load_vscdb_auth(&path),
+            &mut saw_expired,
+            &mut saw_invalid,
+            &mut active,
+        );
     }
-    finish_auth_search(saw_expired, saw_invalid)
+    if !active.is_empty() {
+        Ok(active)
+    } else {
+        Err(match finish_auth_search(saw_expired, saw_invalid) {
+            Err(error) => error,
+            Ok(_) => AuthError::Missing,
+        })
+    }
+}
+
+fn collect_active_auth(
+    result: Result<AuthState, AuthError>,
+    saw_expired: &mut bool,
+    saw_invalid: &mut bool,
+    active: &mut Vec<CursorAuth>,
+) {
+    if let Some(auth) = consider_auth_source(result, saw_expired, saw_invalid) {
+        push_unique_auth(active, auth);
+    }
+}
+
+fn push_unique_auth(active: &mut Vec<CursorAuth>, auth: CursorAuth) {
+    if active
+        .iter()
+        .any(|existing| existing.token == auth.token && existing.user_id == auth.user_id)
+    {
+        return;
+    }
+    active.push(auth);
 }
 
 fn consider_auth_source(
@@ -371,9 +451,9 @@ fn select_auth_state(
     finish_auth_search(saw_expired, saw_invalid)
 }
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 fn helper_status_is_missing(code: Option<i32>) -> bool {
-    code == Some(HELPER_NOT_FOUND_EXIT_CODE)
+    code == Some(HELPER_NOT_FOUND_EXIT_CODE) || cfg!(target_os = "linux") && code == Some(1)
 }
 
 fn load_configured_auth(configured: &str) -> Result<AuthState, AuthError> {
@@ -407,12 +487,19 @@ fn parse_auth_text(text: &str) -> Result<AuthState, AuthError> {
     parse_access_token(token)
 }
 
-fn parse_access_token(raw: &str) -> Result<AuthState, AuthError> {
-    let (user_id, token) = if let Some((user_id, token)) = raw.split_once("::") {
+fn split_combined_session(raw: &str) -> (Option<&str>, &str) {
+    let raw = raw.trim();
+    if let Some((user_id, token)) = raw.split_once("%3A%3A") {
+        (Some(user_id.trim()), token.trim())
+    } else if let Some((user_id, token)) = raw.split_once("::") {
         (Some(user_id.trim()), token.trim())
     } else {
-        (None, raw.trim())
-    };
+        (None, raw)
+    }
+}
+
+fn parse_access_token(raw: &str) -> Result<AuthState, AuthError> {
+    let (user_id, token) = split_combined_session(raw);
     if token.is_empty() {
         return Err(AuthError::Invalid);
     }
@@ -478,19 +565,28 @@ fn is_safe_user_id(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
 }
 
-fn cli_auth_path() -> Option<PathBuf> {
+fn cli_auth_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
     #[cfg(target_os = "macos")]
-    {
-        Some(dirs::home_dir()?.join(".cursor").join("auth.json"))
+    if let Some(path) = dirs::home_dir().map(|home| home.join(".cursor").join("auth.json")) {
+        paths.push(path);
     }
     #[cfg(windows)]
-    {
-        Some(dirs::config_dir()?.join("Cursor").join("auth.json"))
+    if let Some(path) = dirs::config_dir().map(|dir| dir.join("Cursor").join("auth.json")) {
+        paths.push(path);
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
-        Some(dirs::config_dir()?.join("cursor").join("auth.json"))
+        if let Some(path) = dirs::config_dir().map(|dir| dir.join("cursor").join("auth.json")) {
+            paths.push(path);
+        }
+        if let Some(path) = dirs::home_dir().map(|home| home.join(".cursor").join("auth.json")) {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
     }
+    paths
 }
 
 fn desktop_vscdb_path() -> Option<PathBuf> {
@@ -594,16 +690,28 @@ fn sqlite_file_uri(path: &Path, query: &str) -> String {
     format!("file:{encoded}?{query}")
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn load_keychain_auth() -> Result<AuthState, AuthError> {
-    let token = read_macos_keychain_password("cursor-user", "cursor-access-token")?;
+    let token = read_os_keychain_password(KEYCHAIN_ACCOUNT, KEYCHAIN_ACCESS_TOKEN_SERVICE)?;
     parse_access_token(&token)
 }
 
 #[cfg(target_os = "macos")]
-fn read_macos_keychain_password(account: &str, service: &str) -> Result<String, AuthError> {
+fn read_os_keychain_password(account: &str, service: &str) -> Result<String, AuthError> {
     let mut command = Command::new("/usr/bin/security");
     command.args(["find-generic-password", "-a", account, "-s", service, "-w"]);
+    read_keychain_command_password(command)
+}
+
+#[cfg(target_os = "linux")]
+fn read_os_keychain_password(account: &str, service: &str) -> Result<String, AuthError> {
+    let mut command = Command::new("secret-tool");
+    command.args(["lookup", "service", service, "account", account]);
+    read_keychain_command_password(command)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn read_keychain_command_password(command: Command) -> Result<String, AuthError> {
     let output = run_command_capture(command, KEYCHAIN_TIMEOUT).map_err(|error| {
         if is_missing_io(&error) {
             AuthError::Missing
@@ -645,7 +753,7 @@ fn is_missing_io(error: &anyhow::Error) -> bool {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_command_capture(mut command: Command, timeout: StdDuration) -> anyhow::Result<String> {
     hide_command_window(&mut command);
     let mut child = command
@@ -690,17 +798,17 @@ fn run_command_capture(mut command: Command, timeout: StdDuration) -> anyhow::Re
     Ok(text)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn hide_command_window(_command: &mut Command) {}
 
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_sand_usage, canonical_plan_label, cookie_header, helper_status_is_missing,
-        is_safe_user_id, is_vscdb_path, jwt_claims, load_auth_file, load_configured_auth,
-        load_vscdb_auth, normalize_stored_token, parse_access_token, parse_auth_text,
-        parse_sand_usage, parse_usage, percent_from_usage, select_auth_state, sqlite_file_uri,
-        AuthError, AuthState, CursorAuth, ITEM_ACCESS_TOKEN,
+        apply_sand_usage, canonical_plan_label, collect_active_auth, cookie_header,
+        cookie_header_candidates, helper_status_is_missing, is_safe_user_id, is_vscdb_path,
+        jwt_claims, load_auth_file, load_configured_auth, load_vscdb_auth, normalize_stored_token,
+        parse_access_token, parse_auth_text, parse_sand_usage, parse_usage, percent_from_usage,
+        select_auth_state, sqlite_file_uri, AuthError, AuthState, CursorAuth, ITEM_ACCESS_TOKEN,
     };
     use crate::fetchers::Resp;
     use base64::Engine as _;
@@ -873,7 +981,7 @@ mod tests {
         assert_eq!(auth.user_id, "user_01TESTCURSORTOKEN");
         assert_eq!(
             cookie_header(&auth),
-            format!("WorkosCursorSessionToken=user_01TESTCURSORTOKEN::{token}")
+            format!("WorkosCursorSessionToken=user_01TESTCURSORTOKEN%3A%3A{token}")
         );
         assert!(jwt_claims(&auth.token).is_some());
         assert!(is_safe_user_id(&auth.user_id));
@@ -889,6 +997,36 @@ mod tests {
         assert!(parse_access_token("not-a-jwt").is_err());
         assert!(!is_safe_user_id("user/../escape"));
         assert!(!is_safe_user_id(""));
+    }
+
+    #[test]
+    fn unexpired_cli_session_does_not_hide_a_later_distinct_login() {
+        let first = test_jwt("auth0|user_01FIRSTTOKENAAAAA", future_exp());
+        let second = test_jwt("auth0|user_01SECONDTOKENAAAA", future_exp());
+        let mut saw_expired = false;
+        let mut saw_invalid = false;
+        let mut active = Vec::new();
+        collect_active_auth(
+            parse_access_token(&first),
+            &mut saw_expired,
+            &mut saw_invalid,
+            &mut active,
+        );
+        collect_active_auth(
+            parse_access_token(&second),
+            &mut saw_expired,
+            &mut saw_invalid,
+            &mut active,
+        );
+        collect_active_auth(
+            parse_access_token(&first),
+            &mut saw_expired,
+            &mut saw_invalid,
+            &mut active,
+        );
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0].token, first);
+        assert_eq!(active[1].token, second);
     }
 
     #[test]
@@ -923,7 +1061,7 @@ mod tests {
     #[test]
     fn helper_not_found_is_login_required_not_credential_error() {
         assert!(helper_status_is_missing(Some(44)));
-        assert!(!helper_status_is_missing(Some(1)));
+        assert_eq!(helper_status_is_missing(Some(1)), cfg!(target_os = "linux"));
         assert!(!helper_status_is_missing(None));
     }
 
@@ -972,6 +1110,18 @@ mod tests {
         let token = active_token();
         let AuthState::Active(auth) =
             parse_access_token(&format!("user_from_cookie::{token}")).expect("combined token")
+        else {
+            panic!("expected active session");
+        };
+        assert_eq!(auth.user_id, "user_from_cookie");
+        assert_eq!(auth.token, token);
+    }
+
+    #[test]
+    fn combined_session_accepts_percent_encoded_separator() {
+        let token = active_token();
+        let AuthState::Active(auth) = parse_access_token(&format!("user_from_cookie%3A%3A{token}"))
+            .expect("percent-encoded combined token")
         else {
             panic!("expected active session");
         };
@@ -1062,14 +1212,24 @@ mod tests {
     }
 
     #[test]
-    fn cookie_header_uses_user_id_and_token() {
+    fn cookie_header_uses_codexbar_percent_encoding() {
         let auth = CursorAuth {
             token: "header.payload.sig".into(),
             user_id: "user_01ABC".into(),
         };
         assert_eq!(
             cookie_header(&auth),
+            "WorkosCursorSessionToken=user_01ABC%3A%3Aheader.payload.sig"
+        );
+        let [percent, raw] = cookie_header_candidates(&auth);
+        assert_eq!(
+            percent,
+            "WorkosCursorSessionToken=user_01ABC%3A%3Aheader.payload.sig"
+        );
+        assert_eq!(
+            raw,
             "WorkosCursorSessionToken=user_01ABC::header.payload.sig"
         );
+        assert!(!raw.contains("%3A%3A"));
     }
 }

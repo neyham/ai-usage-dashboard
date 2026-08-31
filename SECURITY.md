@@ -67,8 +67,8 @@ Never attach or paste any of the following:
   responses;
 - Codex `auth.json`, authorization headers, cookies, or account identifiers;
 - Grok Build `auth.json`, access or refresh tokens, or account/team identifiers;
-- Cursor CLI `auth.json`, macOS Keychain items, desktop `state.vscdb` tokens,
-  session cookies, or account identifiers;
+- Cursor CLI `auth.json`, macOS Keychain / Linux `secret-tool` items, desktop
+  `state.vscdb` tokens, session cookies, or account identifiers;
 - Antigravity / `agy` OAuth access or refresh tokens, OS keyring items, or
   Google account identifiers;
 - DeepSeek API keys;
