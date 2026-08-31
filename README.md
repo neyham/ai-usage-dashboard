@@ -83,7 +83,7 @@ or macOS Gatekeeper may require manual confirmation.
 
 ## Compatibility and limitations
 
-Version `0.8.2` is the current multi-platform release: Windows (WinGet + NSIS),
+Version `0.8.3` is the current multi-platform release: Windows (WinGet + NSIS),
 Linux (`.deb` / AppImage), and macOS (`.dmg`). Screensaver and scheduled-idle
 helpers remain Windows-only. Published installers are not code-signed. Community
 WinGet indexes can lag a new GitHub release until the version manifest is
@@ -117,8 +117,8 @@ reporting a vulnerability or suspected credential exposure.
 
 ## Additional installation notes
 
-Pin a version with `VERSION=0.8.2` before the install script, for example
-`VERSION=0.8.2 sh install-linux.sh`.
+Pin a version with `VERSION=0.8.3` before the install script, for example
+`VERSION=0.8.3 sh install-linux.sh`.
 
 ### Windows (WinGet and direct installer)
 
@@ -237,7 +237,7 @@ leave its password field blank to keep the existing value.
 | Codex | `~/.codex/auth.json` | `codexAuthPath` (native file path) |
 | DeepSeek | `deepSeekApiKey` saved from Display Settings, then `DEEPSEEK_API_KEY` | Enter or replace it in Display Settings |
 | Grok Build | `~/.grok/auth.json` | `grokCredentialsPath` (native file path) |
-| Cursor | Official CLI login (`~/.cursor/auth.json` on macOS, `%APPDATA%\Cursor\auth.json` on Windows, `~/.config/cursor/auth.json` on Linux; macOS Keychain) or Cursor desktop `state.vscdb` | `cursorCredentialsPath` (`auth.json` or `state.vscdb`) |
+| Cursor | Official CLI login (`~/.cursor/auth.json` on macOS, `%APPDATA%\Cursor\auth.json` on Windows, `~/.config/cursor/auth.json` then `~/.cursor/auth.json` on Linux; macOS Keychain / Linux `secret-tool` `cursor-access-token`) or Cursor desktop `state.vscdb` | `cursorCredentialsPath` (`auth.json` or `state.vscdb`) |
 | Antigravity | Official `agy` OAuth file `~/.gemini/antigravity-cli/antigravity-oauth-token`, then the OS keyring item `agy` writes (`service=gemini`, `account=antigravity`) | `antigravityCredentialsPath` (native file path; skips the keyring) |
 
 Sign in with the official Claude Code, Codex, Grok Build, Cursor, and
@@ -275,11 +275,16 @@ is missing; a `403` is reported separately as `GROK ACCESS UNAVAILABLE`.
 
 Cursor uses the official CLI login or the desktop app session already on the
 machine. On macOS the CLI stores the access token in the login Keychain
-(`cursor-access-token`); on Windows and Linux the CLI writes `auth.json`. The
-desktop app keeps a session token in `state.vscdb`. The dashboard only reads
-the access token, builds a session cookie for `cursor.com/api/usage-summary`,
-and never extracts a refresh token, writes credential files, or asks the
-official Cursor CLI to renew. The same token also queries
+(`cursor-access-token`); on Windows and Linux the CLI writes `auth.json`. Linux
+also checks `~/.cursor/auth.json` and the same `cursor-access-token` secret-tool
+item. The desktop app keeps a session token in `state.vscdb`. If
+`usage-summary` rejects an unexpired CLI session (`401`/`403`), the dashboard
+tries the next source instead of stopping on `AUTH FORBIDDEN`. The dashboard
+only reads the access token, builds a `WorkosCursorSessionToken` cookie in the
+same `userId%3A%3Atoken` form as cursor.com / CodexBar (and retries decoded
+`::` if that encoding is rejected) for `cursor.com/api/usage-summary`, and
+never extracts a refresh token, writes
+credential files, or asks the official Cursor CLI to renew. The same token also queries
 `GetSandUsageStatus` for Grok Bot quota on the Cursor card; a missing Bot
 response does not fail Included / Auto / API. An expired session is reported as
 `SESSION EXPIRED`. These are not public APIs; incompatible responses fail
