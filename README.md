@@ -50,6 +50,9 @@ curl -fsSL https://github.com/neyham/ai-usage-dashboard/releases/latest/download
 curl -fsSL https://github.com/neyham/ai-usage-dashboard/releases/latest/download/install-linux.sh | sh
 ```
 
+On **Omarchy / Hyprland**, the AppImage can open a blank window or tiny type.
+See [Omarchy / Hyprland](#omarchy--hyprland) after the script finishes.
+
 The macOS and Linux scripts verify downloaded assets against the published
 SHA-256 file. Published installers are currently unsigned, so Windows SmartScreen
 or macOS Gatekeeper may require manual confirmation.
@@ -140,6 +143,49 @@ The one-line scripts pull `.deb` / AppImage or `.dmg` assets from GitHub
 Releases and verify checksums. Direct downloads remain available on the
 [latest release](https://github.com/neyham/ai-usage-dashboard/releases/latest)
 page.
+
+### Omarchy / Hyprland
+
+Omarchy is Arch-based, so `install-linux.sh` installs the AppImage (no `dpkg`).
+That AppImage embeds Ubuntu WebKit. On Hyprland the bundled webview often dies
+on EGL (blank window). HiDPI panels with `xwayland:force_zero_scaling` (Omarchy
+default) also draw CSS pixels at 1× unless GTK is told the scale, so type looks
+tiny.
+
+Install host WebKit if needed (`webkit2gtk-4.1` and `gtk3` are usually already
+present), extract the AppImage, and launch the binary against the **system**
+libraries:
+
+```sh
+# after install-linux.sh
+appimage="$HOME/.local/bin/ai-usage-dashboard.AppImage"
+root="$HOME/.local/share/ai-usage-dashboard"
+mkdir -p "$root"
+cd "$root"
+"$appimage" --appimage-extract
+
+# HiDPI: use the scale from `hyprctl monitors` (often 2). On 1× omit GDK_SCALE.
+cat > "$HOME/.local/bin/ai-usage-dashboard" <<'EOF'
+#!/bin/sh
+export DISPLAY="${DISPLAY:-:0}"
+export GDK_BACKEND="${GDK_BACKEND:-x11}"
+export GDK_SCALE="${GDK_SCALE:-2}"
+export GDK_DPI_SCALE="${GDK_DPI_SCALE:-1}"
+export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
+export LD_LIBRARY_PATH="/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+bin="$HOME/.local/share/ai-usage-dashboard/squashfs-root/usr/bin/ai-usage-dashboard"
+if [ -x "$bin" ]; then
+  exec "$bin" "$@"
+fi
+exec "$HOME/.local/bin/ai-usage-dashboard.AppImage" "$@"
+EOF
+chmod 755 "$HOME/.local/bin/ai-usage-dashboard"
+ai-usage-dashboard
+```
+
+This is a user-level launcher only. It does not change Hyprland or Omarchy
+desktop settings. Native Wayland for the bundled GTK is unreliable; XWayland
+`:0` is the path that works. More packaging notes: [packaging/linux/README.md](packaging/linux/README.md).
 
 ## Run without credentials
 

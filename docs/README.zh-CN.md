@@ -66,6 +66,12 @@ Debian/Ubuntu 安装 `.deb`，其他发行版使用 AppImage：
 curl -fsSL https://github.com/neyham/ai-usage-dashboard/releases/latest/download/install-linux.sh | sh
 ```
 
+**Omarchy / Hyprland：** 安装脚本会落到 AppImage。捆绑的 Ubuntu WebKit 在 Hyprland
+上常因 EGL 崩掉（空白窗）；HiDPI 且 `xwayland:force_zero_scaling` 时若不设
+`GDK_SCALE`，字会极小。解包后用系统 `webkit2gtk-4.1`、`GDK_BACKEND=x11` 和
+`GDK_SCALE=2`（1× 屏不要设 SCALE）。完整命令见英文
+[README · Omarchy / Hyprland](../README.md#omarchy--hyprland)。
+
 macOS 和 Linux 安装脚本会根据 Release 中发布的 SHA-256 文件校验下载内容。
 当前安装包尚未代码签名，因此 Windows SmartScreen 或 macOS Gatekeeper 可能要求
 手工确认。
