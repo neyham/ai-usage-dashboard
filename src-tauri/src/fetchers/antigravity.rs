@@ -28,7 +28,11 @@ use std::time::Duration as StdDuration;
 #[cfg(not(windows))]
 use std::time::Instant;
 
-const QUOTA_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
+// The unprefixed cloudcode-pa host returns dummy Gemini remainingFraction
+// values (often 1.0 / ~2% used). Antigravity / CodexBar / agy use the daily-
+// prefixed host for the real group limits.
+const QUOTA_URL: &str =
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
 const ASSIST_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const LOGIN_REQUIRED: &str = MSG_LOGIN_REQUIRED;
