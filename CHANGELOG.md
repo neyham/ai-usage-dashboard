@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Antigravity: read Gemini quota from `daily-cloudcode-pa.googleapis.com`. The
+  unprefixed `cloudcode-pa` host returns dummy `remainingFraction` values (often
+  ~2% weekly / 0% 5-hour used) while CodexBar and `agy` show the real limits.
+
 ## [0.8.4] - 2026-08-31
 
 ### Fixed
