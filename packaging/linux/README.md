@@ -24,6 +24,18 @@ sudo apt-get install -y \
 
 Plus Node.js 18+ and Rust 1.88+.
 
+## Omarchy / Hyprland
+
+`install-linux.sh` falls back to the AppImage on Arch. Two host issues show up
+on Omarchy:
+
+1. **Blank window** — the AppImage's Ubuntu WebKit process aborts (`EGL_BAD_PARAMETER`). Extract it and run `squashfs-root/usr/bin/ai-usage-dashboard` with `LD_LIBRARY_PATH=/usr/lib` so Arch `webkit2gtk-4.1` is used.
+2. **Tiny type on HiDPI** — Omarchy sets Hyprland `xwayland:force_zero_scaling`. X11 GTK must set `GDK_SCALE` to the monitor scale (`hyprctl monitors`, often `2`). Bundled GTK also fails `gtk_init` on native Wayland; use `GDK_BACKEND=x11` and `DISPLAY=:0`.
+
+Do not copy another machine's `state.json`. A launcher that matches the main
+README lives at `~/.local/bin/ai-usage-dashboard` after those steps. It does
+not edit Hyprland config.
+
 ## Config and cache paths
 
 | Kind | Path |
