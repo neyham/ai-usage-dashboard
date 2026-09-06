@@ -86,7 +86,7 @@ or macOS Gatekeeper may require manual confirmation.
 
 ## Compatibility and limitations
 
-Version `0.8.4` is the current multi-platform release: Windows (WinGet + NSIS),
+Version `0.8.5` is the current multi-platform release: Windows (WinGet + NSIS),
 Linux (`.deb` / AppImage), and macOS (`.dmg`). Screensaver and scheduled-idle
 helpers remain Windows-only. Published installers are not code-signed. Community
 WinGet indexes can lag a new GitHub release until the version manifest is
@@ -120,8 +120,8 @@ reporting a vulnerability or suspected credential exposure.
 
 ## Additional installation notes
 
-Pin a version with `VERSION=0.8.4` before the install script, for example
-`VERSION=0.8.4 sh install-linux.sh`.
+Pin a version with `VERSION=0.8.5` before the install script, for example
+`VERSION=0.8.5 sh install-linux.sh`.
 
 ### Windows (WinGet and direct installer)
 
