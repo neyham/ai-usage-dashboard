@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [0.8.5] - 2026-09-06
+
 ### Fixed
 
 - Antigravity: read Gemini quota from `daily-cloudcode-pa.googleapis.com`. The
