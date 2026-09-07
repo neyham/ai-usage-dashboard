@@ -15,7 +15,7 @@ Local `shasum -a 256` of the downloaded NSIS file matched the SUMS line for `x64
 
 ## Product repo
 
-- Commit: `4581ab0` `chore: add WinGet 0.8.5 manifests` on `origin/main`
+- Commit: `4f55301` `chore: add WinGet 0.8.5 manifests` on `origin/main`
 - Path: `packaging/winget/0.8.5/` (installer / locale.en-US / version, schema 1.12.0)
 - `ReleaseDate: 2026-09-06` (GitHub Release `published_at`)
 - InstallerUrl: `https://github.com/neyham/ai-usage-dashboard/releases/download/v0.8.5/AI-Usage-Dashboard_0.8.5_x64-setup.exe`
