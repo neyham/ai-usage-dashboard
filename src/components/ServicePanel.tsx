@@ -56,7 +56,7 @@ type AnyService = (
   grokBotResetLocal?: string;
 };
 
-type GaugeWindow = RingWindow & { reset?: string };
+type GaugeWindow = RingWindow & { reset?: string; unknown?: boolean };
 
 function formatPercent(value: number): string {
   const pct = Math.max(0, Math.min(100, value));
@@ -68,7 +68,7 @@ function windowOf(label: string, percent?: number, reset?: string): GaugeWindow 
   return { label, percent, reset };
 }
 
-/** Keep a shared reset time on the first lane only so Included/Auto do not repeat it. */
+/** Keep a shared reset time on the first lane only so Total/Cursor do not repeat it. */
 function withUniqueResets(windows: GaugeWindow[]): GaugeWindow[] {
   const seen = new Set<string>();
   return windows.map((win) => {
@@ -79,11 +79,15 @@ function withUniqueResets(windows: GaugeWindow[]): GaugeWindow[] {
   });
 }
 
+function shownPercent(win: GaugeWindow): string {
+  return win.unknown ? "--" : formatPercent(win.percent);
+}
+
 function legendText(win: GaugeWindow, compact = false): string {
-  if (compact) return `${win.label} ${formatPercent(win.percent)}`;
+  if (compact) return `${win.label} ${shownPercent(win)}`;
   return win.reset
-    ? `${win.label} ${formatPercent(win.percent)} RESET ${win.reset}`
-    : `${win.label} ${formatPercent(win.percent)}`;
+    ? `${win.label} ${shownPercent(win)} RESET ${win.reset}`
+    : `${win.label} ${shownPercent(win)}`;
 }
 
 function displayPlan(plan?: string): string | undefined {
@@ -113,19 +117,25 @@ function windowsFor(kind: Kind, service: AnyService): {
     const period = windowOf(service.periodLabel ?? "PERIOD", service.usagePercent, service.usageResetLocal);
     const month = windowOf("MONTH", service.monthlyPercent, service.monthlyResetLocal);
     if (period && month) return { outer: period, inner: month, extra: [] };
-    return { outer: period ?? month, extra: [] };
+    if (period || month) return { outer: period ?? month, extra: [] };
+    if (service.usageResetLocal) {
+      return {
+        outer: {
+          label: service.periodLabel ?? "7D",
+          percent: 0,
+          reset: service.usageResetLocal,
+          unknown: true,
+        },
+        extra: [],
+      };
+    }
+    return { extra: [] };
   }
 
   if (kind === "cursor") {
-    const included = windowOf("INCLUDED", service.includedPercent, service.usageResetLocal);
-    const auto = windowOf(
-      typeof service.apiPercent === "number" || typeof service.includedPercent === "number"
-        ? "AUTO"
-        : "MONTH",
-      service.usagePercent,
-      service.usageResetLocal,
-    );
-    const api = windowOf("API", service.apiPercent);
+    const included = windowOf("TOTAL", service.includedPercent, service.usageResetLocal);
+    const auto = windowOf("CURSOR", service.usagePercent, service.usageResetLocal);
+    const api = windowOf("THIRD PARTY", service.apiPercent);
     const onDemand = windowOf("EXTRA", service.onDemandPercent);
     const grokBot = windowOf("GROK BOT", service.grokBotPercent, service.grokBotResetLocal);
     const lanes = withUniqueResets(
@@ -205,7 +215,11 @@ function ariaFor(
   }
   const parts = [outer, inner, ...extra]
     .filter((win): win is GaugeWindow => Boolean(win))
-    .map((win) => `${win.label} ${formatPercent(win.percent)}%${win.reset ? `, resets ${win.reset}` : ""}`);
+    .map((win) =>
+      win.unknown
+        ? `${win.label} unknown${win.reset ? `, resets ${win.reset}` : ""}`
+        : `${win.label} ${formatPercent(win.percent)}%${win.reset ? `, resets ${win.reset}` : ""}`,
+    );
   return `${title} usage: ${parts.join(", ")}`;
 }
 
@@ -250,6 +264,8 @@ export function ServicePanel({
     [outer, inner, ...extra].filter((win): win is GaugeWindow => Boolean(win));
   const meter: "ring" | "bar" = artSkin !== "ip" || wide ? "bar" : "ring";
   const resetCredits = service.resetCreditsAvailable;
+  const ringOuter = outer?.unknown ? undefined : outer;
+  const ringInner = inner?.unknown ? undefined : inner;
   const hasUsage = Boolean(outer || inner);
   const planLabel = displayPlan(service.plan);
   const showPlan =
@@ -368,8 +384,8 @@ export function ServicePanel({
               </div>
             ) : (
               <RingGauge
-                outer={kind === "deepseek" ? undefined : outer}
-                inner={kind === "deepseek" ? undefined : inner}
+                outer={kind === "deepseek" ? undefined : ringOuter}
+                inner={kind === "deepseek" ? undefined : ringInner}
                 readout={readout}
                 mood={mood}
                 ariaLabel={ariaLabel}
@@ -417,7 +433,7 @@ export function ServicePanel({
                 {artSkin === "ip" ? (
                   <>
                     <span className="legend-main">
-                      {win.label} {formatPercent(win.percent)}
+                      {win.label} {shownPercent(win)}
                     </span>
                     {win.reset ? <span className="legend-reset">{win.reset}</span> : null}
                   </>

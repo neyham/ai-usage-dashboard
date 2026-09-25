@@ -1,7 +1,7 @@
 import type { MascotMood } from "../mascot";
 import type { RingWindow } from "./RingGauge";
 
-type BarWindow = RingWindow & { reset?: string };
+type BarWindow = RingWindow & { reset?: string; unknown?: boolean };
 
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -59,11 +59,12 @@ export function UsageBars({
     );
   }
 
+  const known = windows.filter((win) => !win.unknown);
   const featured = featuredLabel
-    ? windows.find((win) => win.label === featuredLabel)
+    ? known.find((win) => win.label === featuredLabel)
     : undefined;
-  const peak = featured?.percent ?? Math.max(...windows.map((win) => win.percent));
-  const peakTone = toneOf(peak);
+  const peak = featured?.percent ?? (known.length > 0 ? Math.max(...known.map((win) => win.percent)) : null);
+  const peakTone = peak == null ? undefined : toneOf(peak);
   return (
     <div
       className="ip-bars"
@@ -78,7 +79,7 @@ export function UsageBars({
           className={`ip-bars-peak${mood === "over" ? " is-pulse" : ""}`}
           data-tone={peakTone}
         >
-          {formatPercent(peak)}
+          {peak == null ? "--" : formatPercent(peak)}
           <i>%</i>
         </div>
       )}
@@ -87,14 +88,14 @@ export function UsageBars({
           <div className="ip-bar-meta">
             <span className="ip-bar-label">{win.label}</span>
             <span className="ip-bar-percent">
-              {formatPercent(win.percent)}
+              {win.unknown ? "--" : formatPercent(win.percent)}
               <i>%</i>
             </span>
           </div>
           <div className="ip-bar-track">
             <i
               className="ip-bar-fill"
-              style={{ width: `${clampPercent(win.percent)}%` }}
+              style={{ width: `${win.unknown ? 0 : clampPercent(win.percent)}%` }}
             />
           </div>
           <span className="ip-bar-reset">{win.reset ? `RESET ${win.reset}` : "\u00a0"}</span>

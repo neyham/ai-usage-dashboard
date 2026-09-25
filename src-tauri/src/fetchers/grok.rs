@@ -83,7 +83,7 @@ struct AuthCandidate {
 }
 
 struct PeriodUsage {
-    percent: f64,
+    percent: Option<f64>,
     label: &'static str,
     caption: &'static str,
     reset_local: Option<String>,
@@ -433,7 +433,7 @@ fn service_from_usage(
         from_cache: false,
         data_may_be_stale: false,
         plan,
-        usage_percent: period.as_ref().map(|usage| usage.percent),
+        usage_percent: period.as_ref().and_then(|usage| usage.percent),
         period_label: period.as_ref().map(|usage| usage.label.into()),
         period_caption: period.as_ref().map(|usage| usage.caption.into()),
         usage_reset_local: period.and_then(|usage| usage.reset_local),
@@ -486,9 +486,8 @@ fn parse_credits(body: &str) -> anyhow::Result<PeriodUsage> {
                     .flatten()
             })
         });
-    let percent = product_percent
-        .or_else(|| config.get("creditUsagePercent").and_then(number_value))
-        .context("Grok credits missing usage percentage")?;
+    let percent =
+        product_percent.or_else(|| config.get("creditUsagePercent").and_then(number_value));
 
     let period = config.get("currentPeriod").and_then(Value::as_object);
     let (label, caption) = period_display(
@@ -500,9 +499,14 @@ fn parse_credits(body: &str) -> anyhow::Result<PeriodUsage> {
         .and_then(|value| value.get("end"))
         .or_else(|| config.get("billingPeriodEnd"))
         .and_then(local_label);
+    // Unified billing can confirm the weekly window and still omit the
+    // percentage. That is unknown usage, not zero and not a failed fetch.
+    if percent.is_none() && reset_local.is_none() {
+        bail!("Grok credits missing usage percentage");
+    }
 
     Ok(PeriodUsage {
-        percent: clamp_percent(percent),
+        percent: percent.map(clamp_percent),
         label,
         caption,
         reset_local,
@@ -1396,7 +1400,7 @@ EOF
         )
         .expect("valid Grok credits");
 
-        assert_eq!(usage.percent, 37.5);
+        assert_eq!(usage.percent, Some(37.5));
         assert_eq!(usage.label, "7D");
         assert_eq!(usage.caption, "WEEKLY WINDOW");
         assert!(usage.reset_local.is_some());
@@ -1414,7 +1418,7 @@ EOF
         )
         .expect("valid shared Grok credits");
 
-        assert_eq!(usage.percent, 100.0);
+        assert_eq!(usage.percent, Some(100.0));
         assert_eq!(usage.label, "PERIOD");
         assert_eq!(usage.caption, "CREDIT WINDOW");
     }
@@ -1440,6 +1444,48 @@ EOF
                 .expect("valid empty allowance")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn unified_billing_without_percent_keeps_the_weekly_window() {
+        let credits = Ok(Resp {
+            status: 200,
+            body: r#"{
+                "config": {
+                    "currentPeriod": {
+                        "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                        "start": "2026-09-24T23:38:22.995957+00:00",
+                        "end": "2026-10-01T23:38:22.995957+00:00"
+                    },
+                    "billingPeriodEnd": "2026-10-01T23:38:22.995957+00:00",
+                    "isUnifiedBillingUser": true,
+                    "onDemandCap": {"val": 0},
+                    "onDemandUsed": {"val": 0},
+                    "prepaidBalance": {"val": 0}
+                }
+            }"#
+            .into(),
+            retry_after: None,
+        });
+        let monthly = Ok(Resp {
+            status: 200,
+            body: r#"{"config":{"monthlyLimit":{"val":0},"used":{"val":0}}}"#.into(),
+            retry_after: None,
+        });
+        let settings = Ok(Resp {
+            status: 200,
+            body: r#"{"subscription_tier_display":"SuperGrok Heavy"}"#.into(),
+            retry_after: None,
+        });
+
+        let service = service_from_responses(false, None, &credits, &monthly, &settings, None)
+            .expect("period-only credits stay usable");
+        assert_eq!(service.status, "NOMINAL");
+        assert_eq!(service.usage_percent, None);
+        assert_eq!(service.monthly_percent, None);
+        assert_eq!(service.period_label.as_deref(), Some("7D"));
+        assert!(service.usage_reset_local.is_some());
+        assert_eq!(service.plan.as_deref(), Some("SuperGrok Heavy"));
     }
 
     #[test]

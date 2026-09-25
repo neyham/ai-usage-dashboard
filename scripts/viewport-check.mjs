@@ -1104,20 +1104,20 @@ async function checkCursorPanel(browser) {
   await contentPage.locator('.panel-cursor[data-meter="bar"]').waitFor();
   assert.equal(await contentPage.locator(".panel-cursor").getAttribute("data-meter"), "bar");
   assert.deepEqual(await legendWindows(contentPage, ".panel-cursor"), [
-    "INCLUDED",
-    "AUTO",
-    "API",
+    "TOTAL",
+    "CURSOR",
+    "THIRD PARTY",
     "GROK BOT",
   ]);
   const cursorLegend = (await contentPage.locator(".panel-cursor .gauge-legend").textContent()) ?? "";
-  assert.match(cursorLegend, /INCLUDED 24/);
-  assert.match(cursorLegend, /AUTO 8/);
-  assert.match(cursorLegend, /API 41/);
+  assert.match(cursorLegend, /TOTAL 24/);
+  assert.match(cursorLegend, /CURSOR 8/);
+  assert.match(cursorLegend, /THIRD PARTY 41/);
   assert.match(cursorLegend, /GROK BOT 38/);
   assert.equal(
     (cursorLegend.match(/08-13 09:13/g) ?? []).length,
     1,
-    "Included/Auto share one billing-cycle reset",
+    "Total/Cursor share one billing-cycle reset",
   );
   assert.deepEqual(await inspectLayout(contentPage, { width: 1600, height: 900 }), []);
   await contentContext.close();

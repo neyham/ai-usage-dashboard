@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [0.8.6] - 2026-09-25
+
+### Fixed
+
+- Grok: a unified-billing credits response that includes the weekly window but
+  omits `creditUsagePercent` stays nominal. The reset time is kept and the
+  percentage stays unknown. A monthly `0/0` allowance is not treated as zero
+  usage, and the card is no longer marked API ERROR.
+
+### Changed
+
+- Cursor lanes use the same names as CodexBar: Total, Cursor, and Third Party.
+  The underlying fields are unchanged (`totalPercentUsed`, `autoPercentUsed`,
+  `apiPercentUsed`).
+
 ## [0.8.5] - 2026-09-06
 
 ### Fixed
