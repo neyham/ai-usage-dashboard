@@ -1454,10 +1454,10 @@ EOF
                 "config": {
                     "currentPeriod": {
                         "type": "USAGE_PERIOD_TYPE_WEEKLY",
-                        "start": "2026-09-24T23:38:22.995957+00:00",
-                        "end": "2026-10-01T23:38:22.995957+00:00"
+                        "start": "2030-04-07T00:00:00Z",
+                        "end": "2030-04-14T00:00:00Z"
                     },
-                    "billingPeriodEnd": "2026-10-01T23:38:22.995957+00:00",
+                    "billingPeriodEnd": "2030-04-14T00:00:00Z",
                     "isUnifiedBillingUser": true,
                     "onDemandCap": {"val": 0},
                     "onDemandUsed": {"val": 0},
