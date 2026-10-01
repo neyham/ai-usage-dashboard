@@ -22,6 +22,7 @@ export interface ClaudeService {
   fromCache: boolean;
   dataMayBeStale: boolean;
   cooldownUntilLocal?: string;
+  plan?: string;
   fiveHourPercent?: number;
   sevenDayPercent?: number;
   fiveHourResetLocal?: string;

@@ -61,9 +61,9 @@ or macOS Gatekeeper may require manual confirmation.
 
 | Provider | What the dashboard shows |
 | --- | --- |
-| Claude Code | Available usage windows, reset times, extra usage, cooldown, and cache state |
+| Claude Code | Available usage windows, reset times, extra usage, subscription tier, cooldown, and cache state |
 | Codex | Usage windows, reset times, plan, banked resets, and earliest expiry |
-| Grok Build | Server-reported credit period, reset time, plan, optional monthly allowance, and banked usage-limit resets when available |
+| Grok Build | Combined credit usage for the server-reported period, reset time, plan, optional monthly allowance, and banked usage-limit resets when available |
 | Cursor | Included, Auto, named-model API usage, Grok Bot quota, plan, and billing-cycle reset |
 | Antigravity | Gemini 5-hour and 7-day quota, reset times, and Google AI plan |
 | DeepSeek | API balance and insufficient-balance state |
@@ -262,6 +262,11 @@ Outputs land under `src-tauri/target/release/` and
 `src-tauri/target/release/bundle/` (NSIS on Windows, `.deb`/AppImage on Linux,
 `.dmg`/`.app` on macOS).
 
+`app:build` remaps Rust source and toolchain paths to neutral `/build/...` paths
+so local usernames and checkout locations are not embedded in the executable.
+Use this command for distributable builds rather than invoking `tauri build`
+directly. This does not sanitize files you explicitly add as bundle resources.
+
 Do not use a standalone `cargo build` debug executable as a deployment smoke
 test. Debug builds load the Vite `devUrl` (`http://localhost:1420`) and require
 `npm run app:dev` to stay running. Use `npm run app:build` and the release binary
@@ -279,7 +284,7 @@ leave its password field blank to keep the existing value.
 
 | Provider | Default credential source | Override |
 | --- | --- | --- |
-| Claude | `~/.claude/.credentials.json`, then `credentials.json` | `claudeCredentialsPath` (native file path) |
+| Claude | `$CLAUDE_CONFIG_DIR` when set; otherwise `~/.claude`: `.credentials.json`, then `credentials.json` | `claudeCredentialsPath` (native file path) |
 | Codex | `~/.codex/auth.json` | `codexAuthPath` (native file path) |
 | DeepSeek | `deepSeekApiKey` saved from Display Settings, then `DEEPSEEK_API_KEY` | Enter or replace it in Display Settings |
 | Grok Build | `~/.grok/auth.json` | `grokCredentialsPath` (native file path) |
@@ -361,15 +366,35 @@ closed to sanitized last-known-good data.
 
 ### Claude token renewal
 
-Claude credential files are read-only to the dashboard. Direct OAuth renewal is
-intentionally disabled because the dashboard cannot participate in every lock
-used by Claude Code. If the token has expired, refresh it with Claude Code or
-opt into the bounded CLI fallback in configuration.
+Claude credential files are read-only to the dashboard. It does not call
+Anthropic's token endpoint. A refresh token rotates, and a second client
+refreshing it can invalidate Claude Code's own login.
 
-The optional Claude Code fallback is off by default because its recovery command
-may consume a small amount of usage. When enabled, it is limited to selected
-authentication failures, clamped to a maximum timeout and budget, and throttled
-across dashboard processes to one attempt per 30 minutes.
+An unexpired access token is used for the usage request. After expiry or an HTTP
+401, the dashboard rereads the selected file first: Claude Code may already have
+renewed it. If renewal is still needed and a refresh token is present, the
+dashboard can start the official `claude` command in a private terminal and
+request `/status`. This is a best-effort recovery probe, not a documented token
+refresh API. It sends no model prompt. Success requires changed, usable
+credentials followed by a successful usage response; a CLI exit alone is not
+proof of recovery.
+
+The CLI uses the same profile as the selected native `.credentials.json` file.
+Renamed/imported credential files are readable but do not trigger CLI renewal.
+Probe attempts are limited to one every 30 minutes; that cooldown does not
+prevent adopting credentials already renewed by Claude Code. `claudeCodeCommand`
+and `claudeCodeRefreshTimeoutSeconds` choose the binary and the time limit.
+
+Renewal uses a fresh session with built-in tools and user hooks disabled only
+for that process. User connection settings remain available and saved settings
+are unchanged. Claude Code's managed policy still applies.
+
+This fetcher currently reads credential files, not macOS Keychain. A Claude
+login stored only in Keychain is not supported by this path.
+
+`claudeCodeRefreshEnabled` and `claudeCodeRefreshMaxBudgetUsd` remain in the
+config file so older installs still load. They no longer enable a billed prompt
+or turn this renewal off.
 
 ## Configuration
 
@@ -430,7 +455,6 @@ clamped to safe bounds:
 | --- | --- |
 | `refreshIntervalMinutes` | 5 to 1,440 minutes |
 | `claudeCodeRefreshTimeoutSeconds` | 5 to 120 seconds |
-| `claudeCodeRefreshMaxBudgetUsd` | USD 0.001 to USD 0.10 |
 
 `artSkin` is `"ip"` (color slabs, default) or `"ring"` (classic EVA bars).
 Change it from **Display Settings**.

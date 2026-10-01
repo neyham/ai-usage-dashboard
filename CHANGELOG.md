@@ -4,6 +4,33 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Complete Grok's cropped twin-tail silhouette across all five expressions.
+  Soften Cursor's pink field and shift Antigravity to a blue-leaning emerald.
+- Redesign Cursor and Antigravity mascots with consistent five-state expressions.
+  Six-card layouts now place Antigravity third and DeepSeek sixth.
+- Release builds remap local source and toolchain paths to neutral build paths.
+- Update rustls and affected npm build dependencies to patched versions.
+- Grok: the usage meter uses the combined `creditUsagePercent` when the
+  credits response includes it. That figure is the account cap. A Grok Build
+  product slice is used only when the combined figure is absent.
+- Claude: the card shows an allowlisted subscription tier from the local
+  Claude Code credential file (`Pro`, `Max`, `Max 5x`, `Max 20x`, `Team`,
+  `Enterprise`). The usage endpoint does not return a plan. Unknown values
+  stay hidden, and the credential file stays read-only.
+- Claude: an expired access token is renewed by starting Claude Code in a
+  private terminal and letting it rewrite its own credential file. The
+  dashboard does not call Anthropic's token endpoint and does not send a billed
+  prompt. Attempts are serialized and limited to one every 30 minutes.
+  `claudeCodeRefreshEnabled` no longer gates this.
+  Renewal disables built-in tools and user hooks only for the probe, preserves
+  user connection settings, and lets Claude Code allocate a fresh session ID.
+- Claude: use still-valid access tokens, reread credentials before renewal and
+  cooldown rejection, and bind CLI renewal to the selected native profile.
+  `CLAUDE_CONFIG_DIR` is respected; imported filenames remain read-only.
+- Compact EVA settings controls keep a 44×44 touch target.
+
 ## [0.8.6] - 2026-09-25
 
 ### Fixed

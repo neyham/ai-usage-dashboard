@@ -22,9 +22,9 @@
 
 | Provider | 显示内容 |
 | --- | --- |
-| Claude Code | 可用额度窗口、重置时间、extra usage、cooldown 和缓存状态 |
+| Claude Code | 可用额度窗口、重置时间、extra usage、订阅档位、cooldown 和缓存状态 |
 | Codex | 额度窗口、重置时间、套餐、banked resets 及最早到期时间 |
-| Grok Build | 服务端返回的 credit period、重置时间、套餐、可选月度 allowance，以及可用的 banked usage-limit reset |
+| Grok Build | 合并后的 credit 用量（响应里有该字段时）、重置时间、套餐、可选月度 allowance，以及可用的 banked usage-limit reset |
 | Cursor | Included、Auto、named-model API 用量、Grok Bot 配额、套餐和账期重置时间。Bot 查不到时不影响 Included / Auto / API |
 | Antigravity | Gemini 5 小时和 7 天额度、重置时间、Google AI 套餐 |
 | DeepSeek | API 余额和余额不足状态 |

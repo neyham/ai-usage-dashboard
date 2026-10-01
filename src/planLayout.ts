@@ -33,7 +33,13 @@ export function storageKey(judgeDemo: boolean): string {
 }
 
 export function enabledProviderList(enabled: EnabledProviders): ProviderKind[] {
-  return PROVIDER_ORDER.filter((kind) => enabled[kind]);
+  const kinds = PROVIDER_ORDER.filter((kind) => enabled[kind]);
+  // Keep smaller layouts stable; the six-card grid groups Antigravity with
+  // Codex and Claude, and moves the balance-only DeepSeek card to the end.
+  if (kinds.length === 6) {
+    return ["codex", "claude", "antigravity", "grok", "cursor", "deepseek"];
+  }
+  return kinds;
 }
 
 export function livePlanOf(kind: ProviderKind, services: Services): string | undefined {

@@ -52,6 +52,8 @@ pub struct ClaudeService {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cooldown_until_local: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub five_hour_percent: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub seven_day_percent: Option<f64>,
@@ -70,6 +72,7 @@ impl Default for ClaudeService {
             from_cache: false,
             data_may_be_stale: false,
             cooldown_until_local: None,
+            plan: None,
             five_hour_percent: None,
             seven_day_percent: None,
             five_hour_reset_local: None,

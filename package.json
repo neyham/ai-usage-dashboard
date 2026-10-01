@@ -25,7 +25,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "app:dev": "tauri dev",
-    "app:build": "tauri build"
+    "app:build": "node scripts/build-release.mjs"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.2.8",

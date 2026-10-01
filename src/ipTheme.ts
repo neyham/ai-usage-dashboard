@@ -46,7 +46,7 @@ export const IP_THEME: Record<ProviderKind, IpTheme> = {
     emerge: "left",
   },
   cursor: {
-    field: "#FF62D0",
+    field: "#E86DB8",
     ipA: "#1C1730",
     ipB: "#F7F1FF",
     ringOk: "#F7F1FF",
@@ -54,7 +54,7 @@ export const IP_THEME: Record<ProviderKind, IpTheme> = {
     emerge: "left",
   },
   antigravity: {
-    field: "#009B52",
+    field: "#149878",
     ipA: "#E7FFF6",
     ipB: "#1A2C86",
     ringOk: "#E7FFF6",

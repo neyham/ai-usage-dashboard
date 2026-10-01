@@ -269,7 +269,11 @@ export function ServicePanel({
   const hasUsage = Boolean(outer || inner);
   const planLabel = displayPlan(service.plan);
   const showPlan =
-    (kind === "codex" || kind === "grok" || kind === "cursor" || kind === "antigravity") &&
+    (kind === "codex" ||
+      kind === "claude" ||
+      kind === "grok" ||
+      kind === "cursor" ||
+      kind === "antigravity") &&
     Boolean(planLabel) &&
     !(artSkin === "ip" && planLabel?.trim().toUpperCase() === title.toUpperCase());
   const panelTone =

@@ -64,3 +64,9 @@ Thumbs.db
 *.user
 .vscode/*
 !.vscode/extensions.json
+
+# Local design drafts and internal review records
+.local-notes/
+docs/MASCOT-DESIGN.md
+docs/REVIEW-*.md
+docs/RELEASE-REVIEW-*.md

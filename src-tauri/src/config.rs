@@ -32,11 +32,12 @@ pub struct Config {
     pub deep_seek_api_key: String,
     /// Optional override path for Claude credential files.
     pub claude_credentials_path: String,
-    /// Optional recovery path for Claude OAuth refresh failures. Disabled by
-    /// default because it can spend a tiny amount of Claude Code usage.
+    /// Kept so older config files still load. Automatic Claude renewal does not
+    /// consult this flag and does not send a billed prompt.
     pub claude_code_refresh_enabled: bool,
     pub claude_code_command: String,
     pub claude_code_refresh_timeout_seconds: u64,
+    /// Kept so older config files still load. Renewal does not spend this budget.
     pub claude_code_refresh_max_budget_usd: f64,
     /// Optional override path for Codex auth.json. Empty uses the native home
     /// path. Codex credentials are always read-only.

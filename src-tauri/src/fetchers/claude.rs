@@ -1,24 +1,27 @@
 //! Claude usage fetcher. Reads OAuth credentials from the local
-//! `.claude/.credentials.json`. Native credential files are read-only; expired
-//! sessions can optionally be recovered through the official Claude Code CLI.
-//! Usage 429s are signaled back to the orchestrator so it can enter cooldown.
+//! `.claude/.credentials.json`. Native credential files are read-only. An expired
+//! access token is renewed by starting Claude Code so it can rewrite its own
+//! file. The dashboard never posts the refresh token. Usage 429s are signaled
+//! back to the orchestrator so it can enter cooldown.
 
 use super::{send_with_one_retry, FetchError};
 use crate::cache::cache_dir;
 use crate::config::{
-    Config, DEFAULT_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD, MAX_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD,
-    MAX_CLAUDE_CODE_REFRESH_TIMEOUT_SECONDS, MIN_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD,
-    MIN_CLAUDE_CODE_REFRESH_TIMEOUT_SECONDS,
+    Config, MAX_CLAUDE_CODE_REFRESH_TIMEOUT_SECONDS, MIN_CLAUDE_CODE_REFRESH_TIMEOUT_SECONDS,
 };
 use crate::fs_util::{atomic_write, OsFileLock};
 use crate::models::ClaudeService;
 use crate::util::{clamp_percent, local_label, parse_datetime};
 use anyhow::{anyhow, bail, Context};
 use chrono::{DateTime, Duration, Utc};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use reqwest::Client;
 use serde_json::Value;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+#[cfg(unix)]
+use std::process::Stdio;
+use std::thread::JoinHandle;
 use std::time::{Duration as StdDuration, Instant};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -31,6 +34,9 @@ const CLAUDE_CODE_RECOVERY_THROTTLE: Duration = Duration::minutes(30);
 const CLAUDE_CODE_RECOVERY_LOCK_FILE: &str = "claude-code-recovery.lock";
 const CLAUDE_CODE_RECOVERY_STATE_FILE: &str = "claude-code-recovery-attempt.txt";
 const RECOVERY_LOCK_WAIT: StdDuration = StdDuration::from_secs(5);
+// Only override probe behavior. Preserve user connection settings (proxy, CA,
+// etc.); managed policy remains under Claude Code's control.
+const CLAUDE_CODE_TOUCH_SETTINGS: &str = r#"{"remoteControlAtStartup":false,"disableAllHooks":true,"disableDeepLinkRegistration":"disable"}"#;
 
 #[derive(Debug)]
 enum RefreshError {
@@ -42,13 +48,13 @@ enum RefreshError {
 
 pub async fn fetch(config: &Config, client: &Client) -> Result<ClaudeService, FetchError> {
     let load_config = config.clone();
-    let mut creds = tokio::task::spawn_blocking(move || load(&load_config))
+    let (config, mut creds) = tokio::task::spawn_blocking(move || load_selected(&load_config))
         .await
         .map_err(|err| FetchError::Other(anyhow!("Claude credential task failed: {err}")))?
         .map_err(load_error)?;
 
-    if creds.is_expired_soon() {
-        refresh_or_recover(config, client, &mut creds).await?;
+    if creds.is_expired_at(Utc::now()) {
+        refresh_or_recover(&config, client, &mut creds).await?;
     }
 
     let mut resp = send_with_one_retry(|| usage_request(client, &creds.access_token))
@@ -56,7 +62,7 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<ClaudeService, Fe
         .map_err(FetchError::Other)?;
 
     if resp.status == 401 {
-        refresh_or_recover(config, client, &mut creds).await?;
+        refresh_or_recover(&config, client, &mut creds).await?;
         resp = send_with_one_retry(|| usage_request(client, &creds.access_token))
             .await
             .map_err(FetchError::Other)?;
@@ -79,7 +85,9 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<ClaudeService, Fe
         )));
     }
 
-    parse_usage(&resp.body).map_err(FetchError::Other)
+    let mut service = parse_usage(&resp.body).map_err(FetchError::Other)?;
+    service.plan = creds.plan.clone();
+    Ok(service)
 }
 
 async fn refresh_or_recover(
@@ -87,6 +95,14 @@ async fn refresh_or_recover(
     client: &Client,
     creds: &mut Creds,
 ) -> Result<(), FetchError> {
+    // Another Claude process may have rotated the credential while our request
+    // was in flight. Re-read before checking refresh eligibility or cooldown.
+    let read_config = config.clone();
+    if let Ok(Ok(fresh)) = tokio::task::spawn_blocking(move || load(&read_config)).await {
+        if adopt_refreshed_credentials(creds, fresh) {
+            return Ok(());
+        }
+    }
     match creds.refresh(client).await {
         Ok(()) => Ok(()),
         Err(err) => recover_allowed_error(config, creds, err).await,
@@ -98,22 +114,25 @@ async fn recover_allowed_error(
     creds: &mut Creds,
     err: RefreshError,
 ) -> Result<(), FetchError> {
-    let (allow_claude_code, message) = recovery_policy(&err)?;
-
-    if allow_claude_code
-        && config.claude_code_refresh_enabled
-        && try_claude_code_refresh(config, creds).await.is_ok()
-    {
+    // `claudeCodeRefreshEnabled` used to opt into a billed prompt. Renewal now
+    // starts Claude Code itself and does not consult that flag.
+    if delegates_to_claude_code(&err) && try_claude_code_refresh(config, creds).await.is_ok() {
         return Ok(());
     }
-    Err(FetchError::Auth { message })
+    Err(FetchError::Auth {
+        message: auth_failure_message(&err),
+    })
 }
 
-fn recovery_policy(err: &RefreshError) -> Result<(bool, &'static str), FetchError> {
+fn delegates_to_claude_code(err: &RefreshError) -> bool {
+    matches!(err, RefreshError::DirectRefreshUnavailable)
+}
+
+fn auth_failure_message(err: &RefreshError) -> &'static str {
     match err {
-        RefreshError::MissingRefreshToken => Ok((true, MSG_AUTH_EXPIRED)),
-        RefreshError::DirectRefreshUnavailable => Ok((true, MSG_REFRESH_BLOCKED)),
-        RefreshError::Other(_) => Ok((false, MSG_AUTH_CHECK_FAILED)),
+        RefreshError::MissingRefreshToken => MSG_AUTH_EXPIRED,
+        RefreshError::DirectRefreshUnavailable => MSG_REFRESH_BLOCKED,
+        RefreshError::Other(_) => MSG_AUTH_CHECK_FAILED,
     }
 }
 
@@ -150,6 +169,7 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<ClaudeService> {
         from_cache: false,
         data_may_be_stale: false,
         cooldown_until_local: None,
+        plan: None,
         five_hour_percent: five.as_ref().map(|window| window.0),
         seven_day_percent: seven.as_ref().map(|window| window.0),
         five_hour_reset_local: five.and_then(|window| window.1),
@@ -250,14 +270,15 @@ struct Creds {
     access_token: String,
     refresh_token: String,
     expires_at: Option<DateTime<Utc>>,
+    /// Allowlisted subscription label. Raw tier strings are not kept.
+    plan: Option<String>,
 }
 
 impl Creds {
-    fn is_expired_soon(&self) -> bool {
-        match self.expires_at {
-            Some(exp) => Utc::now() + Duration::minutes(2) >= exp,
-            None => false,
-        }
+    fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
+        // A still-valid token can answer the read-only usage request. Do not
+        // turn a speculative early renewal failure into a dashboard outage.
+        self.access_token.is_empty() || self.expires_at.is_some_and(|exp| exp <= now)
     }
 
     async fn refresh(&mut self, _client: &Client) -> Result<(), RefreshError> {
@@ -282,37 +303,43 @@ async fn try_claude_code_refresh(config: &Config, creds: &mut Creds) -> anyhow::
 }
 
 fn try_claude_code_refresh_blocking(config: &Config, creds: &mut Creds) -> anyhow::Result<()> {
-    if !config.claude_code_refresh_enabled {
-        bail!("Claude Code refresh disabled");
+    try_claude_code_refresh_blocking_at(config, creds, &cache_dir())
+}
+
+fn try_claude_code_refresh_blocking_at(
+    config: &Config,
+    creds: &mut Creds,
+    recovery_dir: &Path,
+) -> anyhow::Result<()> {
+    if adopt_refreshed_credentials(creds, load(config)?) {
+        return Ok(());
     }
-    if !reserve_claude_code_recovery()? {
+    // Only the canonical Claude-owned filename can be renewed by the CLI.
+    // Imported/renamed files remain readable but must not refresh another login.
+    claude_profile_dir(config)?;
+    if !reserve_claude_code_recovery_at(recovery_dir, Utc::now())? {
+        if adopt_refreshed_credentials(creds, load(config)?) {
+            return Ok(());
+        }
         bail!("Claude Code recovery is temporarily throttled");
     }
 
     let before_access = creds.access_token.clone();
     let before_expires = creds.expires_at;
-
-    let mut cmd = build_claude_code_refresh_command(config);
-    cmd.stdout(Stdio::null()).stderr(Stdio::null());
-
     let timeout = StdDuration::from_secs(config.claude_code_refresh_timeout_seconds.clamp(
         MIN_CLAUDE_CODE_REFRESH_TIMEOUT_SECONDS,
         MAX_CLAUDE_CODE_REFRESH_TIMEOUT_SECONDS,
     ));
-    let run_result = run_with_timeout(cmd, timeout);
+    // Trust the credential file Claude Code writes. Discard the terminal: it can
+    // contain account details, and a non-zero exit can still follow a refresh.
+    let run_result = run_claude_code_touch(config, recovery_dir, timeout, || {
+        load(config)
+            .ok()
+            .is_some_and(|fresh| credentials_refreshed(&before_access, before_expires, &fresh))
+    });
 
-    // Claude Code may refresh credentials before a non-zero exit, e.g. when the
-    // configured budget is too low for the actual tiny prompt. Trust the file,
-    // not the process status, and never expose command output to the renderer.
     let refreshed = load(config)?;
-    let has_new_access =
-        refreshed.access_token != before_access || refreshed.expires_at != before_expires;
-    let is_fresh = match refreshed.expires_at {
-        Some(exp) => exp > Utc::now() + Duration::minutes(5),
-        None => !refreshed.access_token.is_empty(),
-    };
-
-    if has_new_access && is_fresh {
+    if credentials_refreshed(&before_access, before_expires, &refreshed) {
         *creds = refreshed;
         return Ok(());
     }
@@ -321,8 +348,22 @@ fn try_claude_code_refresh_blocking(config: &Config, creds: &mut Creds) -> anyho
     bail!("Claude Code did not refresh credentials")
 }
 
-fn reserve_claude_code_recovery() -> anyhow::Result<bool> {
-    reserve_claude_code_recovery_at(&cache_dir(), Utc::now())
+fn credentials_refreshed(
+    before_access: &str,
+    before_expires: Option<DateTime<Utc>>,
+    fresh: &Creds,
+) -> bool {
+    let has_new_access = fresh.access_token != before_access || fresh.expires_at != before_expires;
+    has_new_access && !fresh.is_expired_at(Utc::now())
+}
+
+fn adopt_refreshed_credentials(creds: &mut Creds, fresh: Creds) -> bool {
+    if credentials_refreshed(&creds.access_token, creds.expires_at, &fresh) {
+        *creds = fresh;
+        true
+    } else {
+        false
+    }
 }
 
 fn reserve_claude_code_recovery_at(dir: &Path, now: DateTime<Utc>) -> anyhow::Result<bool> {
@@ -344,66 +385,217 @@ fn reserve_claude_code_recovery_at(dir: &Path, now: DateTime<Utc>) -> anyhow::Re
     Ok(true)
 }
 
-fn build_claude_code_refresh_command(config: &Config) -> Command {
-    let mut cmd = Command::new(config.claude_code_command.trim());
-    add_claude_code_refresh_args(&mut cmd, config);
-    cmd
-}
-
-fn add_claude_code_refresh_args(cmd: &mut Command, config: &Config) {
-    let budget = claude_code_refresh_budget(config);
-    cmd.args([
-        "-p",
-        "OK",
-        "--output-format",
-        "json",
+fn claude_code_touch_arguments() -> [&'static str; 5] {
+    // Let Claude Code allocate a fresh session: --session-id does not resume
+    // an existing conversation and a reused id can prevent startup.
+    [
         "--tools",
         "",
-        "--model",
-        "claude-haiku-4-5-20251001",
-        "--max-budget-usd",
-        &budget,
-    ]);
+        "--strict-mcp-config",
+        "--settings",
+        CLAUDE_CODE_TOUCH_SETTINGS,
+    ]
 }
 
-fn claude_code_refresh_budget(config: &Config) -> String {
-    let configured = config.claude_code_refresh_max_budget_usd;
-    if configured.is_finite() && configured > 0.0 {
-        configured
-            .clamp(
-                MIN_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD,
-                MAX_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD,
-            )
-            .to_string()
-    } else {
-        DEFAULT_CLAUDE_CODE_REFRESH_MAX_BUDGET_USD.to_string()
+fn prepare_claude_probe_dir(recovery_dir: &Path) -> anyhow::Result<PathBuf> {
+    let dir = recovery_dir.join("claude-code-probe");
+    let claude_dir = dir.join(".claude");
+    std::fs::create_dir_all(&claude_dir).context("create Claude Code probe directory")?;
+    atomic_write(
+        &claude_dir.join("settings.local.json"),
+        br#"{"disableDeepLinkRegistration":"disable"}"#,
+    )
+    .context("write Claude Code probe settings")?;
+    Ok(dir)
+}
+
+/// Start Claude Code in a private terminal so it refreshes its own login.
+/// `/status` is typed only if startup has not already rewritten the file.
+/// Terminal output is discarded.
+fn run_claude_code_touch(
+    config: &Config,
+    recovery_dir: &Path,
+    timeout: StdDuration,
+    mut refreshed: impl FnMut() -> bool,
+) -> anyhow::Result<()> {
+    if refreshed() {
+        return Ok(());
     }
+
+    let profile = claude_profile_dir(config)?;
+    let probe = prepare_claude_probe_dir(recovery_dir)?;
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 32,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .context("open Claude Code terminal")?;
+    let mut cmd = CommandBuilder::new(config.claude_code_command.trim());
+    cmd.args(claude_code_touch_arguments());
+    cmd.cwd(&probe);
+    // The reader and CLI must address the same profile. Keep the default
+    // profile's environment unchanged when no override was requested.
+    let default_profile = dirs::home_dir().map(|home| home.join(".claude"));
+    if std::env::var_os("CLAUDE_CONFIG_DIR").is_some()
+        || default_profile.as_deref() != Some(profile.as_path())
+    {
+        cmd.env("CLAUDE_CONFIG_DIR", &profile);
+    }
+    cmd.env("DISABLE_AUTOUPDATER", "1");
+    if let Some(path) = probe.as_os_str().to_str() {
+        cmd.env("PWD", path);
+    }
+
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .context("spawn Claude Code refresh")?;
+    let mut session = RunningClaudeTouch {
+        child: Some(child),
+        writer: None,
+        master: None,
+        reader: None,
+    };
+    drop(pair.slave);
+    session.writer = Some(
+        pair.master
+            .take_writer()
+            .context("Claude Code terminal writer")?,
+    );
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .context("Claude Code terminal reader")?;
+    session.reader = Some(discard_pty_output(reader));
+    session.master = Some(pair.master);
+    session.wait_until(timeout, &mut refreshed)
 }
 
-fn run_with_timeout(mut cmd: Command, timeout: StdDuration) -> anyhow::Result<()> {
-    let mut child = cmd.spawn().context("spawn Claude Code refresh")?;
-    let start = Instant::now();
+struct RunningClaudeTouch {
+    child: Option<Box<dyn Child + Send + Sync>>,
+    writer: Option<Box<dyn Write + Send>>,
+    master: Option<Box<dyn MasterPty + Send>>,
+    reader: Option<JoinHandle<()>>,
+}
 
-    loop {
-        if let Some(status) = child.try_wait().context("poll Claude Code refresh")? {
-            if status.success() {
+impl RunningClaudeTouch {
+    fn wait_until(
+        &mut self,
+        timeout: StdDuration,
+        refreshed: &mut impl FnMut() -> bool,
+    ) -> anyhow::Result<()> {
+        let start = Instant::now();
+        let mut sent_status = false;
+        let mut last_enter = start;
+        loop {
+            if refreshed() {
                 return Ok(());
             }
-            bail!("Claude Code refresh exited with {status}");
+            if start.elapsed() >= timeout {
+                bail!("Claude Code refresh timed out");
+            }
+            if let Some(writer) = self.writer.as_mut() {
+                if !sent_status && start.elapsed() >= StdDuration::from_millis(2500) {
+                    let _ = writer.write_all(b"/status\r");
+                    let _ = writer.flush();
+                    sent_status = true;
+                    last_enter = Instant::now();
+                } else if sent_status && last_enter.elapsed() >= StdDuration::from_millis(800) {
+                    let _ = writer.write_all(b"\r");
+                    let _ = writer.flush();
+                    last_enter = Instant::now();
+                }
+            }
+            if let Some(child) = self.child.as_mut() {
+                if child
+                    .try_wait()
+                    .context("poll Claude Code refresh")?
+                    .is_some()
+                {
+                    if refreshed() {
+                        return Ok(());
+                    }
+                    bail!("Claude Code exited before refreshing credentials");
+                }
+            }
+            std::thread::sleep(StdDuration::from_millis(200));
         }
-
-        if start.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("Claude Code refresh timed out");
-        }
-
-        std::thread::sleep(StdDuration::from_millis(250));
     }
+}
+
+impl Drop for RunningClaudeTouch {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            terminate_claude_touch(&mut child);
+        }
+        self.writer.take();
+        self.master.take();
+        if let Some(handle) = self.reader.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn discard_pty_output(mut reader: Box<dyn Read + Send>) -> JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut buf = [0_u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+    })
+}
+
+fn terminate_claude_touch(child: &mut Box<dyn Child + Send + Sync>) {
+    #[cfg(unix)]
+    let pid = child.process_id();
+    let _ = child.kill();
+    // setsid() makes the child its own process group. SIGHUP from kill() does
+    // not cover grandchildren if Claude Code handles that signal.
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &format!("-{pid}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.wait();
 }
 
 fn load(config: &Config) -> anyhow::Result<Creds> {
     parse_credentials(&resolve_and_read(config)?)
+}
+
+fn load_selected(config: &Config) -> anyhow::Result<(Config, Creds)> {
+    let (path, text) = resolve_and_read_with_source(config)?;
+    let creds = parse_credentials(&text)?;
+    let mut selected = config.clone();
+    selected.claude_credentials_path = path
+        .to_str()
+        .context("Claude credential path is not UTF-8")?
+        .to_owned();
+    Ok((selected, creds))
+}
+
+fn claude_profile_dir(config: &Config) -> anyhow::Result<PathBuf> {
+    let path = PathBuf::from(expand(config.claude_credentials_path.trim()));
+    if path.file_name().and_then(|name| name.to_str()) != Some(".credentials.json") {
+        bail!("Claude renewal requires the native .credentials.json file");
+    }
+    let path = std::path::absolute(path).context("resolve Claude credential path")?;
+    Ok(path
+        .parent()
+        .context("Claude credential directory missing")?
+        .to_path_buf())
 }
 
 fn parse_credentials(text: &str) -> anyhow::Result<Creds> {
@@ -427,27 +619,77 @@ fn parse_credentials(text: &str) -> anyhow::Result<Creds> {
         access_token: access,
         refresh_token: refresh,
         expires_at,
+        plan: claude_plan_label(
+            oauth.get("subscriptionType").and_then(Value::as_str),
+            oauth.get("rateLimitTier").and_then(Value::as_str),
+        )
+        .map(str::to_string),
     })
 }
 
+/// Subscription badge from Claude Code's credential file. The usage endpoint
+/// does not return a plan. Unknown values stay hidden.
+fn claude_plan_label(
+    subscription_type: Option<&str>,
+    rate_limit_tier: Option<&str>,
+) -> Option<&'static str> {
+    match normalize_plan_token(rate_limit_tier).as_str() {
+        "default_claude_max_20x" => return Some("Max 20x"),
+        "default_claude_max_5x" => return Some("Max 5x"),
+        _ => {}
+    }
+    match normalize_plan_token(subscription_type).as_str() {
+        "pro" => Some("Pro"),
+        "max" => Some("Max"),
+        "team" => Some("Team"),
+        "enterprise" => Some("Enterprise"),
+        _ => None,
+    }
+}
+
+fn normalize_plan_token(value: Option<&str>) -> String {
+    value.unwrap_or("").trim().to_ascii_lowercase()
+}
+
 fn resolve_and_read(config: &Config) -> anyhow::Result<String> {
-    let configured = config.claude_credentials_path.trim();
+    resolve_and_read_with_source(config).map(|(_, text)| text)
+}
 
-    if !configured.is_empty() {
-        let path = PathBuf::from(expand(configured));
-        return std::fs::read_to_string(&path)
-            .with_context(|| format!("read Claude credentials at {}", path.display()));
+fn credential_paths(
+    configured: &str,
+    config_dir: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> anyhow::Result<Vec<PathBuf>> {
+    if !configured.trim().is_empty() {
+        return Ok(vec![std::path::absolute(expand(configured.trim()))?]);
     }
+    let root = config_dir
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| home.map(|home| home.join(".claude")))
+        .context("Claude credentials not found")?;
+    let root = std::path::absolute(root)?;
+    Ok(vec![
+        root.join(".credentials.json"),
+        root.join("credentials.json"),
+    ])
+}
 
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join(".claude").join(".credentials.json"));
-        candidates.push(home.join(".claude").join("credentials.json"));
+fn resolve_and_read_with_source(config: &Config) -> anyhow::Result<(PathBuf, String)> {
+    let paths = credential_paths(
+        &config.claude_credentials_path,
+        std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
+        dirs::home_dir(),
+    )?;
+    // An explicit override is authoritative, including read/parse failures.
+    if !config.claude_credentials_path.trim().is_empty() {
+        let path = paths.into_iter().next().expect("explicit credential path");
+        let text = std::fs::read_to_string(&path).context("read configured Claude credentials")?;
+        return Ok((path, text));
     }
-    for p in candidates {
+    for p in paths {
         if let Ok(text) = std::fs::read_to_string(&p) {
             if !text.trim().is_empty() {
-                return Ok(text);
+                return Ok((p, text));
             }
         }
     }
@@ -479,8 +721,11 @@ fn expand(p: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        claude_code_refresh_budget, parse_usage, recovery_policy, reserve_claude_code_recovery_at,
-        resolve_and_read, Creds, OsFileLock, RefreshError,
+        adopt_refreshed_credentials, auth_failure_message, claude_code_touch_arguments,
+        claude_plan_label, claude_profile_dir, credential_paths, credentials_refreshed,
+        delegates_to_claude_code, load_selected, parse_credentials, parse_usage,
+        reserve_claude_code_recovery_at, resolve_and_read, try_claude_code_refresh_blocking_at,
+        Creds, OsFileLock, RefreshError,
     };
     use crate::config::Config;
     use chrono::{Duration, TimeZone, Utc};
@@ -493,6 +738,7 @@ mod tests {
             access_token: "old-access".into(),
             refresh_token: "old-refresh".into(),
             expires_at: None,
+            plan: None,
         }
     }
 
@@ -508,16 +754,14 @@ mod tests {
     }
 
     #[test]
-    fn cli_recovery_policy_excludes_transient_and_parse_failures() {
-        for err in [
-            RefreshError::MissingRefreshToken,
-            RefreshError::DirectRefreshUnavailable,
-        ] {
-            assert!(
-                recovery_policy(&err).expect("non-rate-limit policy").0,
-                "expected CLI recovery for {err:?}"
-            );
-        }
+    fn cli_recovery_delegates_only_an_expired_refreshable_login() {
+        let expired = RefreshError::DirectRefreshUnavailable;
+        assert!(delegates_to_claude_code(&expired));
+        assert_eq!(auth_failure_message(&expired), "REFRESH BLOCKED");
+
+        let missing = RefreshError::MissingRefreshToken;
+        assert!(!delegates_to_claude_code(&missing));
+        assert_eq!(auth_failure_message(&missing), "AUTH EXPIRED");
 
         for err in [
             RefreshError::Other(anyhow::anyhow!("transport failure")),
@@ -525,9 +769,10 @@ mod tests {
             RefreshError::Other(anyhow::anyhow!("parse refresh response")),
         ] {
             assert!(
-                !recovery_policy(&err).expect("non-rate-limit policy").0,
+                !delegates_to_claude_code(&err),
                 "unexpected CLI recovery for {err:?}"
             );
+            assert_eq!(auth_failure_message(&err), "AUTH CHECK FAILED");
         }
     }
 
@@ -547,18 +792,25 @@ mod tests {
     }
 
     #[test]
-    fn cli_recovery_budget_is_defensively_capped() {
-        let too_high = Config {
-            claude_code_refresh_max_budget_usd: 50.0,
-            ..Config::default()
-        };
-        let invalid = Config {
-            claude_code_refresh_max_budget_usd: f64::NAN,
-            ..Config::default()
-        };
-
-        assert_eq!(claude_code_refresh_budget(&too_high), "0.1");
-        assert_eq!(claude_code_refresh_budget(&invalid), "0.03");
+    fn claude_code_touch_does_not_send_a_billed_prompt() {
+        let args = claude_code_touch_arguments();
+        assert!(args.windows(2).any(|pair| pair == ["--tools", ""]));
+        assert!(args.contains(&"--strict-mcp-config"));
+        // Hooks are suppressed locally without removing proxy/CA settings.
+        assert!(!args.contains(&"--setting-sources"));
+        let settings_index = args.iter().position(|arg| *arg == "--settings").unwrap();
+        let settings: serde_json::Value = serde_json::from_str(args[settings_index + 1]).unwrap();
+        assert_eq!(settings["disableAllHooks"], true);
+        assert_eq!(settings["remoteControlAtStartup"], false);
+        assert_eq!(settings["disableDeepLinkRegistration"], "disable");
+        assert!(!args.contains(&"--allowed-tools"));
+        assert!(!args.contains(&"--session-id"));
+        assert!(!args.contains(&"--resume"));
+        assert!(!args.contains(&"--continue"));
+        assert!(!args.contains(&"-p"));
+        assert!(!args.contains(&"--print"));
+        assert!(!args.contains(&"--model"));
+        assert!(!args.contains(&"--max-budget-usd"));
     }
 
     #[test]
@@ -579,6 +831,223 @@ mod tests {
         let mut config = config;
         config.claude_credentials_path = "wsl:Ubuntu:/home/user/.claude/.credentials.json".into();
         assert!(resolve_and_read(&config).is_err());
+    }
+
+    #[test]
+    fn usable_access_is_not_rejected_for_being_near_expiry() {
+        let now = Utc::now();
+        let mut creds = test_creds();
+        creds.expires_at = Some(now + Duration::seconds(30));
+        assert!(!creds.is_expired_at(now));
+        creds.expires_at = Some(now);
+        assert!(creds.is_expired_at(now));
+        creds.expires_at = None;
+        assert!(!creds.is_expired_at(now));
+        creds.access_token.clear();
+        assert!(creds.is_expired_at(now));
+        creds.expires_at = Some(now + Duration::hours(8));
+        assert!(creds.is_expired_at(now));
+    }
+
+    #[test]
+    fn renewal_requires_a_changed_usable_access_token() {
+        let original = test_creds();
+        assert!(!credentials_refreshed(
+            &original.access_token,
+            None,
+            &original
+        ));
+        let mut fresh = original.clone();
+        fresh.access_token = "synthetic-new-access".into();
+        fresh.expires_at = Some(Utc::now() + Duration::minutes(1));
+        assert!(credentials_refreshed(&original.access_token, None, &fresh));
+        fresh.expires_at = Some(Utc::now() - Duration::seconds(1));
+        assert!(!credentials_refreshed(&original.access_token, None, &fresh));
+        fresh.access_token.clear();
+        fresh.expires_at = Some(Utc::now() + Duration::hours(8));
+        let mut retained = original.clone();
+        assert!(!adopt_refreshed_credentials(&mut retained, fresh));
+        assert_eq!(retained.access_token, original.access_token);
+    }
+
+    #[test]
+    fn profile_resolution_never_falls_back_to_another_home() {
+        let home = test_dir("synthetic-home");
+        let profile = test_dir("synthetic-profile");
+        let explicit = test_dir("synthetic-explicit").join(".credentials.json");
+        assert_eq!(
+            credential_paths("", Some(profile.clone()), Some(home.clone())).unwrap(),
+            vec![
+                profile.join(".credentials.json"),
+                profile.join("credentials.json")
+            ]
+        );
+        assert_eq!(
+            credential_paths(
+                explicit.to_str().unwrap(),
+                Some(profile),
+                Some(home.clone())
+            )
+            .unwrap(),
+            vec![explicit]
+        );
+        assert_eq!(
+            credential_paths("", None, Some(home.clone())).unwrap()[0],
+            home.join(".claude/.credentials.json")
+        );
+    }
+
+    fn write_synthetic_credentials(path: &std::path::Path, access: &str) {
+        std::fs::write(
+            path,
+            serde_json::json!({
+                "claudeAiOauth": {
+                    "accessToken": access,
+                    "refreshToken": "synthetic-refresh",
+                    "expiresAt": (Utc::now() + Duration::hours(1)).timestamp_millis(),
+                    "subscriptionType": "pro"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn external_rotation_is_adopted_even_during_persistent_cooldown() {
+        let dir = test_dir("external-rotation");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".credentials.json");
+        write_synthetic_credentials(&path, "synthetic-rotated-access");
+        let config = Config {
+            claude_credentials_path: path.to_str().unwrap().into(),
+            claude_code_command: "must-not-be-launched".into(),
+            ..Config::default()
+        };
+        reserve_claude_code_recovery_at(&dir, Utc::now()).unwrap();
+        let mut creds = test_creds();
+        try_claude_code_refresh_blocking_at(&config, &mut creds, &dir).unwrap();
+        assert_eq!(creds.access_token, "synthetic-rotated-access");
+        assert_eq!(creds.plan.as_deref(), Some("Pro"));
+        let (selected, _) = load_selected(&config).unwrap();
+        assert_eq!(claude_profile_dir(&selected).unwrap(), dir);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn recovery_rereads_before_rejecting_an_old_nonrefreshable_token() {
+        let dir = test_dir("reread-before-auth-error");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".credentials.json");
+        write_synthetic_credentials(&path, "synthetic-rotated-access");
+        let config = Config {
+            claude_credentials_path: path.to_str().unwrap().into(),
+            claude_code_command: "must-not-be-launched".into(),
+            ..Config::default()
+        };
+        let mut creds = test_creds();
+        creds.refresh_token.clear();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(super::refresh_or_recover(
+                &config,
+                &Client::new(),
+                &mut creds,
+            ))
+            .unwrap();
+        assert_eq!(creds.access_token, "synthetic-rotated-access");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn renamed_imports_do_not_trigger_renewal_of_an_unrelated_profile() {
+        let config = Config {
+            claude_credentials_path: test_dir("import")
+                .join("export.json")
+                .to_str()
+                .unwrap()
+                .into(),
+            ..Config::default()
+        };
+        assert!(claude_profile_dir(&config).is_err());
+    }
+
+    #[cfg(unix)]
+    fn fake_claude(dir: &std::path::Path, body: &str) -> Config {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir).unwrap();
+        let command = dir.join("fake-claude");
+        std::fs::write(&command, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Config {
+            claude_credentials_path: dir.join(".credentials.json").to_str().unwrap().into(),
+            claude_code_command: command.to_str().unwrap().into(),
+            ..Config::default()
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_rotation_is_read_from_the_selected_profile_even_after_nonzero_exit() {
+        let dir = test_dir("pty-rotation");
+        let config = fake_claude(
+            &dir,
+            r#"
+printf '%s\n' "$@" > "$CLAUDE_CONFIG_DIR/observed-args"
+cat > "$CLAUDE_CONFIG_DIR/.credentials.json" <<'JSON'
+{"claudeAiOauth":{"accessToken":"synthetic-cli-access","refreshToken":"synthetic-cli-refresh","expiresAt":4102444800000}}
+JSON
+exit 7
+"#,
+        );
+        let mut creds = test_creds();
+        std::fs::write(
+            &config.claude_credentials_path,
+            r#"{"claudeAiOauth":{"accessToken":"old-access","refreshToken":"old-refresh"}}"#,
+        )
+        .unwrap();
+        try_claude_code_refresh_blocking_at(&config, &mut creds, &dir).unwrap();
+        assert_eq!(creds.access_token, "synthetic-cli-access");
+        let args = std::fs::read_to_string(dir.join("observed-args")).unwrap();
+        assert!(args.contains("--tools\n\n"));
+        assert!(args.contains("\"disableAllHooks\":true"));
+        assert!(!args.contains("--setting-sources"));
+        assert!(!args.contains("--session-id"));
+        assert!(!args.contains("old-access"));
+        assert!(!args.contains("old-refresh"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_successful_cli_exit_without_rotation_does_not_claim_recovery() {
+        let dir = test_dir("pty-no-rotation");
+        let config = fake_claude(&dir, "exit 0");
+        let mut creds = test_creds();
+        std::fs::write(
+            &config.claude_credentials_path,
+            r#"{"claudeAiOauth":{"accessToken":"old-access","refreshToken":"old-refresh"}}"#,
+        )
+        .unwrap();
+        assert!(try_claude_code_refresh_blocking_at(&config, &mut creds, &dir).is_err());
+        assert_eq!(creds.access_token, "old-access");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unresponsive_cli_is_stopped_at_the_probe_deadline() {
+        let dir = test_dir("pty-timeout");
+        let config = fake_claude(&dir, "exec /bin/sleep 30");
+        let start = std::time::Instant::now();
+        assert!(
+            super::run_claude_code_touch(&config, &dir, StdDuration::from_millis(200), || false)
+                .is_err()
+        );
+        assert!(start.elapsed() < StdDuration::from_secs(3));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -612,6 +1081,67 @@ mod tests {
         );
 
         std::fs::remove_dir_all(dir).expect("remove recovery throttle test directory");
+    }
+
+    #[test]
+    fn claude_plan_is_allowlisted_subscription_metadata() {
+        assert_eq!(
+            claude_plan_label(Some("pro"), Some("default_claude_ai")),
+            Some("Pro")
+        );
+        assert_eq!(
+            claude_plan_label(Some("max"), Some("default_claude_max_5x")),
+            Some("Max 5x")
+        );
+        assert_eq!(
+            claude_plan_label(Some("max"), Some("default_claude_max_20x")),
+            Some("Max 20x")
+        );
+        assert_eq!(claude_plan_label(Some("max"), None), Some("Max"));
+        assert_eq!(claude_plan_label(Some("team"), None), Some("Team"));
+        assert_eq!(
+            claude_plan_label(Some("enterprise"), Some("default_claude_ai")),
+            Some("Enterprise")
+        );
+        assert_eq!(claude_plan_label(None, Some("default_claude_ai")), None);
+        assert_eq!(claude_plan_label(Some("injected-plan"), None), None);
+        assert_eq!(
+            claude_plan_label(Some("pro"), Some("default_claude_max_20x")),
+            Some("Max 20x")
+        );
+    }
+
+    #[test]
+    fn credentials_keep_the_allowlisted_plan_only() {
+        let creds = parse_credentials(
+            r#"{
+                "claudeAiOauth": {
+                    "accessToken": "token-access",
+                    "refreshToken": "token-refresh",
+                    "expiresAt": 1790788852303,
+                    "subscriptionType": "pro",
+                    "rateLimitTier": "default_claude_ai",
+                    "scopes": ["user:inference"]
+                }
+            }"#,
+        )
+        .expect("valid Claude credentials");
+
+        assert_eq!(creds.plan.as_deref(), Some("Pro"));
+        assert!(creds
+            .plan
+            .as_deref()
+            .is_some_and(|plan| plan != "token-access"));
+        assert!(creds
+            .plan
+            .as_deref()
+            .is_some_and(|plan| plan != "default_claude_ai"));
+    }
+
+    #[test]
+    fn usage_payload_does_not_invent_a_plan() {
+        let service = parse_usage(r#"{"five_hour":{"utilization":1}}"#).expect("valid usage");
+        assert_eq!(service.plan, None);
     }
 
     #[test]

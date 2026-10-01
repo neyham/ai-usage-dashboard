@@ -1346,8 +1346,8 @@ body {
     padding: 7px 10px;
   }
   .tm-settings {
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
   }
 }
 
@@ -1656,9 +1656,10 @@ body {
 }
 .dashboard[data-art="ip"] .gauge-figure {
   left: 50%;
-  top: 48%;
-  width: 64%;
-  height: 64%;
+  /* Svg is the top 92% of the stage. Inner stroke edge is 72% of that svg. */
+  top: 46%;
+  width: 66.24%;
+  height: 66.24%;
   bottom: auto;
   transform: translate(-50%, -50%);
   border-radius: 50%;
@@ -1674,6 +1675,12 @@ body {
 }
 .dashboard[data-art="ip"] .gauge-svg {
   z-index: 2;
+  inset: auto;
+  top: 0;
+  left: 50%;
+  width: 92%;
+  height: 92%;
+  transform: translateX(-50%);
 }
 .dashboard[data-art="ip"] .gauge-readout,
 .dashboard[data-art="ip"] .gauge-stage[data-mood="tense"] .gauge-readout,
@@ -1682,6 +1689,7 @@ body {
 .dashboard[data-art="ip"] .gauge-stage[data-tone="warn"] .gauge-readout,
 .dashboard[data-art="ip"] .gauge-stage[data-tone="danger"] .gauge-readout {
   z-index: 4;
+  bottom: 0;
   background: var(--ink);
   color: var(--cream, #fff8f0);
   border-radius: 12px;
@@ -2148,8 +2156,8 @@ body {
 .dashboard[data-art="ip"] .provider-option.provider-claude { background: #00B8C8; color: #121212; }
 .dashboard[data-art="ip"] .provider-option.provider-deepseek { background: #FFD000; color: #121212; }
 .dashboard[data-art="ip"] .provider-option.provider-grok { background: #5B21FF; color: #fff8f0; }
-.dashboard[data-art="ip"] .provider-option.provider-cursor { background: #FF62D0; color: #121212; }
-.dashboard[data-art="ip"] .provider-option.provider-antigravity { background: #009B52; color: #121212; }
+.dashboard[data-art="ip"] .provider-option.provider-cursor { background: #E86DB8; color: #121212; }
+.dashboard[data-art="ip"] .provider-option.provider-antigravity { background: #149878; color: #121212; }
 .dashboard[data-art="ip"] .provider-option.provider-codex .provider-name,
 .dashboard[data-art="ip"] .provider-option.provider-claude .provider-name,
 .dashboard[data-art="ip"] .provider-option.provider-deepseek .provider-name,

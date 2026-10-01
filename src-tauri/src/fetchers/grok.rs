@@ -486,8 +486,12 @@ fn parse_credits(body: &str) -> anyhow::Result<PeriodUsage> {
                     .flatten()
             })
         });
-    let percent =
-        product_percent.or_else(|| config.get("creditUsagePercent").and_then(number_value));
+    // creditUsagePercent is the account cap across products. A Grok Build
+    // slice is only a fallback when that combined figure is absent.
+    let percent = config
+        .get("creditUsagePercent")
+        .and_then(number_value)
+        .or(product_percent);
 
     let period = config.get("currentPeriod").and_then(Value::as_object);
     let (label, caption) = period_display(
@@ -1382,7 +1386,7 @@ EOF
     }
 
     #[test]
-    fn credits_prefer_grok_build_and_use_server_period_type() {
+    fn credits_prefer_combined_percent_and_use_server_period_type() {
         let usage = parse_credits(
             r#"{
                 "config": {
@@ -1400,10 +1404,28 @@ EOF
         )
         .expect("valid Grok credits");
 
-        assert_eq!(usage.percent, Some(37.5));
+        assert_eq!(usage.percent, Some(68.0));
         assert_eq!(usage.label, "7D");
         assert_eq!(usage.caption, "WEEKLY WINDOW");
         assert!(usage.reset_local.is_some());
+    }
+
+    #[test]
+    fn credits_fall_back_to_grok_build_when_combined_percent_is_absent() {
+        let usage = parse_credits(
+            r#"{
+                "config": {
+                    "currentPeriod": {"type":"USAGE_PERIOD_TYPE_WEEKLY"},
+                    "productUsage": [
+                        {"product":"GrokChat","usagePercent":51},
+                        {"product":"GrokBuild","usagePercent":37.5}
+                    ]
+                }
+            }"#,
+        )
+        .expect("valid product-only Grok credits");
+
+        assert_eq!(usage.percent, Some(37.5));
     }
 
     #[test]
