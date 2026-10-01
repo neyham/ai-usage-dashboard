@@ -109,6 +109,10 @@ jobs:
           if (Test-Path (Join-Path $dest 'ai-usage-dashboard.exe')) { throw 'NSIS uninstall left executable behind' }
           Write-Host 'PASS NSIS 0.8.6-to-0.8.7 upgrade/reinstall/uninstall'
           $msi = (Get-ChildItem src-tauri/target/release/bundle/msi/*_0.8.7_x64_en-US.msi | Select-Object -First 1).FullName
+          $msiPayloadDir = Join-Path $env:RUNNER_TEMP 'dashboard-msi-payload'
+          Run-Installer 'msiexec.exe' "/a `"$msi`" /qn TARGETDIR=`"$msiPayloadDir`""
+          $msiPayload = (Get-ChildItem $msiPayloadDir -Recurse -Filter 'ai-usage-dashboard.exe' | Select-Object -First 1).FullName
+          if (-not $msiPayload -or (Get-Item $msiPayload).VersionInfo.ProductVersion -notlike '0.8.7*') { throw 'MSI payload is not version 0.8.7' }
           $msiDest = Join-Path $env:RUNNER_TEMP 'dashboard-msi'
           $oldMsi = Join-Path $old 'AI-Usage-Dashboard_0.8.6_x64_en-US.msi'
           Run-Installer 'msiexec.exe' "/i `"$oldMsi`" /qn /norestart"
@@ -123,7 +127,8 @@ jobs:
           }
           if ($entries[0].DisplayVersion -ne '0.8.7') { throw 'MSI upgrade did not register 0.8.7' }
           $msiDest = $entries[0].InstallLocation
-          if ((Get-FileHash (Join-Path $msiDest 'ai-usage-dashboard.exe')).Hash -ne (Get-FileHash 'src-tauri/target/release/ai-usage-dashboard.exe').Hash) { throw 'MSI did not install the new binary' }
+          Write-Host "MSI payload version: $((Get-Item $msiPayload).VersionInfo.ProductVersion); installed version: $((Get-Item (Join-Path $msiDest 'ai-usage-dashboard.exe')).VersionInfo.ProductVersion)"
+          if ((Get-FileHash (Join-Path $msiDest 'ai-usage-dashboard.exe')).Hash -ne (Get-FileHash $msiPayload).Hash) { throw 'MSI did not install the new binary' }
           Write-Host "Registered MSI location: $msiDest"
           Test-InstalledApp (Join-Path $msiDest 'ai-usage-dashboard.exe')
           Run-Installer 'msiexec.exe' "/fa `"$msi`" /qn /norestart"
