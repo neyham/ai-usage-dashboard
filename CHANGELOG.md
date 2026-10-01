@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## [0.8.7] - 2026-10-01
 
 ### Changed
 
@@ -19,8 +19,8 @@ All notable changes to this project are documented in this file.
   Claude Code credential file (`Pro`, `Max`, `Max 5x`, `Max 20x`, `Team`,
   `Enterprise`). The usage endpoint does not return a plan. Unknown values
   stay hidden, and the credential file stays read-only.
-- Claude: an expired access token is renewed by starting Claude Code in a
-  private terminal and letting it rewrite its own credential file. The
+- Claude: expired file credentials trigger a best-effort recovery probe using Claude Code in a
+  private terminal, allowing it to renew its own credential file. The
   dashboard does not call Anthropic's token endpoint and does not send a billed
   prompt. Attempts are serialized and limited to one every 30 minutes.
   `claudeCodeRefreshEnabled` no longer gates this.

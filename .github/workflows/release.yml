@@ -55,6 +55,70 @@ jobs:
       - name: Build Windows installers
         run: npm run app:build
 
+      - name: Install, reinstall, launch and uninstall Windows packages
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $old = Join-Path $env:RUNNER_TEMP 'dashboard-previous'
+          gh release download v0.8.6 --repo $env:GITHUB_REPOSITORY --dir $old --pattern '*x64-setup.exe' --pattern '*x64_en-US.msi'
+          if ($LASTEXITCODE -ne 0) { throw 'Previous release download failed' }
+          function Run-Installer($file, $arguments) {
+            $p = Start-Process -FilePath $file -ArgumentList $arguments -Wait -PassThru
+            if ($p.ExitCode -notin @(0, 3010)) { throw "Installer failed: $file ($($p.ExitCode))" }
+          }
+          function Test-InstalledApp($exe) {
+            if (-not (Test-Path $exe)) { throw "Installed executable missing: $exe" }
+            $app = Start-Process -FilePath $exe -ArgumentList '--judge-demo' -PassThru
+            try {
+              Start-Sleep -Seconds 10
+              if ($app.HasExited) { throw "Installed app exited: $($app.ExitCode)" }
+              Write-Host "PASS installed application startup: $exe"
+            } finally {
+              if (-not $app.HasExited) { Stop-Process -Id $app.Id }
+            }
+          }
+          $nsis = (Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1).FullName
+          $dest = Join-Path $env:RUNNER_TEMP 'dashboard-nsis'
+          Run-Installer (Join-Path $old 'AI-Usage-Dashboard_0.8.6_x64-setup.exe') "/S /D=$dest"
+          Test-InstalledApp (Join-Path $dest 'ai-usage-dashboard.exe')
+          Run-Installer $nsis "/S /D=$dest"
+          if ((Get-FileHash (Join-Path $dest 'ai-usage-dashboard.exe')).Hash -ne (Get-FileHash 'src-tauri/target/release/ai-usage-dashboard.exe').Hash) { throw 'NSIS did not install the new binary' }
+          Test-InstalledApp (Join-Path $dest 'ai-usage-dashboard.exe')
+          Run-Installer $nsis "/S /D=$dest"
+          if ((Get-FileHash (Join-Path $dest 'ai-usage-dashboard.exe')).Hash -ne (Get-FileHash 'src-tauri/target/release/ai-usage-dashboard.exe').Hash) { throw 'NSIS did not install the new binary' }
+          Test-InstalledApp (Join-Path $dest 'ai-usage-dashboard.exe')
+          $uninstaller = (Get-ChildItem $dest -Filter '*uninstall*.exe' | Select-Object -First 1).FullName
+          if (-not $uninstaller) { throw 'NSIS uninstaller missing' }
+          Run-Installer $uninstaller '/S'
+          Start-Sleep -Seconds 5
+          if (Test-Path (Join-Path $dest 'ai-usage-dashboard.exe')) { throw 'NSIS uninstall left executable behind' }
+          Write-Host 'PASS NSIS 0.8.6-to-0.8.7 upgrade/reinstall/uninstall'
+          $msi = (Get-ChildItem src-tauri/target/release/bundle/msi/*.msi | Select-Object -First 1).FullName
+          $msiDest = Join-Path $env:RUNNER_TEMP 'dashboard-msi'
+          $oldMsi = Join-Path $old 'AI-Usage-Dashboard_0.8.6_x64_en-US.msi'
+          Run-Installer 'msiexec.exe' "/i `"$oldMsi`" /qn /norestart"
+          $msiLog = Join-Path $env:RUNNER_TEMP 'dashboard-msi-install.log'
+          Run-Installer 'msiexec.exe' "/i `"$msi`" /qn /norestart /L*v `"$msiLog`" INSTALLDIR=`"$msiDest`""
+          # WiX can restore the previous NSIS directory from the product registry.
+          # Validate the registered MSI location, not an assumed command-line override.
+          $entries = @(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'AI Usage Dashboard' -and $_.WindowsInstaller -eq 1 })
+          if ($entries.Count -ne 1 -or -not $entries[0].InstallLocation) {
+            Get-Content $msiLog -Tail 100
+            throw 'Expected exactly one MSI registration with an install location'
+          }
+          if ($entries[0].DisplayVersion -ne '0.8.7') { throw 'MSI upgrade did not register 0.8.7' }
+          $msiDest = $entries[0].InstallLocation
+          if ((Get-FileHash (Join-Path $msiDest 'ai-usage-dashboard.exe')).Hash -ne (Get-FileHash 'src-tauri/target/release/ai-usage-dashboard.exe').Hash) { throw 'MSI did not install the new binary' }
+          Write-Host "Registered MSI location: $msiDest"
+          Test-InstalledApp (Join-Path $msiDest 'ai-usage-dashboard.exe')
+          Run-Installer 'msiexec.exe' "/fa `"$msi`" /qn /norestart"
+          Test-InstalledApp (Join-Path $msiDest 'ai-usage-dashboard.exe')
+          Run-Installer 'msiexec.exe' "/x `"$msi`" /qn /norestart"
+          if (Test-Path (Join-Path $msiDest 'ai-usage-dashboard.exe')) { throw 'MSI uninstall left executable behind' }
+          Write-Host 'PASS MSI 0.8.6-to-0.8.7 upgrade/repair/uninstall'
+
       - name: Stage release assets
         shell: pwsh
         run: |
@@ -98,7 +162,8 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
-            pkg-config
+            pkg-config \
+            xvfb
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -136,6 +201,46 @@ jobs:
 
       - name: Build Linux bundles
         run: npm run app:build
+
+      - name: Install, reinstall, launch and uninstall Linux packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          old="$RUNNER_TEMP/dashboard-previous"
+          gh release download v0.8.6 --repo "$GITHUB_REPOSITORY" --dir "$old" --pattern '*amd64.deb' --pattern '*amd64.AppImage'
+          smoke() {
+            set +e
+            xvfb-run -a timeout 10s "$@" --judge-demo
+            result=$?
+            set -e
+            test "$result" -eq 124
+            echo "PASS installed application startup: $*"
+          }
+          deb=$(find src-tauri/target/release/bundle/deb -name '*.deb' -print -quit)
+          package=$(dpkg-deb -f "$deb" Package)
+          sudo apt-get install -y "$old/AI-Usage-Dashboard_0.8.6_amd64.deb"
+          smoke /usr/bin/ai-usage-dashboard
+          sudo apt-get install -y "$PWD/$deb"
+          cmp /usr/bin/ai-usage-dashboard src-tauri/target/release/ai-usage-dashboard
+          test "$(dpkg-query -W -f='${Version}' "$package")" = '0.8.7'
+          smoke /usr/bin/ai-usage-dashboard
+          sudo dpkg -i "$deb"
+          smoke /usr/bin/ai-usage-dashboard
+          sudo dpkg --purge "$package"
+          test ! -e /usr/bin/ai-usage-dashboard
+          echo 'PASS DEB 0.8.6-to-0.8.7 upgrade/reinstall/uninstall'
+          appimage=$(find src-tauri/target/release/bundle/appimage -name '*.AppImage' -print -quit)
+          installed="$RUNNER_TEMP/dashboard.AppImage"
+          install -m 755 "$old/AI-Usage-Dashboard_0.8.6_amd64.AppImage" "$installed"
+          smoke env APPIMAGE_EXTRACT_AND_RUN=1 "$installed"
+          install -m 755 "$appimage" "$installed"
+          smoke env APPIMAGE_EXTRACT_AND_RUN=1 "$installed"
+          install -m 755 "$appimage" "$installed"
+          smoke env APPIMAGE_EXTRACT_AND_RUN=1 "$installed"
+          rm "$installed"
+          test ! -e "$installed"
+          echo 'PASS AppImage copy/replacement/removal (extract-and-run; no FUSE)'
 
       - name: Stage release assets
         run: |
@@ -203,6 +308,50 @@ jobs:
 
       - name: Build macOS bundles
         run: npm run app:build
+
+      - name: Install, replace, launch and remove app from DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          old="$RUNNER_TEMP/dashboard-previous"
+          gh release download v0.8.6 --repo "$GITHUB_REPOSITORY" --dir "$old" --pattern '*aarch64.dmg'
+          dmg=$(find src-tauri/target/release/bundle/dmg -name '*.dmg' -print -quit)
+          mount="$RUNNER_TEMP/dashboard-volume"
+          apps="$RUNNER_TEMP/Applications"
+          mkdir -p "$mount" "$apps"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount"
+          trap 'hdiutil detach "$mount" || true' EXIT
+          source_app=$(find "$mount" -maxdepth 1 -name '*.app' -print -quit)
+          test -n "$source_app"
+          installed="$apps/AI Usage Dashboard.app"
+          smoke() {
+            "$installed/Contents/MacOS/ai-usage-dashboard" --judge-demo &
+            app_pid=$!
+            sleep 10
+            kill -0 "$app_pid"
+            kill "$app_pid"
+            wait "$app_pid" || true
+            echo 'PASS installed macOS application startup'
+          }
+          old_mount="$RUNNER_TEMP/dashboard-previous-volume"
+          mkdir -p "$old_mount"
+          hdiutil attach "$old/AI-Usage-Dashboard_0.8.6_aarch64.dmg" -nobrowse -readonly -mountpoint "$old_mount"
+          ditto "$old_mount/AI Usage Dashboard.app" "$installed"
+          smoke
+          hdiutil detach "$old_mount"
+          rm -rf "$installed"
+          ditto "$source_app" "$installed"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$installed/Contents/Info.plist")" = '0.8.7'
+          smoke
+          rm -rf "$installed"
+          ditto "$source_app" "$installed"
+          smoke
+          rm -rf "$installed"
+          test ! -e "$installed"
+          hdiutil detach "$mount"
+          trap - EXIT
+          echo 'PASS DMG 0.8.6-to-0.8.7 replacement/startup/removal'
 
       - name: Stage release assets
         run: |
@@ -286,5 +435,6 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" $(find release -type f | sort) \
             --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
+            --draft \
             --title "AI Usage Dashboard ${GITHUB_REF_NAME}" \
             --notes-file "${notes}"
