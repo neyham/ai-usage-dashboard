@@ -76,20 +76,31 @@ jobs:
               if ($app.HasExited) { throw "Installed app exited: $($app.ExitCode)" }
               Write-Host "PASS installed application startup: $exe"
             } finally {
-              if (-not $app.HasExited) { Stop-Process -Id $app.Id }
+              if (-not $app.HasExited) { Stop-Process -Id $app.Id; $app.WaitForExit() }
             }
           }
           $nsis = (Get-ChildItem src-tauri/target/release/bundle/nsis/*_0.8.7_x64-setup.exe | Select-Object -First 1).FullName
+          $payloadDir = Join-Path $env:RUNNER_TEMP 'dashboard-nsis-payload'
+          7z x $nsis "-o$payloadDir" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to extract NSIS payload' }
+          $payload = (Get-ChildItem $payloadDir -Recurse -Filter 'ai-usage-dashboard.exe' | Select-Object -First 1).FullName
+          if (-not $payload) { throw 'NSIS executable payload missing' }
+          Write-Host "NSIS payload version: $((Get-Item $payload).VersionInfo.ProductVersion)"
+          if ((Get-Item $payload).VersionInfo.ProductVersion -notlike '0.8.7*') { throw 'NSIS payload is not version 0.8.7' }
           $dest = Join-Path $env:RUNNER_TEMP 'dashboard-nsis'
           Run-Installer (Join-Path $old 'AI-Usage-Dashboard_0.8.6_x64-setup.exe') "/S /D=$dest"
           Test-InstalledApp (Join-Path $dest 'ai-usage-dashboard.exe')
           Write-Host "Installing candidate: $nsis"
           Run-Installer $nsis "/S /D=$dest"
-          if ((Get-FileHash (Join-Path $dest 'ai-usage-dashboard.exe')).Hash -ne (Get-FileHash 'src-tauri/target/release/ai-usage-dashboard.exe').Hash) { throw 'NSIS did not install the new binary' }
+          Write-Host "Installed version: $((Get-Item (Join-Path $dest 'ai-usage-dashboard.exe')).VersionInfo.ProductVersion)"
+          Write-Host "Payload hash: $((Get-FileHash $payload).Hash); installed hash: $((Get-FileHash (Join-Path $dest 'ai-usage-dashboard.exe')).Hash)"
+          if ((Get-FileHash (Join-Path $dest 'ai-usage-dashboard.exe')).Hash -ne (Get-FileHash $payload).Hash) { throw 'NSIS did not install the new binary' }
           Test-InstalledApp (Join-Path $dest 'ai-usage-dashboard.exe')
           Write-Host "Installing candidate: $nsis"
           Run-Installer $nsis "/S /D=$dest"
-          if ((Get-FileHash (Join-Path $dest 'ai-usage-dashboard.exe')).Hash -ne (Get-FileHash 'src-tauri/target/release/ai-usage-dashboard.exe').Hash) { throw 'NSIS did not install the new binary' }
+          Write-Host "Installed version: $((Get-Item (Join-Path $dest 'ai-usage-dashboard.exe')).VersionInfo.ProductVersion)"
+          Write-Host "Payload hash: $((Get-FileHash $payload).Hash); installed hash: $((Get-FileHash (Join-Path $dest 'ai-usage-dashboard.exe')).Hash)"
+          if ((Get-FileHash (Join-Path $dest 'ai-usage-dashboard.exe')).Hash -ne (Get-FileHash $payload).Hash) { throw 'NSIS did not install the new binary' }
           Test-InstalledApp (Join-Path $dest 'ai-usage-dashboard.exe')
           $uninstaller = (Get-ChildItem $dest -Filter '*uninstall*.exe' | Select-Object -First 1).FullName
           if (-not $uninstaller) { throw 'NSIS uninstaller missing' }
