@@ -79,13 +79,15 @@ jobs:
               if (-not $app.HasExited) { Stop-Process -Id $app.Id }
             }
           }
-          $nsis = (Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1).FullName
+          $nsis = (Get-ChildItem src-tauri/target/release/bundle/nsis/*_0.8.7_x64-setup.exe | Select-Object -First 1).FullName
           $dest = Join-Path $env:RUNNER_TEMP 'dashboard-nsis'
           Run-Installer (Join-Path $old 'AI-Usage-Dashboard_0.8.6_x64-setup.exe') "/S /D=$dest"
           Test-InstalledApp (Join-Path $dest 'ai-usage-dashboard.exe')
+          Write-Host "Installing candidate: $nsis"
           Run-Installer $nsis "/S /D=$dest"
           if ((Get-FileHash (Join-Path $dest 'ai-usage-dashboard.exe')).Hash -ne (Get-FileHash 'src-tauri/target/release/ai-usage-dashboard.exe').Hash) { throw 'NSIS did not install the new binary' }
           Test-InstalledApp (Join-Path $dest 'ai-usage-dashboard.exe')
+          Write-Host "Installing candidate: $nsis"
           Run-Installer $nsis "/S /D=$dest"
           if ((Get-FileHash (Join-Path $dest 'ai-usage-dashboard.exe')).Hash -ne (Get-FileHash 'src-tauri/target/release/ai-usage-dashboard.exe').Hash) { throw 'NSIS did not install the new binary' }
           Test-InstalledApp (Join-Path $dest 'ai-usage-dashboard.exe')
@@ -95,7 +97,7 @@ jobs:
           Start-Sleep -Seconds 5
           if (Test-Path (Join-Path $dest 'ai-usage-dashboard.exe')) { throw 'NSIS uninstall left executable behind' }
           Write-Host 'PASS NSIS 0.8.6-to-0.8.7 upgrade/reinstall/uninstall'
-          $msi = (Get-ChildItem src-tauri/target/release/bundle/msi/*.msi | Select-Object -First 1).FullName
+          $msi = (Get-ChildItem src-tauri/target/release/bundle/msi/*_0.8.7_x64_en-US.msi | Select-Object -First 1).FullName
           $msiDest = Join-Path $env:RUNNER_TEMP 'dashboard-msi'
           $oldMsi = Join-Path $old 'AI-Usage-Dashboard_0.8.6_x64_en-US.msi'
           Run-Installer 'msiexec.exe' "/i `"$oldMsi`" /qn /norestart"
@@ -217,12 +219,14 @@ jobs:
             test "$result" -eq 124
             echo "PASS installed application startup: $*"
           }
-          deb=$(find src-tauri/target/release/bundle/deb -name '*.deb' -print -quit)
+          deb=$(find src-tauri/target/release/bundle/deb -name '*_0.8.7_amd64.deb' -print -quit)
           package=$(dpkg-deb -f "$deb" Package)
           sudo apt-get install -y "$old/AI-Usage-Dashboard_0.8.6_amd64.deb"
           smoke /usr/bin/ai-usage-dashboard
           sudo apt-get install -y "$PWD/$deb"
-          cmp /usr/bin/ai-usage-dashboard src-tauri/target/release/ai-usage-dashboard
+          expected="$RUNNER_TEMP/dashboard-deb-payload"
+          dpkg-deb -x "$deb" "$expected"
+          cmp /usr/bin/ai-usage-dashboard "$expected/usr/bin/ai-usage-dashboard"
           test "$(dpkg-query -W -f='${Version}' "$package")" = '0.8.7'
           smoke /usr/bin/ai-usage-dashboard
           sudo dpkg -i "$deb"
@@ -230,7 +234,7 @@ jobs:
           sudo dpkg --purge "$package"
           test ! -e /usr/bin/ai-usage-dashboard
           echo 'PASS DEB 0.8.6-to-0.8.7 upgrade/reinstall/uninstall'
-          appimage=$(find src-tauri/target/release/bundle/appimage -name '*.AppImage' -print -quit)
+          appimage=$(find src-tauri/target/release/bundle/appimage -name '*_0.8.7_amd64.AppImage' -print -quit)
           installed="$RUNNER_TEMP/dashboard.AppImage"
           install -m 755 "$old/AI-Usage-Dashboard_0.8.6_amd64.AppImage" "$installed"
           smoke env APPIMAGE_EXTRACT_AND_RUN=1 "$installed"
@@ -316,7 +320,7 @@ jobs:
           set -euo pipefail
           old="$RUNNER_TEMP/dashboard-previous"
           gh release download v0.8.6 --repo "$GITHUB_REPOSITORY" --dir "$old" --pattern '*aarch64.dmg'
-          dmg=$(find src-tauri/target/release/bundle/dmg -name '*.dmg' -print -quit)
+          dmg=$(find src-tauri/target/release/bundle/dmg -name '*_0.8.7_*.dmg' -print -quit)
           mount="$RUNNER_TEMP/dashboard-volume"
           apps="$RUNNER_TEMP/Applications"
           mkdir -p "$mount" "$apps"
