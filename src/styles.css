@@ -1708,6 +1708,16 @@ body {
   object-fit: contain;
   object-position: bottom center;
 }
+/* Position the artwork inside the fixed circular mask, without moving the ring. */
+.dashboard[data-art="ip"] .panel-cursor .gauge-figure .panel-mascot,
+.dashboard[data-art="ip"] .panel-antigravity .gauge-figure .panel-mascot {
+  translate: 0 8%;
+}
+.dashboard[data-art="ip"] .panel-grok .gauge-figure .panel-mascot {
+  /* Keep the sprite's straight waist edge below the circular crop. */
+  translate: 0 10%;
+  scale: 1.12;
+}
 .dashboard[data-art="ip"] .panel[data-emerge="left"] .panel-mascot {
   object-position: bottom left;
 }

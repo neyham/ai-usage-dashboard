@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.8.8] - 2026-10-03
+
+### Fixed
+
+- Improve Grok, Cursor, and Antigravity mascot positioning inside the IP skin's
+  circular gauges. Enlarge and lower Grok to hide its straight waist edge.
+- Release installer checks use the candidate version from package metadata and
+  test upgrades from 0.8.7 on Windows, Linux, and macOS.
+- Reject release tags that disagree with application or lockfile versions.
+
+### Changed
+
+- Refresh the default four-card and six-ring README screenshots with synthetic data.
+
 ## [0.8.7] - 2026-10-01
 
 ### Changed

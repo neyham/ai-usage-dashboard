@@ -8,8 +8,23 @@ on:
 permissions:
   contents: write
 
+env:
+  PREVIOUS_VERSION: "0.8.7"
+
 jobs:
+  validate:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check tag and application versions
+        run: node scripts/check-release-version.mjs "$GITHUB_REF_NAME"
+
   windows:
+    needs: validate
     name: Build Windows
     runs-on: windows-latest
     timeout-minutes: 60
@@ -61,8 +76,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $previous = $env:PREVIOUS_VERSION
           $old = Join-Path $env:RUNNER_TEMP 'dashboard-previous'
-          gh release download v0.8.6 --repo $env:GITHUB_REPOSITORY --dir $old --pattern '*x64-setup.exe' --pattern '*x64_en-US.msi'
+          gh release download "v$previous" --repo $env:GITHUB_REPOSITORY --dir $old --pattern '*x64-setup.exe' --pattern '*x64_en-US.msi'
           if ($LASTEXITCODE -ne 0) { throw 'Previous release download failed' }
           function Run-Installer($file, $arguments) {
             $p = Start-Process -FilePath $file -ArgumentList $arguments -Wait -PassThru
@@ -79,16 +96,16 @@ jobs:
               if (-not $app.HasExited) { Stop-Process -Id $app.Id; $app.WaitForExit() }
             }
           }
-          $nsis = (Get-ChildItem src-tauri/target/release/bundle/nsis/*_0.8.7_x64-setup.exe | Select-Object -First 1).FullName
+          $nsis = (Get-ChildItem "src-tauri/target/release/bundle/nsis/*_${version}_x64-setup.exe" | Select-Object -First 1).FullName
           $payloadDir = Join-Path $env:RUNNER_TEMP 'dashboard-nsis-payload'
           7z x $nsis "-o$payloadDir" -y | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'Unable to extract NSIS payload' }
           $payload = (Get-ChildItem $payloadDir -Recurse -Filter 'ai-usage-dashboard.exe' | Select-Object -First 1).FullName
           if (-not $payload) { throw 'NSIS executable payload missing' }
           Write-Host "NSIS payload version: $((Get-Item $payload).VersionInfo.ProductVersion)"
-          if ((Get-Item $payload).VersionInfo.ProductVersion -notlike '0.8.7*') { throw 'NSIS payload is not version 0.8.7' }
+          if ((Get-Item $payload).VersionInfo.ProductVersion -notlike "$version*") { throw "NSIS payload is not version $version" }
           $dest = Join-Path $env:RUNNER_TEMP 'dashboard-nsis'
-          Run-Installer (Join-Path $old 'AI-Usage-Dashboard_0.8.6_x64-setup.exe') "/S /D=$dest"
+          Run-Installer (Join-Path $old "AI-Usage-Dashboard_${previous}_x64-setup.exe") "/S /D=$dest"
           Test-InstalledApp (Join-Path $dest 'ai-usage-dashboard.exe')
           Write-Host "Installing candidate: $nsis"
           Run-Installer $nsis "/S /D=$dest"
@@ -107,14 +124,14 @@ jobs:
           Run-Installer $uninstaller '/S'
           Start-Sleep -Seconds 5
           if (Test-Path (Join-Path $dest 'ai-usage-dashboard.exe')) { throw 'NSIS uninstall left executable behind' }
-          Write-Host 'PASS NSIS 0.8.6-to-0.8.7 upgrade/reinstall/uninstall'
-          $msi = (Get-ChildItem src-tauri/target/release/bundle/msi/*_0.8.7_x64_en-US.msi | Select-Object -First 1).FullName
+          Write-Host "PASS NSIS $previous-to-$version upgrade/reinstall/uninstall"
+          $msi = (Get-ChildItem "src-tauri/target/release/bundle/msi/*_${version}_x64_en-US.msi" | Select-Object -First 1).FullName
           $msiPayloadDir = Join-Path $env:RUNNER_TEMP 'dashboard-msi-payload'
           Run-Installer 'msiexec.exe' "/a `"$msi`" /qn TARGETDIR=`"$msiPayloadDir`""
           $msiPayload = (Get-ChildItem $msiPayloadDir -Recurse -Filter 'ai-usage-dashboard.exe' | Select-Object -First 1).FullName
-          if (-not $msiPayload -or (Get-Item $msiPayload).VersionInfo.ProductVersion -notlike '0.8.7*') { throw 'MSI payload is not version 0.8.7' }
+          if (-not $msiPayload -or (Get-Item $msiPayload).VersionInfo.ProductVersion -notlike "$version*") { throw "MSI payload is not version $version" }
           $msiDest = Join-Path $env:RUNNER_TEMP 'dashboard-msi'
-          $oldMsi = Join-Path $old 'AI-Usage-Dashboard_0.8.6_x64_en-US.msi'
+          $oldMsi = Join-Path $old "AI-Usage-Dashboard_${previous}_x64_en-US.msi"
           Run-Installer 'msiexec.exe' "/i `"$oldMsi`" /qn /norestart"
           $msiLog = Join-Path $env:RUNNER_TEMP 'dashboard-msi-install.log'
           Run-Installer 'msiexec.exe' "/i `"$msi`" /qn /norestart /L*v `"$msiLog`" INSTALLDIR=`"$msiDest`""
@@ -125,7 +142,7 @@ jobs:
             Get-Content $msiLog -Tail 100
             throw 'Expected exactly one MSI registration with an install location'
           }
-          if ($entries[0].DisplayVersion -ne '0.8.7') { throw 'MSI upgrade did not register 0.8.7' }
+          if ($entries[0].DisplayVersion -ne $version) { throw "MSI upgrade did not register $version" }
           $msiDest = $entries[0].InstallLocation
           Write-Host "MSI payload version: $((Get-Item $msiPayload).VersionInfo.ProductVersion); installed version: $((Get-Item (Join-Path $msiDest 'ai-usage-dashboard.exe')).VersionInfo.ProductVersion)"
           if ((Get-FileHash (Join-Path $msiDest 'ai-usage-dashboard.exe')).Hash -ne (Get-FileHash $msiPayload).Hash) { throw 'MSI did not install the new binary' }
@@ -135,7 +152,7 @@ jobs:
           Test-InstalledApp (Join-Path $msiDest 'ai-usage-dashboard.exe')
           Run-Installer 'msiexec.exe' "/x `"$msi`" /qn /norestart"
           if (Test-Path (Join-Path $msiDest 'ai-usage-dashboard.exe')) { throw 'MSI uninstall left executable behind' }
-          Write-Host 'PASS MSI 0.8.6-to-0.8.7 upgrade/repair/uninstall'
+          Write-Host "PASS MSI $previous-to-$version upgrade/repair/uninstall"
 
       - name: Stage release assets
         shell: pwsh
@@ -158,6 +175,7 @@ jobs:
           if-no-files-found: error
 
   linux:
+    needs: validate
     name: Build Linux
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -225,8 +243,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          previous="$PREVIOUS_VERSION"
           old="$RUNNER_TEMP/dashboard-previous"
-          gh release download v0.8.6 --repo "$GITHUB_REPOSITORY" --dir "$old" --pattern '*amd64.deb' --pattern '*amd64.AppImage'
+          gh release download "v${previous}" --repo "$GITHUB_REPOSITORY" --dir "$old" --pattern '*amd64.deb' --pattern '*amd64.AppImage'
           smoke() {
             set +e
             xvfb-run -a timeout 10s "$@" --judge-demo
@@ -235,24 +255,24 @@ jobs:
             test "$result" -eq 124
             echo "PASS installed application startup: $*"
           }
-          deb=$(find src-tauri/target/release/bundle/deb -name '*_0.8.7_amd64.deb' -print -quit)
+          deb=$(find src-tauri/target/release/bundle/deb -name "*_${version}_amd64.deb" -print -quit)
           package=$(dpkg-deb -f "$deb" Package)
-          sudo apt-get install -y "$old/AI-Usage-Dashboard_0.8.6_amd64.deb"
+          sudo apt-get install -y "$old/AI-Usage-Dashboard_${previous}_amd64.deb"
           smoke /usr/bin/ai-usage-dashboard
           sudo apt-get install -y "$PWD/$deb"
           expected="$RUNNER_TEMP/dashboard-deb-payload"
           dpkg-deb -x "$deb" "$expected"
           cmp /usr/bin/ai-usage-dashboard "$expected/usr/bin/ai-usage-dashboard"
-          test "$(dpkg-query -W -f='${Version}' "$package")" = '0.8.7'
+          test "$(dpkg-query -W -f='${Version}' "$package")" = "$version"
           smoke /usr/bin/ai-usage-dashboard
           sudo dpkg -i "$deb"
           smoke /usr/bin/ai-usage-dashboard
           sudo dpkg --purge "$package"
           test ! -e /usr/bin/ai-usage-dashboard
-          echo 'PASS DEB 0.8.6-to-0.8.7 upgrade/reinstall/uninstall'
-          appimage=$(find src-tauri/target/release/bundle/appimage -name '*_0.8.7_amd64.AppImage' -print -quit)
+          echo "PASS DEB ${previous}-to-${version} upgrade/reinstall/uninstall"
+          appimage=$(find src-tauri/target/release/bundle/appimage -name "*_${version}_amd64.AppImage" -print -quit)
           installed="$RUNNER_TEMP/dashboard.AppImage"
-          install -m 755 "$old/AI-Usage-Dashboard_0.8.6_amd64.AppImage" "$installed"
+          install -m 755 "$old/AI-Usage-Dashboard_${previous}_amd64.AppImage" "$installed"
           smoke env APPIMAGE_EXTRACT_AND_RUN=1 "$installed"
           install -m 755 "$appimage" "$installed"
           smoke env APPIMAGE_EXTRACT_AND_RUN=1 "$installed"
@@ -284,6 +304,7 @@ jobs:
           if-no-files-found: error
 
   macos:
+    needs: validate
     name: Build macOS
     runs-on: macos-latest
     timeout-minutes: 60
@@ -334,9 +355,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          previous="$PREVIOUS_VERSION"
           old="$RUNNER_TEMP/dashboard-previous"
-          gh release download v0.8.6 --repo "$GITHUB_REPOSITORY" --dir "$old" --pattern '*aarch64.dmg'
-          dmg=$(find src-tauri/target/release/bundle/dmg -name '*_0.8.7_*.dmg' -print -quit)
+          gh release download "v${previous}" --repo "$GITHUB_REPOSITORY" --dir "$old" --pattern '*aarch64.dmg'
+          dmg=$(find src-tauri/target/release/bundle/dmg -name "*_${version}_*.dmg" -print -quit)
           mount="$RUNNER_TEMP/dashboard-volume"
           apps="$RUNNER_TEMP/Applications"
           mkdir -p "$mount" "$apps"
@@ -356,13 +379,13 @@ jobs:
           }
           old_mount="$RUNNER_TEMP/dashboard-previous-volume"
           mkdir -p "$old_mount"
-          hdiutil attach "$old/AI-Usage-Dashboard_0.8.6_aarch64.dmg" -nobrowse -readonly -mountpoint "$old_mount"
+          hdiutil attach "$old/AI-Usage-Dashboard_${previous}_aarch64.dmg" -nobrowse -readonly -mountpoint "$old_mount"
           ditto "$old_mount/AI Usage Dashboard.app" "$installed"
           smoke
           hdiutil detach "$old_mount"
           rm -rf "$installed"
           ditto "$source_app" "$installed"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$installed/Contents/Info.plist")" = '0.8.7'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$installed/Contents/Info.plist")" = "$version"
           smoke
           rm -rf "$installed"
           ditto "$source_app" "$installed"
@@ -371,7 +394,7 @@ jobs:
           test ! -e "$installed"
           hdiutil detach "$mount"
           trap - EXIT
-          echo 'PASS DMG 0.8.6-to-0.8.7 replacement/startup/removal'
+          echo "PASS DMG ${previous}-to-${version} replacement/startup/removal"
 
       - name: Stage release assets
         run: |
