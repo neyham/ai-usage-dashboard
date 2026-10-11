@@ -7,6 +7,9 @@ All notable changes to this project are documented in this file.
 ### Fixed
 
 - Codex usage requests send `Accept: application/json`.
+- Stopping a Claude Code login probe on Linux no longer kills unrelated
+  processes. procps 4.0.4 `kill` read `-KILL -19` as `kill(-1)`; the
+  process-group ID is now passed after `--`. This also hung Linux CI.
 
 ### Changed
 
