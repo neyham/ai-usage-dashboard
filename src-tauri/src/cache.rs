@@ -2,7 +2,7 @@
 //! Each service keeps its last successful payload plus a timestamp so the UI
 //! can degrade gracefully and mark data older than 6 hours as possibly stale.
 
-use crate::fs_util::atomic_write;
+use crate::fs_util::{atomic_write_private, restrict_file_to_owner};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -48,7 +48,11 @@ pub fn cache_path() -> PathBuf {
 
 impl CacheState {
     pub fn load() -> Self {
-        match std::fs::read_to_string(cache_path()) {
+        let path = cache_path();
+        // Usage and balance are private even without credentials. Tighten files
+        // written by older versions; best effort, since the cache holds no secrets.
+        let _ = restrict_file_to_owner(&path);
+        match std::fs::read_to_string(&path) {
             Ok(text) => parse_cache_text(&text),
             Err(_) => Self::default(),
         }
@@ -58,7 +62,7 @@ impl CacheState {
         let dir = cache_dir();
         std::fs::create_dir_all(&dir)?;
         let text = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
-        atomic_write(&cache_path(), &text)
+        atomic_write_private(&cache_path(), &text)
     }
 
     pub fn get(&self, key: &str) -> Option<&CachedCard> {

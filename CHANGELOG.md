@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.8.9] - 2026-10-11
 
 ### Fixed
 
@@ -10,11 +10,15 @@ All notable changes to this project are documented in this file.
 - Stopping a Claude Code login probe on Linux no longer kills unrelated
   processes. procps 4.0.4 `kill` read `-KILL -19` as `kill(-1)`; the
   process-group ID is now passed after `--`. This also hung Linux CI.
+- The usage cache (`state.json`) is written owner-only (`0600`) on Unix, and
+  files from older versions are tightened on load.
 
 ### Changed
 
 - Require Rust 1.90 and update Tauri to 2.12, Vite to 8, and
   `@vitejs/plugin-react` to 6, plus Playwright, PostCSS, and tokio.
+- Source builds require Node.js 20.19+ or 22.12+ (needed by Vite 8).
+- Release upgrade checks use 0.8.8 as the baseline.
 - Drop the unused rustls TLS backend. All providers already used the OS TLS
   stack, which became reqwest's default once `native-tls` was enabled in 0.8.4.
 
