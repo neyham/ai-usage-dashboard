@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Codex usage requests send `Accept: application/json`.
+
+### Changed
+
+- Require Rust 1.90 and update Tauri to 2.12, Vite to 8, and
+  `@vitejs/plugin-react` to 6, plus Playwright, PostCSS, and tokio.
+- Drop the unused rustls TLS backend. All providers already used the OS TLS
+  stack, which became reqwest's default once `native-tls` was enabled in 0.8.4.
+
 ## [0.8.8] - 2026-10-03
 
 ### Fixed

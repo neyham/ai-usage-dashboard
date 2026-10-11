@@ -193,6 +193,7 @@ fn window_reset(window: Option<&Map<String, Value>>) -> Option<String> {
 fn authenticated_get(client: &Client, url: &str, auth: &CodexAuth) -> reqwest::RequestBuilder {
     let request = client
         .get(url)
+        .header("Accept", "application/json")
         .header("Authorization", format!("Bearer {}", auth.token));
     match &auth.account_id {
         Some(account_id) => request.header("ChatGPT-Account-Id", account_id),
@@ -287,6 +288,23 @@ mod tests {
     use crate::util::local_label;
     use serde_json::json;
     use std::io::Write;
+
+    #[test]
+    fn codex_usage_request_asks_for_json_with_account_scope() {
+        let client = super::super::build_client(2).unwrap();
+        let auth = super::CodexAuth {
+            token: "synthetic-token".into(),
+            account_id: Some("synthetic-account".into()),
+        };
+        let request = super::authenticated_get(&client, super::USAGE_URL, &auth)
+            .build()
+            .unwrap();
+        let headers = request.headers();
+
+        assert_eq!(headers["accept"], "application/json");
+        assert_eq!(headers["authorization"], "Bearer synthetic-token");
+        assert_eq!(headers["chatgpt-account-id"], "synthetic-account");
+    }
 
     #[test]
     fn codex_used_percent_is_already_percent_scale() {

@@ -79,8 +79,9 @@ impl From<AuthError> for FetchError {
 }
 
 fn cursor_http_client(timeout_seconds: u64) -> anyhow::Result<Client> {
-    // cursor.com sits behind a WAF that has 403'd the shared rustls client
-    // while the same cookie succeeds with OpenSSL/SecureTransport/SChannel.
+    // cursor.com sits behind a WAF that 403'd rustls while the same cookie
+    // succeeds with OpenSSL/SecureTransport/SChannel. The shared client now
+    // uses the OS TLS stack too; keep this explicit so it cannot regress.
     Ok(Client::builder()
         .timeout(StdDuration::from_secs(timeout_seconds))
         .connect_timeout(StdDuration::from_secs(timeout_seconds))
@@ -156,7 +157,7 @@ pub async fn fetch(config: &Config, _shared: &Client) -> Result<CursorService, F
 
 fn usage_request(client: &Client, cookie: &str) -> RequestBuilder {
     // 0.8.2's working Surface request sent Origin on this GET. CodexBar omits it;
-    // keep Origin so a rustls/WAF path that requires it still matches 0.8.2.
+    // keep Origin so a WAF path that requires it still matches 0.8.2.
     client
         .get(USAGE_URL)
         .header("Accept", "application/json")

@@ -17,7 +17,6 @@ export default defineConfig({
   // Produce assets relative to index.html so Tauri can load them from disk.
   build: {
     target: "es2021",
-    minify: "esbuild",
     sourcemap: false,
   },
 });

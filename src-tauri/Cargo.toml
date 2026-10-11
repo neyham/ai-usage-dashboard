@@ -7,7 +7,7 @@ license = "MIT"
 repository = "https://github.com/neyham/ai-usage-dashboard"
 homepage = "https://github.com/neyham/ai-usage-dashboard"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.90"
 
 [lib]
 name = "ai_usage_dashboard_lib"
@@ -20,7 +20,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 tokio = { version = "1", features = ["time", "rt", "sync"] }
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"

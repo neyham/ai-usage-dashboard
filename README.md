@@ -227,7 +227,7 @@ Command-line fallbacks:
 ## Source build requirements
 
 - Node.js 18 or later.
-- Rust 1.88 or later.
+- Rust 1.90 or later.
 
 **Windows:** `x86_64-pc-windows-msvc` toolchain and Visual Studio Build Tools with
 **Desktop development with C++**. Build from PowerShell for Windows integration
