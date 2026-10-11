@@ -561,8 +561,10 @@ fn terminate_claude_touch(child: &mut Box<dyn Child + Send + Sync>) {
     // not cover grandchildren if Claude Code handles that signal.
     #[cfg(unix)]
     if let Some(pid) = pid {
+        // End option parsing before the negative process-group ID. procps 4.0.4
+        // otherwise truncates it to one digit: -12345 becomes -1 (all processes).
         let _ = std::process::Command::new("kill")
-            .args(["-KILL", &format!("-{pid}")])
+            .args(["-KILL", "--", &format!("-{pid}")])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
