@@ -54,9 +54,21 @@ type AnyService = (
   onDemandPercent?: number;
   grokBotPercent?: number;
   grokBotResetLocal?: string;
+  unified?: boolean;
+  productUsage?: { label: string; percent: number }[];
+  prepaidBalanceCents?: number;
+  claudeFiveHourPercent?: number;
+  claudeSevenDayPercent?: number;
+  claudeFiveHourResetLocal?: string;
+  claudeSevenDayResetLocal?: string;
 };
 
-type GaugeWindow = RingWindow & { reset?: string; unknown?: boolean };
+type GaugeWindow = RingWindow & {
+  reset?: string;
+  unknown?: boolean;
+  group?: string;
+  segments?: { label: string; percent: number }[];
+};
 
 function formatPercent(value: number): string {
   const pct = Math.max(0, Math.min(100, value));
@@ -84,14 +96,19 @@ function shownPercent(win: GaugeWindow): string {
 }
 
 function legendText(win: GaugeWindow, compact = false): string {
-  if (compact) return `${win.label} ${shownPercent(win)}`;
+  const label = win.group ? `${win.group} ${win.label}` : win.label;
+  if (compact) return `${label} ${shownPercent(win)}`;
   return win.reset
-    ? `${win.label} ${shownPercent(win)} RESET ${win.reset}`
-    : `${win.label} ${shownPercent(win)}`;
+    ? `${label} ${shownPercent(win)} RESET ${win.reset}`
+    : `${label} ${shownPercent(win)}`;
 }
 
-function displayPlan(plan?: string): string | undefined {
+/** X Subscription tiers; xAI still reports legacy names for some switched seats. */
+const X_TIERS = new Set(["plus", "premium", "super", "ultra"]);
+
+function displayPlan(plan?: string, xPool = false): string | undefined {
   if (!plan?.trim()) return undefined;
+  if (xPool && !X_TIERS.has(plan.trim().toLowerCase())) return undefined;
   if (plan.trim().toLowerCase() === "antigravity") {
     return undefined;
   }
@@ -110,12 +127,35 @@ function windowsFor(kind: Kind, service: AnyService): {
   inner?: GaugeWindow;
   extra: GaugeWindow[];
   legend?: GaugeWindow[];
+  /** Bar-meter rows when they differ from the ring legend. */
+  bars?: GaugeWindow[];
 } {
   if (kind === "deepseek") return { extra: [] };
 
   if (kind === "grok") {
     const period = windowOf(service.periodLabel ?? "PERIOD", service.usagePercent, service.usageResetLocal);
     const month = windowOf("MONTH", service.monthlyPercent, service.monthlyResetLocal);
+    const products = (service.productUsage ?? [])
+      .filter((lane) => lane.percent > 0)
+      .map((lane) => windowOf(lane.label, lane.percent))
+      .filter((win): win is GaugeWindow => Boolean(win));
+    if (service.unified && period && products.length > 0) {
+      // One shared X pool: a single bar whose fill is split by product.
+      const pool: GaugeWindow = {
+        ...period,
+        segments: products.map(({ label, percent }) => ({ label, percent })),
+      };
+      // Bars draw one split bar; the ring keeps the pool outside, the busiest
+      // product inside, and lists every product in its legend.
+      const ranked = [...products].sort((left, right) => right.percent - left.percent);
+      return {
+        outer: pool,
+        inner: ranked[0],
+        extra: ranked.slice(1),
+        legend: [pool, ...products],
+        bars: [pool],
+      };
+    }
     if (period && month) return { outer: period, inner: month, extra: [] };
     if (period || month) return { outer: period ?? month, extra: [] };
     if (service.usageResetLocal) {
@@ -148,6 +188,31 @@ function windowsFor(kind: Kind, service: AnyService): {
       extra: ranked.slice(2),
       legend: lanes,
     };
+  }
+
+  if (kind === "antigravity") {
+    const claudeSeven = windowOf("7D", service.claudeSevenDayPercent, service.claudeSevenDayResetLocal);
+    const claudeFive = windowOf("5H", service.claudeFiveHourPercent, service.claudeFiveHourResetLocal);
+    const geminiSeven = windowOf("7D", service.sevenDayPercent, service.sevenDayResetLocal);
+    const geminiFive = windowOf("5H", service.fiveHourPercent, service.fiveHourResetLocal);
+    if (claudeSeven || claudeFive) {
+      // Two quota groups: Gemini, then Claude and GPT models.
+      const tag = (group: string, wins: (GaugeWindow | undefined)[]): GaugeWindow[] =>
+        wins.filter((win): win is GaugeWindow => Boolean(win)).map((win) => ({ ...win, group }));
+      const lanes = [
+        ...tag("GEMINI", [geminiSeven, geminiFive]),
+        ...tag("CLAUDE · GPT", [claudeSeven, claudeFive]),
+      ];
+      // The ring only draws Gemini (7D outside, 5H inside). Claude/GPT is
+      // listed in the legend under its group name, never on the ring.
+      const [outer, inner] = lanes.filter((win) => win.group === "GEMINI");
+      return {
+        outer,
+        inner,
+        extra: lanes.filter((win) => win !== outer && win !== inner),
+        legend: lanes,
+      };
+    }
   }
 
   const five = windowOf("5H", service.fiveHourPercent, service.fiveHourResetLocal);
@@ -217,8 +282,8 @@ function ariaFor(
     .filter((win): win is GaugeWindow => Boolean(win))
     .map((win) =>
       win.unknown
-        ? `${win.label} unknown${win.reset ? `, resets ${win.reset}` : ""}`
-        : `${win.label} ${formatPercent(win.percent)}%${win.reset ? `, resets ${win.reset}` : ""}`,
+        ? `${win.group ? `${win.group} ` : ""}${win.label} unknown${win.reset ? `, resets ${win.reset}` : ""}`
+        : `${win.group ? `${win.group} ` : ""}${win.label} ${formatPercent(win.percent)}%${win.reset ? `, resets ${win.reset}` : ""}`,
     );
   return `${title} usage: ${parts.join(", ")}`;
 }
@@ -254,11 +319,13 @@ export function ServicePanel({
     service.apiPercent,
     service.onDemandPercent,
     service.grokBotPercent,
+    service.claudeFiveHourPercent,
+    service.claudeSevenDayPercent,
   ];
   const mood = mascotMood(service.status, percents);
   const peak = peakPercent(percents);
   const portrait = artSkin === "ip" ? mascotSrc(kind, mood, artSkin) : "";
-  const { outer, inner, extra, legend: orderedLegend } = windowsFor(kind, service);
+  const { outer, inner, extra, legend: orderedLegend, bars } = windowsFor(kind, service);
   const legend =
     orderedLegend ??
     [outer, inner, ...extra].filter((win): win is GaugeWindow => Boolean(win));
@@ -267,7 +334,7 @@ export function ServicePanel({
   const ringOuter = outer?.unknown ? undefined : outer;
   const ringInner = inner?.unknown ? undefined : inner;
   const hasUsage = Boolean(outer || inner);
-  const planLabel = displayPlan(service.plan);
+  const planLabel = displayPlan(service.plan, kind === "grok" && Boolean(service.unified));
   const showPlan =
     (kind === "codex" ||
       kind === "claude" ||
@@ -297,13 +364,6 @@ export function ServicePanel({
       </span>
     ) : (
       <span className="balance-number">--</span>
-    );
-  } else if (kind === "antigravity" && typeof service.sevenDayPercent === "number") {
-    readout = (
-      <>
-        {formatPercent(service.sevenDayPercent)}
-        <i>%</i>
-      </>
     );
   } else if (peak != null) {
     readout = (
@@ -415,10 +475,9 @@ export function ServicePanel({
         {meter === "bar" && (
           <UsageBars
             skin={artSkin === "ip" ? "ip" : "ring"}
-            windows={kind === "deepseek" ? [] : legend}
+            windows={kind === "deepseek" ? [] : (bars ?? legend)}
             mood={mood}
             ariaLabel={ariaLabel}
-            featuredLabel={kind === "antigravity" ? "7D" : undefined}
             balance={
               kind === "deepseek"
                 ? { currency: service.currency, amount: service.balance }
@@ -433,10 +492,11 @@ export function ServicePanel({
             </span>
           ) : hasUsage ? (
             legend.map((win) => (
-              <span key={win.label} className="gauge-legend-item" data-window={win.label}>
+              <span key={`${win.group ?? ""}:${win.label}`} className="gauge-legend-item" data-window={win.label}>
                 {artSkin === "ip" ? (
                   <>
                     <span className="legend-main">
+                      {win.group ? `${win.group} ` : ""}
                       {win.label} {shownPercent(win)}
                     </span>
                     {win.reset ? <span className="legend-reset">{win.reset}</span> : null}

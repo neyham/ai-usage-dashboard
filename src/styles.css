@@ -1909,6 +1909,102 @@ body {
 .dashboard[data-art="ip"] .ip-bar[data-tone="danger"] .ip-bar-fill {
   background: var(--ip-danger);
 }
+.dashboard[data-art="ip"] .ip-bar[data-segmented="true"],
+.dashboard[data-art="ring"] .ip-bar[data-segmented="true"] {
+  grid-template-rows: auto auto auto auto;
+}
+.dashboard[data-art="ip"] .ip-bar[data-group-start="true"],
+.dashboard[data-art="ring"] .ip-bar[data-group-start="true"] {
+  grid-template-rows: auto 1.2em 10px 1.15em;
+}
+.dashboard[data-art="ring"] .ip-bar[data-group-start="true"] {
+  grid-template-rows: auto auto 16px 1.15em;
+}
+.ip-bar[data-group-start="true"]:not(:nth-child(2)) {
+  margin-top: 8px;
+}
+.ip-bar-group {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  width: fit-content;
+  padding: 2px 7px 1px;
+  border-radius: 999px;
+  background: var(--ink, #121212);
+  color: var(--cream, #fff8f0);
+}
+.dashboard[data-art="ring"] .ip-bar-group {
+  background: transparent;
+  padding: 0;
+  color: var(--muted);
+}
+.ip-bar-track:has(.ip-bar-seg) {
+  display: flex;
+}
+/* An inset seam separates segments without adding width, so a full pool
+   never overflows the track. */
+.dashboard .ip-bar-seg + .ip-bar-seg {
+  box-shadow: inset 2px 0 0 var(--ink, #121212);
+}
+.dashboard[data-art="ip"] .ip-bar-seg,
+.dashboard[data-art="ring"] .ip-bar-seg {
+  flex: none;
+  border-radius: 0;
+}
+.dashboard[data-art="ip"] .ip-bar-seg:first-child {
+  border-radius: 999px 0 0 999px;
+}
+/* Segments step from the accent toward cream, so every part stays bright
+   against the ink track instead of fading into it. */
+.dashboard .ip-bar-seg[data-seg="1"],
+.dashboard .ip-bar-seg-key[data-seg="1"]::before {
+  background: color-mix(in srgb, var(--ring-ok, var(--accent)) 55%, var(--cream, #fff8f0));
+}
+.dashboard .ip-bar-seg[data-seg="2"],
+.dashboard .ip-bar-seg-key[data-seg="2"]::before {
+  background: color-mix(in srgb, var(--ring-ok, var(--accent)) 20%, var(--cream, #fff8f0));
+}
+.dashboard .ip-bar-seg[data-seg="3"],
+.dashboard .ip-bar-seg-key[data-seg="3"]::before {
+  background: color-mix(in srgb, var(--ring-ok, var(--accent)) 35%, #8a8a8a);
+}
+.dashboard .ip-bar-seg[data-seg="4"],
+.dashboard .ip-bar-seg-key[data-seg="4"]::before {
+  background: color-mix(in srgb, var(--ring-ok, var(--accent)) 30%, #4a4a4a);
+}
+.ip-bar-segs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--cream, #fff8f0);
+  text-shadow:
+    0 1px 0 #121212,
+    1px 0 0 #121212,
+    -1px 0 0 #121212,
+    0 -1px 0 #121212;
+}
+.dashboard[data-art="ring"] .ip-bar-segs {
+  color: var(--text);
+  text-shadow: none;
+}
+.ip-bar-seg-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.ip-bar-seg-key::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--ring-ok, var(--accent));
+  box-shadow: 0 0 0 1px #121212;
+}
 .dashboard[data-art="ip"] .ip-bar-reset {
   font-family: var(--mono);
   font-size: 9px;
@@ -2343,4 +2439,22 @@ body {
 .dashboard[data-art="ring"] .reset-credits {
   text-align: left;
   justify-self: start;
+}
+
+/* The ring skin hatches its fills with currentColor; keep that pattern but
+   give each X segment its own tint. */
+.dashboard[data-art="ring"] .ip-bar-track .ip-bar-seg {
+  background: repeating-linear-gradient(90deg, currentColor 0 7px, transparent 7px 9px);
+}
+.dashboard[data-art="ring"] .ip-bar-track .ip-bar-seg[data-seg="1"] {
+  color: color-mix(in srgb, var(--accent) 55%, #fff8f0);
+}
+.dashboard[data-art="ring"] .ip-bar-track .ip-bar-seg[data-seg="2"] {
+  color: color-mix(in srgb, var(--accent) 20%, #fff8f0);
+}
+.dashboard[data-art="ring"] .ip-bar-track .ip-bar-seg[data-seg="3"] {
+  color: color-mix(in srgb, var(--accent) 35%, #8a8a8a);
+}
+.dashboard[data-art="ring"] .ip-bar-track .ip-bar-seg[data-seg="4"] {
+  color: color-mix(in srgb, var(--accent) 30%, #4a4a4a);
 }

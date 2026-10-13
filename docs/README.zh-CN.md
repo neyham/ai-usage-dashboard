@@ -26,7 +26,8 @@
 | Codex | 额度窗口、重置时间、套餐、banked resets 及最早到期时间 |
 | Grok Build | 合并后的 credit 用量（响应里有该字段时）、重置时间、套餐、可选月度 allowance，以及可用的 banked usage-limit reset |
 | Cursor | Included、Auto、named-model API 用量、Grok Bot 配额、套餐和账期重置时间。Bot 查不到时不影响 Included / Auto / API |
-| Antigravity | Gemini 5 小时和 7 天额度、重置时间、Google AI 套餐 |
+| Antigravity | Gemini 与 Claude/GPT 两组 5 小时和 7 天额度、重置时间、Google AI 套餐 |
+| X Subscription | Grok 与 Cursor 共用的每周额度池，按产品（Chat、Bot、Build、Cursor）分段显示，带重置时间。已切换的账号只要开启 Grok 或 Cursor 任一面板，就合并为一张 X 卡 |
 | DeepSeek | API 余额和余额不足状态 |
 
 - 各个 provider 独立刷新；其中一个失败不会清空其他面板。
@@ -97,7 +98,7 @@ Windows 安装包目前会添加 **AI Usage Dashboard (Judge Demo)** 开始菜�
 
 ## 兼容性与限制
 
-- 当前版本为 `v0.8.9`：Windows、Linux、macOS。WinGet 社区源在新 GitHub
+- 当前版本为 `v0.9.0`：Windows、Linux、macOS。WinGet 社区源在新 GitHub
   Release 之后可能短暂滞后。
 - 屏保和闲置启动工具仅支持 Windows。
 - 项目使用 provider CLI 的 credential 格式和用量 endpoint，其中一部分不是公开

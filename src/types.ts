@@ -64,6 +64,11 @@ export interface GrokService {
   monthlyResetLocal?: string;
   resetCreditsAvailable?: number;
   resetCreditsExpireLocal?: string;
+  /** The weekly pool is shared beyond Grok Build (The X Subscription). */
+  unified?: boolean;
+  productUsage?: { label: string; percent: number }[];
+  /** Prepaid Additional Usage credit in USD cents. */
+  prepaidBalanceCents?: number;
 }
 
 export interface CursorService {
@@ -89,6 +94,10 @@ export interface AntigravityService {
   sevenDayPercent?: number;
   fiveHourResetLocal?: string;
   sevenDayResetLocal?: string;
+  claudeFiveHourPercent?: number;
+  claudeSevenDayPercent?: number;
+  claudeFiveHourResetLocal?: string;
+  claudeSevenDayResetLocal?: string;
 }
 
 export interface Services {

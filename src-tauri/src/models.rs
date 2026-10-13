@@ -14,6 +14,14 @@ pub struct EnabledProviders {
     pub antigravity: bool,
 }
 
+impl EnabledProviders {
+    /// Grok and Cursor share one X Subscription pool, so either panel is
+    /// enough reason to read it.
+    pub fn x_pool(&self) -> bool {
+        self.grok || self.cursor
+    }
+}
+
 impl Default for EnabledProviders {
     fn default() -> Self {
         Self {
@@ -169,6 +177,21 @@ pub struct GrokService {
     pub reset_credits_available: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reset_credits_expire_local: Option<String>,
+    /// The weekly pool is shared beyond Grok Build (The X Subscription).
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub unified: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub product_usage: Vec<ProductUsage>,
+    /// Prepaid Additional Usage credit in USD cents.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub prepaid_balance_cents: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductUsage {
+    pub label: String,
+    pub percent: f64,
 }
 
 impl Default for GrokService {
@@ -186,6 +209,9 @@ impl Default for GrokService {
             monthly_reset_local: None,
             reset_credits_available: None,
             reset_credits_expire_local: None,
+            unified: false,
+            product_usage: Vec::new(),
+            prepaid_balance_cents: None,
         }
     }
 }
@@ -248,6 +274,15 @@ pub struct AntigravityService {
     pub five_hour_reset_local: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub seven_day_reset_local: Option<String>,
+    /// Antigravity's separate "Claude and GPT models" quota group.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub claude_five_hour_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub claude_seven_day_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub claude_five_hour_reset_local: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub claude_seven_day_reset_local: Option<String>,
 }
 
 impl Default for AntigravityService {
@@ -261,6 +296,10 @@ impl Default for AntigravityService {
             seven_day_percent: None,
             five_hour_reset_local: None,
             seven_day_reset_local: None,
+            claude_five_hour_percent: None,
+            claude_seven_day_percent: None,
+            claude_five_hour_reset_local: None,
+            claude_seven_day_reset_local: None,
         }
     }
 }

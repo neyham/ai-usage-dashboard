@@ -327,8 +327,8 @@ export default function App() {
       ? "LINK ACTIVE"
       : (LINK_LABEL[displayStatus] ?? LINK_LABEL.error);
   const enabledKinds = useMemo(
-    () => enabledProviderList(summary.enabledProviders),
-    [summary.enabledProviders],
+    () => enabledProviderList(summary.enabledProviders, Boolean(summary.services.grok.unified)),
+    [summary.enabledProviders, summary.services.grok.unified],
   );
   const enabledCount = enabledKinds.length;
   const panelLayout = useMemo(() => {
@@ -437,7 +437,7 @@ export default function App() {
             <ServicePanel
               key={kind}
               kind={kind}
-              title={PANEL_META[kind].title}
+              title={kind === "grok" && summary.services.grok.unified ? "X" : PANEL_META[kind].title}
               code={PANEL_META[kind].code}
               service={summary.services[kind]}
               planSize={panelLayout.sizes[kind]}

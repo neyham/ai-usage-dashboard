@@ -225,6 +225,22 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<AntigravityService> {
     let weekly = buckets
         .iter()
         .find(|bucket| bucket_window(bucket, "weekly"));
+    // Claude (and GPT) models share a second quota group. It is optional:
+    // a missing group never fails the Gemini panel.
+    let claude_buckets = groups
+        .iter()
+        .find(|group| {
+            group
+                .get("displayName")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.to_ascii_lowercase().contains("claude"))
+        })
+        .and_then(|group| group.get("buckets"))
+        .and_then(Value::as_array);
+    let claude_five_hour =
+        claude_buckets.and_then(|list| list.iter().find(|bucket| bucket_window(bucket, "5h")));
+    let claude_weekly =
+        claude_buckets.and_then(|list| list.iter().find(|bucket| bucket_window(bucket, "weekly")));
     let five_hour_percent = five_hour.and_then(used_percent);
     let seven_day_percent = weekly.and_then(used_percent);
     if five_hour_percent.is_none() && seven_day_percent.is_none() {
@@ -242,6 +258,14 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<AntigravityService> {
             .and_then(|bucket| bucket.get("resetTime"))
             .and_then(local_label),
         seven_day_reset_local: weekly
+            .and_then(|bucket| bucket.get("resetTime"))
+            .and_then(local_label),
+        claude_five_hour_percent: claude_five_hour.and_then(used_percent),
+        claude_seven_day_percent: claude_weekly.and_then(used_percent),
+        claude_five_hour_reset_local: claude_five_hour
+            .and_then(|bucket| bucket.get("resetTime"))
+            .and_then(local_label),
+        claude_seven_day_reset_local: claude_weekly
             .and_then(|bucket| bucket.get("resetTime"))
             .and_then(local_label),
     })
@@ -1199,6 +1223,19 @@ mod tests {
         assert!((service.seven_day_percent.unwrap_or_default() - 21.0).abs() < 0.01);
         assert!(service.five_hour_reset_local.is_some());
         assert!(service.seven_day_reset_local.is_some());
+        assert_eq!(service.claude_five_hour_percent, Some(0.0));
+        assert_eq!(service.claude_seven_day_percent, Some(0.0));
+    }
+
+    #[test]
+    fn claude_group_is_optional() {
+        let service = parse_usage(
+            r#"{"groups":[{"displayName":"Gemini Models","buckets":[
+                {"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.5}]}]}"#,
+        )
+        .expect("Gemini-only quota");
+        assert_eq!(service.seven_day_percent, Some(50.0));
+        assert_eq!(service.claude_seven_day_percent, None);
     }
 
     #[test]

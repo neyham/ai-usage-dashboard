@@ -1300,9 +1300,10 @@ async function checkAntigravityPanel(browser) {
     (await contentPage.locator(".panel-antigravity .gauge-legend").textContent()) ?? "",
     /RESET/,
   );
+  // The headline is the tightest window (5H 27%), matching the mascot mood.
   assert.match(
     (await contentPage.locator(".panel-antigravity .ip-bars-peak").textContent()) ?? "",
-    /21/,
+    /27/,
   );
   assert.deepEqual(await inspectLayout(contentPage, { width: 1600, height: 900 }), []);
   await contentContext.close();
@@ -1343,6 +1344,186 @@ async function checkAntigravityPanel(browser) {
   assert.equal(await compactPage.locator(".panel").count(), 6);
   assert.deepEqual(await inspectLayout(compactPage, { width: 640, height: 540 }), []);
   await compactContext.close();
+}
+
+async function checkXSubscription(browser) {
+  // A switched seat: Grok and Cursor share one weekly X pool.
+  const unifiedGrok = {
+    status: "NOMINAL",
+    fromCache: false,
+    dataMayBeStale: false,
+    plan: "SuperGrok",
+    usagePercent: 18,
+    periodLabel: "7D",
+    periodCaption: "WEEKLY WINDOW",
+    usageResetLocal: "08-20 07:55",
+    unified: true,
+    productUsage: [
+      { label: "CHAT", percent: 9 },
+      { label: "BOT", percent: 6 },
+      { label: "BUILD", percent: 3 },
+      { label: "CURSOR", percent: 0 },
+    ],
+    prepaidBalanceCents: 0,
+  };
+  const context = await browser.newContext({
+    viewport: { width: 1600, height: 900 },
+    reducedMotion: "reduce",
+    colorScheme: "dark",
+  });
+  const page = await context.newPage();
+
+  for (const enabled of [
+    { grok: true, cursor: true },
+    { grok: false, cursor: true },
+    { grok: true, cursor: false },
+  ]) {
+    const summary = {
+      ...baseSummary,
+      enabledProviders: { ...baseSummary.enabledProviders, ...enabled },
+      services: { ...baseSummary.services, grok: unifiedGrok },
+    };
+    await installTauriMock(page, summary);
+    await page.goto(baseUrl, { waitUntil: "networkidle" });
+    await page.locator(".panel-grok").waitFor();
+    assert.equal(await page.locator(".panel-cursor").count(), 0, "Cursor folds into the X card");
+    assert.equal(await page.locator(".panel").count(), 4);
+    assert.equal((await page.locator(".panel-grok .panel-title").textContent())?.trim(), "X");
+  }
+
+  // One 7D bar split by product, no prepaid line, no legacy tier pill.
+  assert.deepEqual(await legendWindows(page, ".panel-grok"), ["7D"]);
+  assert.equal(await page.locator(".panel-grok .ip-bar-seg").count(), 3);
+  assert.match(
+    (await page.locator(".panel-grok .ip-bar-segs").textContent()) ?? "",
+    /CHAT 9.*BOT 6.*BUILD 3/,
+  );
+  assert.doesNotMatch((await page.locator(".panel-grok").textContent()) ?? "", /PREPAID/);
+  assert.equal(await page.locator(".panel-grok .panel-plan").count(), 0);
+  assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
+  await page.screenshot({ path: join(artifactDir, "x-subscription.png"), fullPage: true });
+
+  // A failing Cursor feed stays folded into the X card (status math is in Rust).
+  await installTauriMock(page, {
+    ...baseSummary,
+    enabledProviders: { ...baseSummary.enabledProviders, grok: false, cursor: true },
+    services: {
+      ...baseSummary.services,
+      grok: unifiedGrok,
+      cursor: { ...baseSummary.services.cursor, status: "API ERROR", fromCache: true },
+    },
+  });
+  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.locator(".panel-grok").waitFor();
+  assert.equal(await page.locator(".panel-cursor").count(), 0);
+
+  // Ring meters (two side-by-side cards) keep the product and group detail.
+  const ringPair = {
+    ...baseSummary,
+    enabledProviders: {
+      codex: false,
+      claude: false,
+      deepseek: false,
+      grok: true,
+      cursor: true,
+      antigravity: true,
+    },
+    services: {
+      ...baseSummary.services,
+      grok: unifiedGrok,
+      antigravity: {
+        ...baseSummary.services.antigravity,
+        claudeSevenDayPercent: 12,
+        claudeFiveHourPercent: 40,
+      },
+    },
+  };
+  await installTauriMock(page, ringPair);
+  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.locator('.panel-grok[data-meter="ring"]').waitFor();
+  await page.locator('.panel-antigravity[data-meter="ring"]').waitFor();
+  const xLegend = (await page.locator(".panel-grok .gauge-legend").textContent()) ?? "";
+  assert.match(xLegend, /7D 18.*CHAT 9.*BOT 6.*BUILD 3/);
+  assert.doesNotMatch(xLegend, /CURSOR/, "a 0% product is not listed");
+  const agLegend = (await page.locator(".panel-antigravity .gauge-legend").textContent()) ?? "";
+  assert.match(agLegend, /GEMINI 7D 21.*GEMINI 5H 27.*CLAUDE · GPT 7D 12.*CLAUDE · GPT 5H 40/);
+  assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
+  await page.screenshot({ path: join(artifactDir, "x-subscription-rings.png"), fullPage: true });
+
+  // With a single Gemini window the ring draws only that window; Claude/GPT
+  // never takes the inner ring.
+  await installTauriMock(page, {
+    ...ringPair,
+    services: {
+      ...ringPair.services,
+      antigravity: { ...ringPair.services.antigravity, fiveHourPercent: undefined },
+    },
+  });
+  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.locator('.panel-antigravity[data-meter="ring"]').waitFor();
+  assert.equal(
+    await page.locator(".panel-antigravity .gauge-stage").getAttribute("data-rings"),
+    "1",
+  );
+  assert.match(
+    (await page.locator(".panel-antigravity .gauge-legend").textContent()) ?? "",
+    /CLAUDE · GPT 7D 12/,
+  );
+
+  // The classic ring skin keeps a distinct tint per X segment.
+  const fourX = {
+    ...baseSummary,
+    enabledProviders: { ...baseSummary.enabledProviders, grok: true, cursor: true },
+    services: { ...baseSummary.services, grok: unifiedGrok },
+  };
+  await installTauriMock(page, fourX, "normal", false, false, "ring");
+  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.locator('.dashboard[data-art="ring"] .panel-grok .ip-bar-seg').first().waitFor();
+  const segColors = await page
+    .locator(".panel-grok .ip-bar-seg")
+    .evaluateAll((els) => els.map((el) => getComputedStyle(el).color));
+  assert.equal(segColors.length, 3);
+  assert.equal(new Set(segColors).size, 3, `ring-skin segments share a tint: ${segColors}`);
+
+  // Unswitched accounts keep separate Grok and Cursor cards.
+  const legacy = {
+    ...baseSummary,
+    enabledProviders: { ...baseSummary.enabledProviders, grok: true, cursor: true },
+  };
+  await installTauriMock(page, legacy);
+  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.locator(".panel-cursor").waitFor();
+  assert.equal((await page.locator(".panel-grok .panel-title").textContent())?.trim(), "GROK");
+
+  // Antigravity's Claude and GPT group renders under its own heading.
+  const withClaude = {
+    ...baseSummary,
+    enabledProviders: { ...baseSummary.enabledProviders, grok: false, antigravity: true },
+    services: {
+      ...baseSummary.services,
+      antigravity: {
+        ...baseSummary.services.antigravity,
+        claudeSevenDayPercent: 12,
+        claudeFiveHourPercent: 40,
+        claudeSevenDayResetLocal: "08-20 11:59",
+        claudeFiveHourResetLocal: "08-19 14:20",
+      },
+    },
+  };
+  await installTauriMock(page, withClaude);
+  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.locator('.panel-antigravity[data-meter="bar"]').waitFor();
+  assert.deepEqual(
+    await page.locator(".panel-antigravity .ip-bar-group").allTextContents(),
+    ["GEMINI", "CLAUDE · GPT"],
+  );
+  assert.equal(await page.locator(".panel-antigravity .ip-bar").count(), 4);
+  assert.match(
+    (await page.locator(".panel-antigravity .ip-bars-peak").textContent()) ?? "",
+    /40/,
+  );
+  assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
+  await context.close();
 }
 
 async function checkRateLimitStatusChips(browser) {
@@ -1767,7 +1948,7 @@ async function checkIpPlanCards(browser) {
     await assertPlanPill(page, ".panel-antigravity", "GOOGLE AI PRO");
     assert.match(
       (await page.locator(".panel-antigravity .gauge-readout").textContent()) ?? "",
-      /21/,
+      /27/,
     );
     assert.doesNotMatch(
       (await page.locator(".panel-antigravity").textContent()) ?? "",
@@ -2317,6 +2498,8 @@ try {
   process.stdout.write(`PASS Cursor panel meters and 5-panel layout\n`);
   await checkAntigravityPanel(browser);
   process.stdout.write(`PASS Antigravity Gemini meters and 6-panel layout\n`);
+  await checkXSubscription(browser);
+  process.stdout.write(`PASS X Subscription pool and Antigravity Claude group\n`);
   await checkMascotMoods(browser);
   process.stdout.write(`PASS Q-version mascot moods follow usage and auth\n`);
   await checkSettingsTransactions(browser);

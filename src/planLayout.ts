@@ -32,8 +32,12 @@ export function storageKey(judgeDemo: boolean): string {
   return judgeDemo ? `${STORAGE_KEY}.judge-demo` : STORAGE_KEY;
 }
 
-export function enabledProviderList(enabled: EnabledProviders): ProviderKind[] {
-  const kinds = PROVIDER_ORDER.filter((kind) => enabled[kind]);
+export function enabledProviderList(enabled: EnabledProviders, xPool = false): ProviderKind[] {
+  // On The X Subscription Grok and Cursor draw from one pool, so either
+  // toggle shows a single X card in the Grok slot.
+  const effective =
+    xPool && (enabled.grok || enabled.cursor) ? { ...enabled, grok: true, cursor: false } : enabled;
+  const kinds = PROVIDER_ORDER.filter((kind) => effective[kind]);
   // Keep smaller layouts stable; the six-card grid groups Antigravity with
   // Codex and Claude, and moves the balance-only DeepSeek card to the end.
   if (kinds.length === 6) {
@@ -75,7 +79,9 @@ export function sizeFromPlan(kind: ProviderKind, plan: string | undefined): Plan
     if (
       normalized === "supergrok heavy" ||
       normalized === "supergrokpro" ||
-      normalized === "supergrok_heavy"
+      normalized === "supergrok_heavy" ||
+      normalized === "super" ||
+      normalized === "ultra"
     ) {
       return "L";
     }

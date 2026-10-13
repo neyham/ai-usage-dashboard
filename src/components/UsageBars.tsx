@@ -1,7 +1,14 @@
 import type { MascotMood } from "../mascot";
 import type { RingWindow } from "./RingGauge";
 
-type BarWindow = RingWindow & { reset?: string; unknown?: boolean };
+type BarWindow = RingWindow & {
+  reset?: string;
+  unknown?: boolean;
+  /** Heading for a run of bars that share a quota group. */
+  group?: string;
+  /** Parts that add up to this bar, drawn as one stacked fill. */
+  segments?: { label: string; percent: number }[];
+};
 
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -37,6 +44,7 @@ export function UsageBars({
   if (balance) {
     return (
       <div className="ip-bars" data-kind="balance" data-skin={skin}>
+        {skin === "ip" && <span className="ip-bar-group">BALANCE</span>}
         <div className={`ip-bars-peak${mood === "over" ? " is-pulse" : ""}`}>
           <span className="balance-amount">
             <span className="balance-currency">{balance.currency ?? ""}</span>
@@ -83,24 +91,55 @@ export function UsageBars({
           <i>%</i>
         </div>
       )}
-      {windows.map((win) => (
-        <div key={win.label} className="ip-bar" data-window={win.label}>
-          <div className="ip-bar-meta">
-            <span className="ip-bar-label">{win.label}</span>
-            <span className="ip-bar-percent">
-              {win.unknown ? "--" : formatPercent(win.percent)}
-              <i>%</i>
-            </span>
+      {windows.map((win, index) => {
+        const segments = win.unknown ? [] : (win.segments ?? []);
+        const heading = win.group && win.group !== windows[index - 1]?.group ? win.group : undefined;
+        return (
+          <div
+            key={`${win.group ?? ""}:${win.label}`}
+            className="ip-bar"
+            data-window={win.label}
+            data-group-start={heading ? "true" : undefined}
+            data-segmented={segments.length > 0 ? "true" : undefined}
+          >
+            {heading && <span className="ip-bar-group">{heading}</span>}
+            <div className="ip-bar-meta">
+              <span className="ip-bar-label">{win.label}</span>
+              <span className="ip-bar-percent">
+                {win.unknown ? "--" : formatPercent(win.percent)}
+                <i>%</i>
+              </span>
+            </div>
+            <div className="ip-bar-track">
+              {segments.length > 0 ? (
+                segments.map((seg, segIndex) => (
+                  <i
+                    key={seg.label}
+                    className="ip-bar-fill ip-bar-seg"
+                    data-seg={String(segIndex)}
+                    style={{ width: `${clampPercent(seg.percent)}%` }}
+                  />
+                ))
+              ) : (
+                <i
+                  className="ip-bar-fill"
+                  style={{ width: `${win.unknown ? 0 : clampPercent(win.percent)}%` }}
+                />
+              )}
+            </div>
+            {segments.length > 0 && (
+              <span className="ip-bar-segs">
+                {segments.map((seg, segIndex) => (
+                  <span key={seg.label} className="ip-bar-seg-key" data-seg={String(segIndex)}>
+                    {seg.label} {formatPercent(seg.percent)}
+                  </span>
+                ))}
+              </span>
+            )}
+            <span className="ip-bar-reset">{win.reset ? `RESET ${win.reset}` : "\u00a0"}</span>
           </div>
-          <div className="ip-bar-track">
-            <i
-              className="ip-bar-fill"
-              style={{ width: `${win.unknown ? 0 : clampPercent(win.percent)}%` }}
-            />
-          </div>
-          <span className="ip-bar-reset">{win.reset ? `RESET ${win.reset}` : "\u00a0"}</span>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

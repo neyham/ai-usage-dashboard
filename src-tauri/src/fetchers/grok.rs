@@ -11,7 +11,7 @@ use super::{send, send_with_one_retry, FetchError, Resp};
 use crate::cache::cache_dir;
 use crate::config::Config;
 use crate::fs_util::{atomic_write, OsFileLock};
-use crate::models::GrokService;
+use crate::models::{GrokService, ProductUsage};
 use crate::util::{clamp_percent, fmt_local, local_label, parse_datetime_str};
 use anyhow::{anyhow, bail, Context};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -87,6 +87,9 @@ struct PeriodUsage {
     label: &'static str,
     caption: &'static str,
     reset_local: Option<String>,
+    unified: bool,
+    products: Vec<ProductUsage>,
+    prepaid_balance_cents: Option<i64>,
 }
 
 struct MonthlyUsage {
@@ -436,7 +439,7 @@ fn service_from_usage(
         usage_percent: period.as_ref().and_then(|usage| usage.percent),
         period_label: period.as_ref().map(|usage| usage.label.into()),
         period_caption: period.as_ref().map(|usage| usage.caption.into()),
-        usage_reset_local: period.and_then(|usage| usage.reset_local),
+        usage_reset_local: period.as_ref().and_then(|usage| usage.reset_local.clone()),
         monthly_percent: monthly.as_ref().map(|usage| usage.percent),
         monthly_reset_local: monthly.and_then(|usage| usage.reset_local),
         reset_credits_available: resets
@@ -444,6 +447,11 @@ fn service_from_usage(
             .map(|inventory| inventory.available),
         reset_credits_expire_local: resets
             .and_then(|inventory| inventory.earliest_expiry_local.clone()),
+        unified: period.as_ref().is_some_and(|usage| usage.unified),
+        prepaid_balance_cents: period
+            .as_ref()
+            .and_then(|usage| usage.prepaid_balance_cents),
+        product_usage: period.map(|usage| usage.products).unwrap_or_default(),
     }
 }
 
@@ -472,20 +480,46 @@ fn parse_credits(body: &str) -> anyhow::Result<PeriodUsage> {
         .and_then(Value::as_object)
         .context("Grok credits missing config")?;
 
-    let product_percent = config
+    let raw_products: Vec<(&str, f64)> = config
         .get("productUsage")
         .and_then(Value::as_array)
-        .and_then(|products| {
-            products.iter().find_map(|product| {
-                let is_build = product
-                    .get("product")
-                    .and_then(Value::as_str)
-                    .is_some_and(|name| name.eq_ignore_ascii_case("GrokBuild"));
-                is_build
-                    .then(|| product.get("usagePercent").and_then(number_value))
-                    .flatten()
+        .map(|products| {
+            products
+                .iter()
+                .filter_map(|product| {
+                    let name = product.get("product").and_then(Value::as_str)?;
+                    let percent = product.get("usagePercent").and_then(number_value)?;
+                    Some((name, percent))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let product_percent = raw_products
+        .iter()
+        .find(|(name, _)| product_key(name) == "grokbuild")
+        .map(|(_, percent)| *percent);
+    // Under The X Subscription one weekly pool covers Chat, Bot, Build and
+    // Cursor. A Build-only breakdown is the older Grok Build allowance.
+    let unified = config
+        .get("isUnifiedBillingUser")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && raw_products
+            .iter()
+            .any(|(name, _)| product_key(name) != "grokbuild");
+    let products = if unified {
+        raw_products
+            .iter()
+            .filter_map(|(name, percent)| {
+                Some(ProductUsage {
+                    label: product_label(name)?,
+                    percent: clamp_percent(*percent),
+                })
             })
-        });
+            .collect()
+    } else {
+        Vec::new()
+    };
     // creditUsagePercent is the account cap across products. A Grok Build
     // slice is only a fallback when that combined figure is absent.
     let percent = config
@@ -514,7 +548,60 @@ fn parse_credits(body: &str) -> anyhow::Result<PeriodUsage> {
         label,
         caption,
         reset_local,
+        unified,
+        products,
+        // proto3 JSON omits zero Cents, so a unified pool without the field
+        // has no prepaid credit rather than an unknown balance.
+        prepaid_balance_cents: unified.then(|| {
+            config
+                .get("prepaidBalance")
+                .and_then(money_value)
+                .filter(|cents| cents.is_finite() && *cents >= 0.0)
+                .map_or(0, |cents| cents.round() as i64)
+        }),
     })
+}
+
+/// `GrokBuild` and `PRODUCT_GROK_BUILD` name the same product.
+fn product_key(name: &str) -> String {
+    let trimmed = name.trim();
+    let stem = trimmed
+        .get(..8)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("PRODUCT_"))
+        .map_or(trimmed, |_| &trimmed[8..]);
+    stem.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+/// Server product names are display-only; known ones get short labels and
+/// anything else is reduced to a bounded alphanumeric tag.
+fn product_label(name: &str) -> Option<String> {
+    let key = product_key(name);
+    let known = match key.as_str() {
+        "grokchat" => Some("CHAT"),
+        "grokbot" => Some("BOT"),
+        "grokbuild" => Some("BUILD"),
+        "grokimagine" => Some("IMAGINE"),
+        "grokvoice" => Some("VOICE"),
+        "grokapi" | "api" => Some("API"),
+        "cursor" => Some("CURSOR"),
+        _ => None,
+    };
+    if let Some(label) = known {
+        return Some(label.to_string());
+    }
+    let stem = key
+        .strip_prefix("grok")
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(&key);
+    let label: String = stem
+        .chars()
+        .take(10)
+        .collect::<String>()
+        .to_ascii_uppercase();
+    (!label.is_empty()).then_some(label)
 }
 
 fn parse_monthly(body: &str) -> anyhow::Result<Option<MonthlyUsage>> {
@@ -556,6 +643,11 @@ fn canonical_plan_label(value: &str) -> Option<&'static str> {
         "x basic" | "x_basic" => Some("X Basic"),
         "x premium" | "x_premium" => Some("X Premium"),
         "x premium+" | "x_premium_plus" => Some("X Premium+"),
+        // The X Subscription tiers (2026-10).
+        "plus" | "x plus" => Some("Plus"),
+        "premium" => Some("Premium"),
+        "super" | "x super" => Some("Super"),
+        "ultra" | "x ultra" => Some("Ultra"),
         _ => None,
     }
 }
@@ -1411,6 +1503,69 @@ EOF
     }
 
     #[test]
+    fn x_subscription_pool_keeps_per_product_lanes() {
+        // Shape captured from a unified account on 2026-10-13; numbers synthetic.
+        let usage = parse_credits(
+            r#"{
+                "config": {
+                    "currentPeriod": {
+                        "type":"USAGE_PERIOD_TYPE_WEEKLY",
+                        "start":"2030-04-07T23:55:10.500+00:00",
+                        "end":"2030-04-14T23:55:10.500+00:00"
+                    },
+                    "creditUsagePercent": 18.0,
+                    "productUsage": [
+                        {"product":"GrokChat","usagePercent":9.0},
+                        {"product":"GrokBot","usagePercent":6.0},
+                        {"product":"GrokBuild","usagePercent":3.0},
+                        {"product":"PRODUCT_CURSOR","usagePercent":0},
+                        {"product":"GrokSomething New!","usagePercent":120}
+                    ],
+                    "isUnifiedBillingUser": true,
+                    "prepaidBalance": {"val": 0},
+                    "topUpMethod": "TOP_UP_METHOD_SAVED_PAYMENT_METHOD"
+                }
+            }"#,
+        )
+        .expect("valid unified credits");
+
+        assert_eq!(usage.percent, Some(18.0));
+        assert!(usage.unified);
+        let lanes: Vec<(&str, f64)> = usage
+            .products
+            .iter()
+            .map(|lane| (lane.label.as_str(), lane.percent))
+            .collect();
+        assert_eq!(
+            lanes,
+            vec![
+                ("CHAT", 9.0),
+                ("BOT", 6.0),
+                ("BUILD", 3.0),
+                ("CURSOR", 0.0),
+                ("SOMETHINGN", 100.0)
+            ]
+        );
+        assert_eq!(usage.prepaid_balance_cents, Some(0));
+    }
+
+    #[test]
+    fn build_only_breakdown_is_not_the_x_pool() {
+        let usage = parse_credits(
+            r#"{"config":{
+                "currentPeriod":{"type":"WEEKLY"},
+                "creditUsagePercent":36,
+                "productUsage":[{"product":"PRODUCT_GROK_BUILD","usagePercent":36}],
+                "isUnifiedBillingUser":true
+            }}"#,
+        )
+        .expect("valid Build-only credits");
+        assert!(!usage.unified);
+        assert!(usage.products.is_empty());
+        assert_eq!(usage.prepaid_balance_cents, None);
+    }
+
+    #[test]
     fn credits_fall_back_to_grok_build_when_combined_percent_is_absent() {
         let usage = parse_credits(
             r#"{
@@ -1532,6 +1687,10 @@ EOF
             ("X Basic", "X Basic"),
             ("X Premium", "X Premium"),
             ("X Premium+", "X Premium+"),
+            ("Plus", "Plus"),
+            ("Premium", "Premium"),
+            ("Super", "Super"),
+            ("ultra", "Ultra"),
         ] {
             let body = format!(r#"{{"subscription_tier_display":"{value}"}}"#);
             assert_eq!(

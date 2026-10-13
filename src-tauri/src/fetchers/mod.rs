@@ -257,7 +257,7 @@ pub fn summary_from_cache(cache: &CacheState, enabled: EnabledProviders) -> Usag
     } else {
         DeepSeekService::default()
     };
-    let grok: GrokService = if enabled.grok && cache.get("grok").is_some() {
+    let grok: GrokService = if enabled.x_pool() && cache.get("grok").is_some() {
         cached_service(cache, "grok", MSG_CACHED, None)
     } else {
         GrokService::default()
@@ -332,7 +332,7 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
             } else {
                 DeepSeekService::default()
             };
-            let grok = if enabled.grok {
+            let grok = if enabled.x_pool() {
                 cached_service::<GrokService>(cache, "grok", MSG_FAILED, None)
             } else {
                 GrokService::default()
@@ -366,7 +366,7 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
     let fetch_claude = enabled.claude && claude_cooldown.is_none();
     let fetch_codex = enabled.codex && cache.provider_cooldown_active("codex").is_none();
     let fetch_deepseek = enabled.deepseek && cache.provider_cooldown_active("deepseek").is_none();
-    let fetch_grok = enabled.grok && cache.provider_cooldown_active("grok").is_none();
+    let fetch_grok = enabled.x_pool() && cache.provider_cooldown_active("grok").is_none();
     let fetch_cursor = enabled.cursor && cache.provider_cooldown_active("cursor").is_none();
     let fetch_antigravity =
         enabled.antigravity && cache.provider_cooldown_active("antigravity").is_none();
@@ -450,7 +450,7 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
         deepseek_res,
     );
     let (grok, grok_cached) =
-        apply_standard_fetch(cache, "grok", enabled.grok, fetch_grok, grok_res);
+        apply_standard_fetch(cache, "grok", enabled.x_pool(), fetch_grok, grok_res);
     let (cursor, cursor_cached) =
         apply_standard_fetch(cache, "cursor", enabled.cursor, fetch_cursor, cursor_res);
     let (antigravity, antigravity_cached) = apply_standard_fetch(
@@ -488,18 +488,26 @@ pub(crate) fn assemble(
     fallbacks: EnabledProviders,
     enabled: EnabledProviders,
 ) -> UsageSummary {
+    // A unified X pool replaces the Cursor card, so Cursor's own fetch must
+    // not degrade the overall status while the X card is healthy.
+    let x_card = enabled.x_pool() && services.grok.unified;
+    let shown = EnabledProviders {
+        grok: enabled.grok || x_card,
+        cursor: enabled.cursor && !x_card,
+        ..enabled
+    };
     let active = [
-        (enabled.claude, &services.claude.status, fallbacks.claude),
-        (enabled.codex, &services.codex.status, fallbacks.codex),
+        (shown.claude, &services.claude.status, fallbacks.claude),
+        (shown.codex, &services.codex.status, fallbacks.codex),
         (
-            enabled.deepseek,
+            shown.deepseek,
             &services.deepseek.status,
             fallbacks.deepseek,
         ),
-        (enabled.grok, &services.grok.status, fallbacks.grok),
-        (enabled.cursor, &services.cursor.status, fallbacks.cursor),
+        (shown.grok, &services.grok.status, fallbacks.grok),
+        (shown.cursor, &services.cursor.status, fallbacks.cursor),
         (
-            enabled.antigravity,
+            shown.antigravity,
             &services.antigravity.status,
             fallbacks.antigravity,
         ),
@@ -658,6 +666,35 @@ mod tests {
         };
         let summary = assemble(services, fallbacks, enabled);
 
+        assert_eq!(summary.status, "error");
+    }
+
+    #[test]
+    fn folded_cursor_failure_does_not_degrade_a_healthy_x_card() {
+        let mut services = nominal_services();
+        services.grok.unified = true;
+        services.cursor.status = "API ERROR".into();
+        let only_cursor = EnabledProviders {
+            codex: false,
+            claude: false,
+            deepseek: false,
+            grok: false,
+            cursor: true,
+            antigravity: false,
+        };
+        let no_fallbacks = EnabledProviders {
+            cursor: false,
+            ..only_cursor
+        };
+
+        let summary = assemble(services.clone(), no_fallbacks, only_cursor);
+        assert_eq!(summary.status, "ok");
+        // Settings keep the user's real toggles.
+        assert!(summary.enabled_providers.cursor);
+        assert!(!summary.enabled_providers.grok);
+
+        services.grok.status = "API ERROR".into();
+        let summary = assemble(services, no_fallbacks, only_cursor);
         assert_eq!(summary.status, "error");
     }
 

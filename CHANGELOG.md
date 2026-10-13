@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.0] - 2026-10-13
+
+### Added
+
+- The X Subscription: when a switched seat's Grok billing reports one shared
+  weekly pool, Grok and Cursor fold into a single X card. Either toggle is
+  enough to read the pool. The card shows the weekly total as one bar split by
+  product (Chat, Bot, Build, Cursor), with its reset time. Unswitched accounts
+  keep separate Grok and Cursor cards.
+- Antigravity reads the "Claude and GPT models" quota group next to Gemini and
+  shows both under GEMINI and CLAUDE · GPT headings.
+- Recognize X Subscription tier names (Plus, Premium, Super, Ultra); Super and
+  Ultra get the large card.
+
+### Changed
+
+- Antigravity's headline percentage is its tightest window, like other cards,
+  instead of always the 7-day window.
+- Usage bars support grouped headings and segmented fills. DeepSeek's balance
+  is labelled.
+- The X card hides legacy tier names (such as SuperGrok) that xAI still reports
+  for some switched seats.
+- Release upgrade checks use 0.8.9 as the baseline.
+
 ## [0.8.9] - 2026-10-11
 
 ### Fixed

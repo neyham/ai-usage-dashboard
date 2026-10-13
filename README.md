@@ -63,9 +63,10 @@ or macOS Gatekeeper may require manual confirmation.
 | --- | --- |
 | Claude Code | Available usage windows, reset times, extra usage, subscription tier, cooldown, and cache state |
 | Codex | Usage windows, reset times, plan, banked resets, and earliest expiry |
+| X Subscription | One weekly pool shared by Grok and Cursor, split by product (Chat, Bot, Build, Cursor), with reset time. Shown instead of separate Grok and Cursor cards when either is enabled on a switched seat |
 | Grok Build | Combined credit usage for the server-reported period, reset time, plan, optional monthly allowance, and banked usage-limit resets when available |
 | Cursor | Included, Auto, named-model API usage, Grok Bot quota, plan, and billing-cycle reset |
-| Antigravity | Gemini 5-hour and 7-day quota, reset times, and Google AI plan |
+| Antigravity | Gemini and Claude/GPT 5-hour and 7-day quotas, reset times, and Google AI plan |
 | DeepSeek | API balance and insufficient-balance state |
 
 - Each provider refreshes independently; one outage does not erase the others.
@@ -86,7 +87,7 @@ or macOS Gatekeeper may require manual confirmation.
 
 ## Compatibility and limitations
 
-Version `0.8.9` is the current multi-platform release: Windows (WinGet + NSIS),
+Version `0.9.0` is the current multi-platform release: Windows (WinGet + NSIS),
 Linux (`.deb` / AppImage), and macOS (`.dmg`). Screensaver and scheduled-idle
 helpers remain Windows-only. Published installers are not code-signed. Community
 WinGet indexes can lag a new GitHub release until the version manifest is
@@ -120,8 +121,8 @@ reporting a vulnerability or suspected credential exposure.
 
 ## Additional installation notes
 
-Pin a version with `VERSION=0.8.9` before the install script, for example
-`VERSION=0.8.9 sh install-linux.sh`.
+Pin a version with `VERSION=0.9.0` before the install script, for example
+`VERSION=0.9.0 sh install-linux.sh`.
 
 ### Windows (WinGet and direct installer)
 
