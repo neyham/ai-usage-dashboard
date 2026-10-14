@@ -99,6 +99,17 @@ const baseSummary = {
       fiveHourResetLocal: "08-19 14:20",
       sevenDayResetLocal: "08-20 11:59",
     },
+    opencodego: {
+      status: "NOMINAL",
+      fromCache: false,
+      dataMayBeStale: false,
+      rollingPercent: 34,
+      weeklyPercent: 58,
+      monthlyPercent: 41,
+      rollingResetLocal: "07-29 23:20",
+      weeklyResetLocal: "08-03 08:00",
+      monthlyResetLocal: "08-14 21:32",
+    },
   },
 };
 
@@ -494,6 +505,30 @@ async function inspectLayout(page, viewport, { expectHiddenCursor = false } = {}
       issues.push(`minimum viewport scrolls vertically: ${root.scrollHeight} > ${height}`);
     }
 
+    // IP skin floats the clock and the buttons over the top row of cards; they
+    // must never cover a card title or plan chip.
+    if (dashboard?.getAttribute("data-art") === "ip") {
+      const floating = [".topbar", ".telemetry"]
+        .map((selector) => [selector, document.querySelector(selector)])
+        .filter(([, el]) => el && getComputedStyle(el).position === "absolute");
+      for (const row of document.querySelectorAll(".panel-head .panel-title, .panel-head .panel-plan")) {
+        if (!row.getClientRects().length) continue;
+        const titleRect = row.getBoundingClientRect();
+        for (const [selector, el] of floating) {
+          const rect = el.getBoundingClientRect();
+          const overlaps =
+            rect.left < titleRect.right - tolerance &&
+            rect.right > titleRect.left + tolerance &&
+            rect.top < titleRect.bottom - tolerance &&
+            rect.bottom > titleRect.top + tolerance;
+          if (overlaps) {
+            const panel = row.closest(".panel")?.className ?? "panel";
+            issues.push(`${selector} covers the title of ${panel}`);
+          }
+        }
+      }
+    }
+
     return issues;
   }, { ...viewport, expectHiddenCursor });
 }
@@ -689,7 +724,9 @@ async function checkProviderSelection(browser) {
 
   await page.locator(".tm-settings").click();
   await page.locator(".settings-dialog").waitFor();
+  // Grok and Cursor share one X toggle.
   assert.equal(await page.locator(".provider-grid .provider-option").count(), 6);
+  assert.equal(await page.locator(".provider-option.provider-grok, .provider-option.provider-cursor").count(), 0);
   assert.equal(await page.locator('.provider-option input[type="checkbox"]:checked').count(), 4);
   assert.equal(await page.locator('.window-mode-option input[value="normal"]').isChecked(), true);
   await page.screenshot({ path: join(artifactDir, "provider-settings.png"), fullPage: true });
@@ -734,7 +771,7 @@ async function checkProviderSelection(browser) {
   assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
 
   await page.locator(".tm-settings").click();
-  await page.locator(".provider-option.provider-grok").click();
+  await page.locator(".provider-option.provider-x").click();
   await page.locator(".settings-save").click();
   await page.locator(".panels-empty").waitFor();
   assert.equal(await page.locator(".panel").count(), 0);
@@ -749,10 +786,11 @@ async function checkProviderSelection(browser) {
   await page.locator(".tm-settings").click();
   await page.locator(".provider-option.provider-claude").click();
   await page.locator(".provider-option.provider-deepseek").click();
-  await page.locator(".provider-option.provider-grok").click();
+  await page.locator(".provider-option.provider-x").click();
   await page.locator(".settings-save").click();
-  assert.equal(await page.locator(".panel").count(), 4);
-  await assertFourPanelGrid(page);
+  // An unswitched seat signed in to both keeps separate Grok and Cursor cards.
+  assert.equal(await page.locator(".panel").count(), 5);
+  await page.locator(".panel-cursor").waitFor();
   assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
 
   const saves = await page.evaluate(() => window.__DASHBOARD_TEST__.savedSelections);
@@ -762,7 +800,7 @@ async function checkProviderSelection(browser) {
     { codex: false, claude: false, deepseek: false, grok: true, cursor: false, antigravity: false },
     { codex: false, claude: false, deepseek: false, grok: false, cursor: false, antigravity: false },
     { codex: true, claude: false, deepseek: false, grok: false, cursor: false, antigravity: false },
-    { codex: true, claude: true, deepseek: true, grok: true, cursor: false, antigravity: false },
+    { codex: true, claude: true, deepseek: true, grok: true, cursor: true, antigravity: false },
   ]);
   const saveCalls = await page.evaluate(() => window.__DASHBOARD_TEST__.saveCalls);
   assert.deepEqual(saveCalls[0], {
@@ -1445,6 +1483,10 @@ async function checkXSubscription(browser) {
   const xLegend = (await page.locator(".panel-grok .gauge-legend").textContent()) ?? "";
   assert.match(xLegend, /7D 18.*CHAT 9.*BOT 6.*BUILD 3/);
   assert.doesNotMatch(xLegend, /CURSOR/, "a 0% product is not listed");
+  // One pool, one ring: the products split the pool arc instead of taking
+  // an inner ring of their own.
+  assert.equal(await page.locator(".panel-grok .gauge-stage").getAttribute("data-rings"), "1");
+  assert.equal(await page.locator(".panel-grok .gauge-seg[data-seg]").count(), 3);
   const agLegend = (await page.locator(".panel-antigravity .gauge-legend").textContent()) ?? "";
   assert.match(agLegend, /GEMINI 7D 21.*GEMINI 5H 27.*CLAUDE · GPT 7D 12.*CLAUDE · GPT 5H 40/);
   assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
@@ -1553,6 +1595,24 @@ async function checkRateLimitStatusChips(browser) {
     assert.equal(await chip.getAttribute("aria-label"), "LIMIT: RATE LIMITED");
     await context.close();
   }
+
+  // A spent OpenCode Go window is a limit, not an error.
+  const context = await browser.newContext({ viewport: { width: 1368, height: 912 } });
+  const page = await context.newPage();
+  await installTauriMock(page, {
+    ...baseSummary,
+    enabledProviders: { ...baseSummary.enabledProviders, opencodego: true },
+    services: {
+      ...baseSummary.services,
+      opencodego: { ...baseSummary.services.opencodego, status: "QUOTA EXHAUSTED", weeklyPercent: 100 },
+    },
+  });
+  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  const exhausted = page.locator(".panel-opencodego .chip");
+  await exhausted.waitFor();
+  assert.equal(await exhausted.getAttribute("class"), "chip chip-warn");
+  assert.equal(await exhausted.locator(".chip-tag").textContent(), "LIMIT");
+  await context.close();
 }
 
 async function checkMascotMoods(browser) {
@@ -1870,11 +1930,11 @@ async function checkLowPowerMode(browser) {
     assert.ok(dialogBox.x >= 0 && dialogBox.x + dialogBox.width <= viewport.width + 1);
     assert.ok(dialogBox.y >= 0 && dialogBox.y + dialogBox.height <= viewport.height + 1);
     assert.equal(await compactPage.locator(".provider-grid .provider-option").count(), 6);
-    await compactPage.locator(".provider-option.provider-cursor").scrollIntoViewIfNeeded();
-    await compactPage.locator(".provider-option.provider-antigravity").scrollIntoViewIfNeeded();
-    assert.equal(await compactPage.locator(".provider-option.provider-cursor").isVisible(), true);
+    await compactPage.locator(".provider-option.provider-x").scrollIntoViewIfNeeded();
+    await compactPage.locator(".provider-option.provider-opencodego").scrollIntoViewIfNeeded();
+    assert.equal(await compactPage.locator(".provider-option.provider-x").isVisible(), true);
     assert.equal(
-      await compactPage.locator(".provider-option.provider-antigravity").isVisible(),
+      await compactPage.locator(".provider-option.provider-opencodego").isVisible(),
       true,
     );
     await compactPage.locator(".settings-save").scrollIntoViewIfNeeded();
@@ -2377,6 +2437,35 @@ async function captureReadmeScreenshots(browser) {
     },
   };
 
+  // README fixtures: a switched X seat (one X card) plus OpenCode Go.
+  const readmeServices = structuredClone(baseSummary.services);
+  Object.assign(readmeServices.grok, {
+    unified: true,
+    plan: "Super",
+    productUsage: [
+      { label: "CHAT", percent: 14 },
+      { label: "BOT", percent: 6 },
+      { label: "BUILD", percent: 16 },
+    ],
+  });
+  const readmeFour = {
+    ...baseSummary,
+    services: readmeServices,
+    enabledProviders: {
+      codex: true,
+      claude: true,
+      deepseek: false,
+      grok: true,
+      cursor: true,
+      antigravity: false,
+      opencodego: true,
+    },
+  };
+  const readmeSix = {
+    ...readmeFour,
+    enabledProviders: { ...readmeFour.enabledProviders, deepseek: true, antigravity: true },
+  };
+
   async function openShot(summary, { width, height, skin }) {
     const context = await browser.newContext({
       viewport: { width, height },
@@ -2403,8 +2492,23 @@ async function captureReadmeScreenshots(browser) {
     assert.equal(await page.locator(".panel-grok").getAttribute("data-meter"), "ring");
     assert.equal(await page.locator(".panel-cursor").getAttribute("data-meter"), "ring");
     assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
-    await page.screenshot({ path: join(readmeAssetDir, "dashboard.png") });
     await page.screenshot({ path: join(artifactDir, "two-panel-side.png"), scale: "css" });
+    await context.close();
+  }
+
+  {
+    // README hero: 2x2 landscape cards with corner-emerging characters.
+    const { context, page } = await openShot(readmeFour, { width: 1600, height: 900, skin: "ip" });
+    assert.equal(await page.locator(".panel").count(), 4);
+    await assertFourPanelGrid(page);
+    const meters = await page.locator(".panel").evaluateAll((els) =>
+      els.map((el) => el.getAttribute("data-meter")),
+    );
+    assert.ok(meters.every((meter) => meter === "bar"), `expected four bar cards, got ${meters}`);
+    assert.equal(await page.locator(".panel-cursor").count(), 0);
+    assert.equal(await page.locator(".ip-portrait[data-corner-art='true']").count(), 4);
+    assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
+    await page.screenshot({ path: join(readmeAssetDir, "dashboard.png") });
     await context.close();
   }
 
@@ -2429,8 +2533,9 @@ async function captureReadmeScreenshots(browser) {
   }
 
   {
-    const { context, page } = await openShot(allSix, { width: 1600, height: 1000, skin: "ip" });
+    const { context, page } = await openShot(readmeSix, { width: 1600, height: 1000, skin: "ip" });
     assert.equal(await page.locator(".panel").count(), 6);
+    await page.locator(".panel-opencodego").waitFor();
     const meters = await page.locator(".panel").evaluateAll((els) =>
       els.map((el) => el.getAttribute("data-meter")),
     );
@@ -2445,8 +2550,9 @@ async function captureReadmeScreenshots(browser) {
   }
 
   {
-    const { context, page } = await openShot(allSix, { width: 1600, height: 1000, skin: "ring" });
+    const { context, page } = await openShot(readmeSix, { width: 1600, height: 1000, skin: "ring" });
     assert.equal(await page.locator(".panel").count(), 6);
+    await page.locator(".panel-opencodego").waitFor();
     assert.equal(await page.locator(".panel-mascot").count(), 0);
     assert.ok((await page.locator(".ip-bars").count()) >= 6);
     assert.deepEqual(await inspectLayout(page, { width: 1600, height: 1000 }), []);
@@ -2454,9 +2560,115 @@ async function captureReadmeScreenshots(browser) {
     await context.close();
   }
 
+  {
+    // OpenCode Go joins as a seventh provider. With a unified X pool the
+    // board is six cards; an unswitched seat with every toggle on is seven.
+    const xPool = structuredClone(allSix);
+    xPool.enabledProviders.opencodego = true;
+    Object.assign(xPool.services.grok, {
+      unified: true,
+      productUsage: [
+        { label: "CHAT", percent: 12 },
+        { label: "BUILD", percent: 20 },
+      ],
+    });
+    const legacySeven = structuredClone(allSix);
+    legacySeven.enabledProviders.opencodego = true;
+    // The Surface setup: X seat, no Codex, so five cards in the five-fill grid.
+    const surfaceFive = structuredClone(xPool);
+    surfaceFive.enabledProviders.codex = false;
+    surfaceFive.services.antigravity.plan = "Google AI Pro";
+    for (const [name, summary, expected, width, height, skin] of [
+      ["x-six-ip", xPool, 6, 1600, 1000, "ip"],
+      ["x-five-surface", surfaceFive, 5, 1368, 912, "ip"],
+      ["x-five-full-hd", surfaceFive, 5, 1600, 900, "ip"],
+      ["x-six-eva", xPool, 6, 1368, 912, "ring"],
+      ["seven-ip", legacySeven, 7, 1600, 1000, "ip"],
+      ["seven-eva", legacySeven, 7, 1600, 900, "ring"],
+      ["seven-portrait", legacySeven, 7, 912, 1368, "ip"],
+    ]) {
+      const { context, page } = await openShot(summary, { width, height, skin });
+      assert.equal(await page.locator(".panel").count(), expected, name);
+      await page.locator(".panel-opencodego").waitFor();
+      assert.equal(
+        (await page.locator(".panel-opencodego .panel-title").textContent())?.trim(),
+        "OPENCODE GO",
+      );
+      if (expected === 6) assert.equal(await page.locator(".panel-cursor").count(), 0, name);
+      assert.deepEqual(await inspectLayout(page, { width, height }), [], name);
+      await page.screenshot({ path: join(artifactDir, `opencodego-${name}.png`), scale: "css" });
+      await context.close();
+    }
+  }
+
+  {
+    // Four-window cards (Antigravity with its Claude group, Cursor's breakdown)
+    // must stay between the EVA panel header and status footer.
+    const fourWindows = structuredClone(allSix);
+    Object.assign(fourWindows.services.antigravity, {
+      claudeFiveHourPercent: 40,
+      claudeSevenDayPercent: 12,
+      claudeFiveHourResetLocal: "08-19 14:20",
+      claudeSevenDayResetLocal: "08-20 11:59",
+    });
+    const fourCards = {
+      ...fourWindows,
+      enabledProviders: {
+        codex: true,
+        claude: true,
+        deepseek: false,
+        grok: false,
+        cursor: false,
+        antigravity: true,
+      },
+    };
+    for (const [name, summary, width, height] of [
+      ["six", fourWindows, 1368, 912],
+      ["six", fourWindows, 1600, 900],
+      ["four", fourCards, 1600, 900],
+      ["four", fourCards, 1368, 912],
+    ]) {
+      const { context, page } = await openShot(summary, { width, height, skin: "ring" });
+      const overlaps = await page.locator(".panel").evaluateAll((panels) =>
+        panels.flatMap((panel) => {
+          const head = panel.querySelector(".panel-head")?.getBoundingClientRect();
+          const foot = panel.querySelector(".panel-status")?.getBoundingClientRect();
+          return Array.from(panel.querySelectorAll(".ip-bar")).flatMap((bar) => {
+            const rect = bar.getBoundingClientRect();
+            const issues = [];
+            if (head && rect.top < head.bottom - 0.5) {
+              issues.push(`${panel.className} ${bar.dataset.window} under header`);
+            }
+            if (foot && rect.bottom > foot.top + 0.5) {
+              issues.push(`${panel.className} ${bar.dataset.window} under footer`);
+            }
+            return issues;
+          });
+        }),
+      );
+      assert.deepEqual(overlaps, [], `EVA four-window ${name} ${width}x${height}`);
+      if (name === "six" && width === 1368) {
+        // Same data with Grok signed out: the X toggle keeps only Cursor.
+        const cursorOnly = structuredClone(summary);
+        cursorOnly.services.grok.status = "GROK LOGIN REQUIRED";
+        const shot = await openShot(cursorOnly, { width, height, skin: "ip" });
+        assert.equal(await shot.page.locator(".panel-grok").count(), 0);
+        assert.equal(await shot.page.locator(".panel").count(), 5);
+        const mascot = await shot.page.locator(".panel-cursor .panel-mascot").first().getAttribute("src");
+        assert.match(mascot ?? "", /grok-/, "unswitched Cursor card wears the X mascot");
+        await shot.context.close();
+      }
+      await page.screenshot({
+        path: join(artifactDir, `eva-four-window-${name}-${width}x${height}.png`),
+        scale: "css",
+      });
+      await context.close();
+    }
+  }
+
   const mascotDir = join(readmeAssetDir, "mascots-ip");
   await mkdir(mascotDir, { recursive: true });
-  for (const kind of ["codex", "claude", "deepseek", "grok", "cursor", "antigravity"]) {
+  for (const kind of ["codex", "claude", "deepseek", "grok", "antigravity", "opencodego"]) {
     await copyFile(
       join(root, "src", "assets", "mascots-ip", `${kind}-idle.png`),
       join(mascotDir, `${kind}-idle.png`),

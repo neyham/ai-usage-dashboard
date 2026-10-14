@@ -18,6 +18,8 @@ import { normalizeArtSkin, type ArtSkin } from "./ipTheme";
 import {
   computePanelLayout,
   enabledProviderList,
+  shownProviders,
+  topBarCovers,
   livePlanOf,
   loadStoredPlanSizes,
   mergeStoredPlanSizes,
@@ -38,6 +40,7 @@ const EMPTY: UsageSummary = {
     grok: false,
     cursor: false,
     antigravity: false,
+    opencodego: false,
   },
   services: {
     codex: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
@@ -46,6 +49,7 @@ const EMPTY: UsageSummary = {
     grok: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
     cursor: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
     antigravity: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
+    opencodego: { status: "AWAITING DATA", fromCache: false, dataMayBeStale: false },
   },
 };
 
@@ -56,6 +60,7 @@ const PANEL_META: Record<ProviderKind, { title: string; code: string }> = {
   grok: { title: "GROK", code: "SYS-04" },
   cursor: { title: "CURSOR", code: "SYS-05" },
   antigravity: { title: "ANTIGRAVITY", code: "SYS-06" },
+  opencodego: { title: "OPENCODE GO", code: "SYS-07" },
 };
 
 const REFRESH_TIMEOUT_MS = 180_000;
@@ -327,8 +332,8 @@ export default function App() {
       ? "LINK ACTIVE"
       : (LINK_LABEL[displayStatus] ?? LINK_LABEL.error);
   const enabledKinds = useMemo(
-    () => enabledProviderList(summary.enabledProviders, Boolean(summary.services.grok.unified)),
-    [summary.enabledProviders, summary.services.grok.unified],
+    () => enabledProviderList(summary.enabledProviders, summary.services),
+    [summary.enabledProviders, summary.services],
   );
   const enabledCount = enabledKinds.length;
   const panelLayout = useMemo(() => {
@@ -341,10 +346,12 @@ export default function App() {
         updates[kind] = resolved.next;
       }
     }
+    const layout = computePanelLayout(enabledKinds, sizes);
     return {
       sizes,
       updates,
-      ...computePanelLayout(enabledKinds, sizes),
+      ...layout,
+      covers: topBarCovers(enabledKinds, layout.mode, layout.slots),
     };
   }, [enabledKinds, storedPlanSizes, summary.services]);
 
@@ -413,7 +420,7 @@ export default function App() {
     >
       <div className="scanlines" aria-hidden />
       <div className="vignette" aria-hidden />
-      <SideRail enabledProviders={summary.enabledProviders} />
+      <SideRail enabledProviders={shownProviders(summary.enabledProviders, summary.services)} />
 
       <div className="stage">
         <header className="topbar">
@@ -439,9 +446,10 @@ export default function App() {
               kind={kind}
               title={kind === "grok" && summary.services.grok.unified ? "X" : PANEL_META[kind].title}
               code={PANEL_META[kind].code}
-              service={summary.services[kind]}
+              service={summary.services[kind] ?? EMPTY.services[kind]!}
               planSize={panelLayout.sizes[kind]}
               slot={panelLayout.slots[kind]}
+              topBarCover={panelLayout.covers[kind]}
               placement={panelLayout.placements[kind]}
               artSkin={artSkin}
             />

@@ -16,7 +16,8 @@ export function StatusChip({
     /AUTH|LOGIN|REFRESH|KEY MISSING|NOT CONFIG|CREDENTIAL|SESSION EXPIRED|ACCESS UNAVAILABLE|TEAM USAGE UNAVAILABLE/.test(
       normalized,
     );
-  const rateIssue = /RATE|LIMIT|COOLDOWN/.test(normalized);
+  // A spent quota (e.g. OpenCode Go "QUOTA EXHAUSTED") is a limit, not a fault.
+  const rateIssue = /RATE|LIMIT|COOLDOWN|EXHAUSTED/.test(normalized);
   const explicitError = /ERROR|FAILED|OFFLINE|UNAVAILABLE/.test(normalized);
   if (authIssue) {
     cls = "chip-auth";

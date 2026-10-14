@@ -7,6 +7,7 @@ export const PROVIDER_ORDER = [
   "grok",
   "cursor",
   "antigravity",
+  "opencodego",
 ] as const;
 
 export type ProviderKind = (typeof PROVIDER_ORDER)[number];
@@ -32,22 +33,49 @@ export function storageKey(judgeDemo: boolean): string {
   return judgeDemo ? `${STORAGE_KEY}.judge-demo` : STORAGE_KEY;
 }
 
-export function enabledProviderList(enabled: EnabledProviders, xPool = false): ProviderKind[] {
-  // On The X Subscription Grok and Cursor draw from one pool, so either
+const loginMissing = (status: string) => status.endsWith("LOGIN REQUIRED");
+
+/** Cards on screen; must match `shown_providers` in `fetchers/mod.rs`. */
+export function shownProviders(enabled: EnabledProviders, services: Services): EnabledProviders {
+  // On The X Subscription Grok and Cursor draw from one pool, so the X
   // toggle shows a single X card in the Grok slot.
-  const effective =
-    xPool && (enabled.grok || enabled.cursor) ? { ...enabled, grok: true, cursor: false } : enabled;
+  if ((enabled.grok || enabled.cursor) && services.grok.unified) {
+    return { ...enabled, grok: true, cursor: false };
+  }
+  // An unswitched seat keeps both cards, minus a side with no local login
+  // while the other side works.
+  const both = enabled.grok && enabled.cursor;
+  const grokMissing = loginMissing(services.grok.status);
+  const cursorMissing = loginMissing(services.cursor.status);
+  return {
+    ...enabled,
+    grok: enabled.grok && !(both && grokMissing && !cursorMissing),
+    cursor: enabled.cursor && !(both && cursorMissing && !grokMissing),
+  };
+}
+
+export function enabledProviderList(enabled: EnabledProviders, services: Services): ProviderKind[] {
+  const effective = shownProviders(enabled, services);
   const kinds = PROVIDER_ORDER.filter((kind) => effective[kind]);
-  // Keep smaller layouts stable; the six-card grid groups Antigravity with
-  // Codex and Claude, and moves the balance-only DeepSeek card to the end.
-  if (kinds.length === 6) {
-    return ["codex", "claude", "antigravity", "grok", "cursor", "deepseek"];
+  // Keep smaller layouts stable; six- and seven-card grids group Antigravity
+  // with Codex and Claude, and move the balance-only DeepSeek card to the end.
+  if (kinds.length >= 6) {
+    const wide: ProviderKind[] = [
+      "codex",
+      "claude",
+      "antigravity",
+      "grok",
+      "cursor",
+      "opencodego",
+      "deepseek",
+    ];
+    return wide.filter((kind) => kinds.includes(kind));
   }
   return kinds;
 }
 
 export function livePlanOf(kind: ProviderKind, services: Services): string | undefined {
-  if (kind === "claude" || kind === "deepseek") {
+  if (kind === "claude" || kind === "deepseek" || kind === "opencodego") {
     return undefined;
   }
   const plan = services[kind].plan;
@@ -237,6 +265,47 @@ export function computePanelLayout(
       [enabled[4]]: "e",
     },
   };
+}
+
+/** Which floating IP-skin chrome sits over a card's header. */
+export type TopBarCover = "clock" | "controls" | "both";
+
+/**
+ * The IP skin floats the clock and the settings/refresh buttons over the top
+ * row of cards; their position is set per layout in styles.css. Report which
+ * card each lands on so that card can keep its title clear of them.
+ */
+export function topBarCovers(
+  kinds: ProviderKind[],
+  mode: LayoutMode,
+  slots: Partial<Record<ProviderKind, string>>,
+): Partial<Record<ProviderKind, TopBarCover>> {
+  const bySlot = (slot: string) =>
+    kinds.find((kind) => slots[kind] === slot);
+  const covers = (clock?: ProviderKind, controls?: ProviderKind) => {
+    const result: Partial<Record<ProviderKind, TopBarCover>> = {};
+    if (clock) result[clock] = "clock";
+    if (controls) result[controls] = clock === controls ? "both" : "controls";
+    return result;
+  };
+  switch (kinds.length) {
+    case 0:
+      return {};
+    case 1:
+    case 3:
+      return covers(kinds[0], kinds[0]);
+    case 2:
+    case 4:
+      return covers(kinds[1], kinds[1]);
+    case 5:
+      if (mode === "five-hero") return covers(bySlot("hero"), bySlot("b"));
+      if (mode === "five-split") return covers(bySlot("top-left"), bySlot("top-right"));
+      return covers(bySlot("b"), bySlot("c"));
+    case 6:
+      return covers(kinds[1], kinds[2]);
+    default:
+      return covers(kinds[2], kinds[3]);
+  }
 }
 
 export function loadStoredPlanSizes(judgeDemo: boolean): StoredPlanSizes {

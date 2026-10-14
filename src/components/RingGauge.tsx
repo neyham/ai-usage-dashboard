@@ -2,7 +2,12 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { ArtSkin } from "../ipTheme";
 import type { MascotMood } from "../mascot";
 
-export type RingWindow = { percent: number; label: string };
+export type RingWindow = {
+  percent: number;
+  label: string;
+  /** Parts of one shared pool, drawn end to end inside the same arc. */
+  segments?: { label: string; percent: number }[];
+};
 
 const CX = 100;
 const CY = 100;
@@ -49,6 +54,7 @@ function RingArc({
   trackWidth,
   fillWidth,
   percent,
+  segments,
   ready,
   showCap,
 }: {
@@ -56,12 +62,26 @@ function RingArc({
   trackWidth: number;
   fillWidth: number;
   percent: number;
+  segments?: RingWindow["segments"];
   ready: boolean;
   showCap: boolean;
 }) {
   const circ = circumference(radius);
   const arc = circ * ARC_FRACTION;
   const used = (clampPercent(percent) / 100) * arc;
+  // A shared pool is one arc split into consecutive product parts; any
+  // remainder the breakdown does not cover keeps the plain fill colour.
+  const parts: { key: string; seg?: number; start: number; length: number }[] = [];
+  if (segments && segments.length > 0) {
+    let start = 0;
+    segments.forEach((segment, index) => {
+      const length = Math.min((clampPercent(segment.percent) / 100) * arc, used - start);
+      if (length <= 0) return;
+      parts.push({ key: segment.label, seg: index, start, length });
+      start += length;
+    });
+    if (used - start > 0.5) parts.push({ key: "rest", start, length: used - start });
+  }
   const end = polar(radius, 225 - 2.7 * clampPercent(percent));
   const tone = toneOf(percent);
   return (
@@ -77,18 +97,39 @@ function RingArc({
         strokeDasharray={`${arc} ${circ}`}
         transform={`rotate(${START_ROTATE} ${CX} ${CY})`}
       />
-      <circle
-        className="gauge-fill"
-        cx={CX}
-        cy={CY}
-        r={radius}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={fillWidth}
-        strokeLinecap="butt"
-        strokeDasharray={`${ready ? used : 0} ${circ}`}
-        transform={`rotate(${START_ROTATE} ${CX} ${CY})`}
-      />
+      {parts.length > 0 ? (
+        parts.map((part) => (
+          <circle
+            key={part.key}
+            className="gauge-fill gauge-seg"
+            data-seg={part.seg == null ? undefined : String(part.seg)}
+            cx={CX}
+            cy={CY}
+            r={radius}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={fillWidth}
+            strokeLinecap="butt"
+            // A hairline gap keeps neighbouring parts readable.
+            strokeDasharray={`${ready ? Math.max(part.length - 0.8, 0.4) : 0} ${circ}`}
+            strokeDashoffset={ready ? -part.start : 0}
+            transform={`rotate(${START_ROTATE} ${CX} ${CY})`}
+          />
+        ))
+      ) : (
+        <circle
+          className="gauge-fill"
+          cx={CX}
+          cy={CY}
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={fillWidth}
+          strokeLinecap="butt"
+          strokeDasharray={`${ready ? used : 0} ${circ}`}
+          transform={`rotate(${START_ROTATE} ${CX} ${CY})`}
+        />
+      )}
       {showCap && percent > 0 && (
         <circle className="gauge-cap" cx={end.x} cy={end.y} r={3} />
       )}
@@ -184,6 +225,7 @@ export function RingGauge({
             trackWidth={outerTrack}
             fillWidth={outerFill}
             percent={shownOuter.percent}
+            segments={shownOuter.segments}
             ready={ready}
             showCap={!ip}
           />

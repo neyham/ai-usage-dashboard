@@ -1,0 +1,7 @@
+{
+  "usage": {
+    "rolling": { "status": "ok", "percent": 34, "resetsAt": "2026-07-29T15:20:00.000Z" },
+    "weekly": { "status": "ok", "percent": 58, "resetsAt": "2026-08-03T00:00:00.000Z" },
+    "monthly": { "status": "ok", "percent": 41, "resetsAt": "2026-08-14T13:32:33.000Z" }
+  }
+}

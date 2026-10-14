@@ -3,14 +3,18 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { ArtSkin } from "../ipTheme";
 import type { EnabledProviders, WindowMode } from "../types";
 
-const PROVIDERS: Array<{ key: keyof EnabledProviders; label: string; code: string }> = [
-  { key: "codex", label: "CODEX", code: "SYS-01" },
-  { key: "claude", label: "CLAUDE", code: "SYS-02" },
-  { key: "deepseek", label: "DEEPSEEK", code: "SYS-03" },
-  { key: "grok", label: "GROK", code: "SYS-04" },
-  { key: "cursor", label: "CURSOR", code: "SYS-05" },
-  { key: "antigravity", label: "ANTIGRAVITY", code: "SYS-06" },
+// Grok and Cursor are one X toggle: on The X Subscription they share one
+// pool, and unswitched seats still show whichever side is signed in.
+const PROVIDERS: Array<{ id: string; keys: Array<keyof EnabledProviders>; label: string; code: string }> = [
+  { id: "codex", keys: ["codex"], label: "CODEX", code: "SYS-01" },
+  { id: "claude", keys: ["claude"], label: "CLAUDE", code: "SYS-02" },
+  { id: "deepseek", keys: ["deepseek"], label: "DEEPSEEK", code: "SYS-03" },
+  { id: "x", keys: ["grok", "cursor"], label: "X · GROK + CURSOR", code: "SYS-04" },
+  { id: "antigravity", keys: ["antigravity"], label: "ANTIGRAVITY", code: "SYS-06" },
+  { id: "opencodego", keys: ["opencodego"], label: "OPENCODE GO", code: "SYS-07" },
 ];
+
+const PROVIDER_KEYS = PROVIDERS.flatMap(({ keys }) => keys);
 
 const WINDOW_MODES: Array<{ value: WindowMode; label: string; code: string }> = [
   { value: "normal", label: "WINDOWED", code: "WIN" },
@@ -82,7 +86,7 @@ export function ProviderSettings({
     setSaving(true);
     setError(null);
     try {
-      const providersChanged = PROVIDERS.some(({ key }) => draft[key] !== value[key]);
+      const providersChanged = PROVIDER_KEYS.some((key) => draft[key] !== value[key]);
       const keyToSave = deepseekApiKey.trim();
       if (providersChanged || windowModeTouched || lowPowerTouched || artSkinTouched || keyToSave) {
         await onSave(
@@ -242,16 +246,17 @@ export function ProviderSettings({
             <legend className="settings-section-label">ACTIVE PROVIDERS</legend>
             <div className="provider-grid">
               {PROVIDERS.map((provider) => (
-                <label className={`provider-option provider-${provider.key}`} key={provider.key}>
+                <label className={`provider-option provider-${provider.id}`} key={provider.id}>
                   <input
                     type="checkbox"
-                    checked={draft[provider.key]}
-                    onChange={(event) =>
+                    checked={provider.keys.some((key) => Boolean(draft[key]))}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
                       setDraft((current) => ({
                         ...current,
-                        [provider.key]: event.target.checked,
-                      }))
-                    }
+                        ...Object.fromEntries(provider.keys.map((key) => [key, checked])),
+                      }));
+                    }}
                   />
                   <span className="provider-check" aria-hidden>
                     <Check size={16} strokeWidth={3} />

@@ -13,16 +13,17 @@ import type {
   CursorService,
   DeepSeekService,
   GrokService,
+  OpenCodeGoService,
 } from "../types";
 import type { GridSlot, PlanSize } from "../planLayout";
 import { IP_THEME, ipVars, type ArtSkin } from "../ipTheme";
-import { mascotMood, mascotSrc, peakPercent } from "../mascot";
+import { cornerMascotSrc, mascotMood, mascotSrc, peakPercent } from "../mascot";
 import { RingGauge, type RingWindow } from "./RingGauge";
 import { StatusChip } from "./StatusChip";
 import { CornerBrackets } from "./CornerBrackets";
 import { UsageBars } from "./UsageBars";
 
-type Kind = "codex" | "claude" | "deepseek" | "grok" | "cursor" | "antigravity";
+type Kind = "codex" | "claude" | "deepseek" | "grok" | "cursor" | "antigravity" | "opencodego";
 
 type AnyService = (
   | CodexService
@@ -31,6 +32,7 @@ type AnyService = (
   | GrokService
   | CursorService
   | AntigravityService
+  | OpenCodeGoService
 ) & {
   plan?: string;
   cooldownUntilLocal?: string;
@@ -59,6 +61,10 @@ type AnyService = (
   prepaidBalanceCents?: number;
   claudeFiveHourPercent?: number;
   claudeSevenDayPercent?: number;
+  rollingPercent?: number;
+  weeklyPercent?: number;
+  rollingResetLocal?: string;
+  weeklyResetLocal?: string;
   claudeFiveHourResetLocal?: string;
   claudeSevenDayResetLocal?: string;
 };
@@ -145,13 +151,11 @@ function windowsFor(kind: Kind, service: AnyService): {
         ...period,
         segments: products.map(({ label, percent }) => ({ label, percent })),
       };
-      // Bars draw one split bar; the ring keeps the pool outside, the busiest
-      // product inside, and lists every product in its legend.
-      const ranked = [...products].sort((left, right) => right.percent - left.percent);
+      // The products add up to the pool, so both the bar and the ring draw a
+      // single meter split by product; the legend lists each product.
       return {
         outer: pool,
-        inner: ranked[0],
-        extra: ranked.slice(1),
+        extra: products,
         legend: [pool, ...products],
         bars: [pool],
       };
@@ -188,6 +192,16 @@ function windowsFor(kind: Kind, service: AnyService): {
       extra: ranked.slice(2),
       legend: lanes,
     };
+  }
+
+  if (kind === "opencodego") {
+    const seven = windowOf("7D", service.weeklyPercent, service.weeklyResetLocal);
+    const five = windowOf("5H", service.rollingPercent, service.rollingResetLocal);
+    const month = windowOf("MONTH", service.monthlyPercent, service.monthlyResetLocal);
+    const [outer, inner, ...rest] = [seven, five, month].filter(
+      (win): win is GaugeWindow => Boolean(win),
+    );
+    return { outer, inner, extra: rest };
   }
 
   if (kind === "antigravity") {
@@ -297,6 +311,7 @@ export function ServicePanel({
   slot,
   placement,
   artSkin = "ip",
+  topBarCover,
 }: {
   kind: Kind;
   title: string;
@@ -306,6 +321,8 @@ export function ServicePanel({
   slot?: string;
   placement?: GridSlot;
   artSkin?: ArtSkin;
+  /** IP-skin clock/buttons floating over this card's header. */
+  topBarCover?: "clock" | "controls" | "both";
 }) {
   const { wide, ipLayout, panelRef } = useIpMeter(artSkin, slot);
   const titleId = `panel-${kind}-title`;
@@ -321,10 +338,13 @@ export function ServicePanel({
     service.grokBotPercent,
     service.claudeFiveHourPercent,
     service.claudeSevenDayPercent,
+    service.rollingPercent,
+    service.weeklyPercent,
   ];
   const mood = mascotMood(service.status, percents);
   const peak = peakPercent(percents);
   const portrait = artSkin === "ip" ? mascotSrc(kind, mood, artSkin) : "";
+  const cornerPortrait = artSkin === "ip" ? cornerMascotSrc(kind, mood) : undefined;
   const { outer, inner, extra, legend: orderedLegend, bars } = windowsFor(kind, service);
   const legend =
     orderedLegend ??
@@ -391,6 +411,7 @@ export function ServicePanel({
       data-meter={artSkin === "ip" ? meter : undefined}
       data-emerge={artSkin === "ip" ? IP_THEME[kind].emerge : undefined}
       data-ip-layout={artSkin === "ip" ? ipLayout : undefined}
+      data-under={artSkin === "ip" ? topBarCover : undefined}
       data-tone={panelTone}
       style={
         {
@@ -434,11 +455,17 @@ export function ServicePanel({
         {artSkin === "ip" && (
           <div className="gauge-slot">
             {meter === "bar" ? (
-              <div className="ip-portrait" data-mood={mood} role="img" aria-label={ariaLabel}>
-                {portrait && (
+              <div
+                className="ip-portrait"
+                data-mood={mood}
+                data-corner-art={cornerPortrait ? "true" : undefined}
+                role="img"
+                aria-label={ariaLabel}
+              >
+                {(cornerPortrait ?? portrait) && (
                   <img
                     className="panel-mascot"
-                    src={portrait}
+                    src={cornerPortrait ?? portrait}
                     alt=""
                     data-mascot={mood}
                     data-pack={artSkin}

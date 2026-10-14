@@ -52,6 +52,9 @@ pub struct Config {
     /// official file, then the OS keyring item `agy` writes. Antigravity
     /// credentials are always read-only.
     pub antigravity_credentials_path: String,
+    /// Optional path to OpenCode's `opencode.db` (2.x) or `auth.json` (1.x).
+    /// Empty uses OpenCode's data dir, then `OPENCODE_API_KEY`. Read-only.
+    pub open_code_go_credentials_path: String,
     /// "" for live; "normal" | "claude429" | "failures" for mock mode.
     pub mock_mode: String,
     /// Preferred window chrome when not launched with CLI override:
@@ -81,6 +84,7 @@ impl Default for Config {
             grok_credentials_path: String::new(),
             cursor_credentials_path: String::new(),
             antigravity_credentials_path: String::new(),
+            open_code_go_credentials_path: String::new(),
             mock_mode: String::new(),
             window_mode: "normal".into(),
             low_power_mode: false,
@@ -162,7 +166,8 @@ const DEFAULT_CONFIG_JSON: &str = r#"{
     "deepseek": true,
     "grok": false,
     "cursor": false,
-    "antigravity": false
+    "antigravity": false,
+    "opencodego": false
   },
   "deepSeekApiKey": "",
   "claudeCredentialsPath": "",
@@ -174,6 +179,7 @@ const DEFAULT_CONFIG_JSON: &str = r#"{
   "grokCredentialsPath": "",
   "cursorCredentialsPath": "",
   "antigravityCredentialsPath": "",
+  "openCodeGoCredentialsPath": "",
   "mockMode": "",
   "windowMode": "normal",
   "lowPowerMode": false,
@@ -330,6 +336,7 @@ mod tests {
             grok: true,
             cursor: false,
             antigravity: false,
+            opencodego: false,
         };
 
         save_judge_demo_selection_to(&path, selection).expect("save demo selection");

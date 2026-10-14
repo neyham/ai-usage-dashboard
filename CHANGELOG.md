@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.1] - 2026-10-15
+
+### Added
+
+- OpenCode Go: 5-hour, weekly, and monthly subscription windows with reset
+  times (Go and Go Plus). The API key is read, read-only, from OpenCode's own
+  login (`opencode.db` for OpenCode 2.x, `auth.json` for 1.x, then
+  `OPENCODE_API_KEY`); `openCodeGoCredentialsPath` overrides it. Only
+  server-reported percentages are shown. Disabled by default.
+- Seven-card layout (four over three) for an unswitched X seat with every
+  provider enabled.
+- Corner-emerging character poses for wide IP cards, in all five moods, and an
+  OpenCode Go character.
+
+### Changed
+
+- Display Settings has one "X · Grok + Cursor" toggle instead of separate Grok
+  and Cursor toggles; `enabledProviders` keeps both keys. A seat already on the
+  unified X pool no longer reads Cursor's own feed. An unswitched seat hides
+  the side with no local login while the other side works.
+- The X ring is one ring split by product instead of an inner ring for the
+  busiest product.
+- Unswitched Cursor cards use the X (Grok) character; the Cursor character was
+  remade as OpenCode Go.
+- A spent quota (`QUOTA EXHAUSTED`) shows a LIMIT chip instead of ERROR.
+- Release upgrade checks use 0.9.0 as the baseline.
+
+### Fixed
+
+- EVA skin: four-row cards (Antigravity groups, Cursor breakdown) overlapped
+  the panel header and footer.
+- IP skin: the floating clock and buttons covered card titles, notably the
+  middle card in the five-card layout with three cards on top.
+
 ## [0.9.0] - 2026-10-13
 
 ### Added

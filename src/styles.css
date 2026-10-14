@@ -19,6 +19,7 @@
   --grok: #8aa855;
   --cursor: #9a85b8;
   --antigravity: #4d9cb0;
+  --opencodego: #6fbf98;
   --font: "Rajdhani", "Oswald", "Bahnschrift", "PingFang SC", "Microsoft YaHei",
     system-ui, sans-serif;
   --mono: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
@@ -293,17 +294,31 @@ body {
 .panels[data-count="6"] {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+/* Seven cards (an unswitched X seat with everything on): four over three. */
+.panels[data-count="7"] {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+}
+.panels[data-count="7"] .panel:nth-child(-n + 4) {
+  grid-column: span 3;
+}
+.panels[data-count="7"] .panel:nth-child(n + 5) {
+  grid-column: span 4;
+}
 .panels[data-count="5"] .panel,
-.panels[data-count="6"] .panel {
+.panels[data-count="6"] .panel,
+.panels[data-count="7"] .panel {
   min-height: 0;
   padding: 14px 16px;
 }
 .panels[data-count="5"] .panel-head,
-.panels[data-count="6"] .panel-head {
+.panels[data-count="6"] .panel-head,
+.panels[data-count="7"] .panel-head {
   margin-bottom: 8px;
 }
 .panels[data-count="5"] .panel-title,
-.panels[data-count="6"] .panel-title {
+.panels[data-count="6"] .panel-title,
+.panels[data-count="7"] .panel-title {
   font-size: 22px;
 }
 
@@ -381,6 +396,7 @@ body {
 .panel-grok { --accent: var(--grok); }
 .panel-cursor { --accent: var(--cursor); }
 .panel-antigravity { --accent: var(--antigravity); }
+.panel-opencodego { --accent: var(--opencodego); }
 
 .panel-edge {
   position: absolute;
@@ -1049,9 +1065,9 @@ body {
 .provider-option.provider-codex { --provider-accent: var(--codex); }
 .provider-option.provider-claude { --provider-accent: var(--claude); }
 .provider-option.provider-deepseek { --provider-accent: var(--deepseek); }
-.provider-option.provider-grok { --provider-accent: var(--grok); }
-.provider-option.provider-cursor { --provider-accent: var(--cursor); }
+.provider-option.provider-x { --provider-accent: var(--grok); }
 .provider-option.provider-antigravity { --provider-accent: var(--antigravity); }
+.provider-option.provider-opencodego { --provider-accent: var(--opencodego); }
 .performance-option { --provider-accent: var(--ok); }
 .provider-option:has(input:checked) {
   border-color: color-mix(in srgb, var(--provider-accent) 50%, transparent);
@@ -1325,12 +1341,14 @@ body {
   }
   .panels[data-count="4"] .chip,
   .panels[data-count="5"] .chip,
-  .panels[data-count="6"] .chip {
+  .panels[data-count="6"] .chip,
+  .panels[data-count="7"] .chip {
     padding-inline: 5px;
   }
   .panels[data-count="4"] .chip-text,
   .panels[data-count="5"] .chip-text,
-  .panels[data-count="6"] .chip-text {
+  .panels[data-count="6"] .chip-text,
+  .panels[data-count="7"] .chip-text {
     display: none;
   }
   .cooldown {
@@ -1412,12 +1430,14 @@ body {
   .panels[data-count="3"],
   .panels[data-count="4"],
   .panels[data-count="5"],
-  .panels[data-count="6"] {
+  .panels[data-count="6"],
+  .panels[data-count="7"] {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: none;
   }
   .panels[data-count="3"] .panel,
-  .panels[data-count="5"] .panel {
+  .panels[data-count="5"] .panel,
+  .panels[data-count="7"] .panel {
     grid-column: auto;
     grid-row: auto;
   }
@@ -1709,11 +1729,11 @@ body {
   object-position: bottom center;
 }
 /* Position the artwork inside the fixed circular mask, without moving the ring. */
-.dashboard[data-art="ip"] .panel-cursor .gauge-figure .panel-mascot,
 .dashboard[data-art="ip"] .panel-antigravity .gauge-figure .panel-mascot {
   translate: 0 8%;
 }
-.dashboard[data-art="ip"] .panel-grok .gauge-figure .panel-mascot {
+.dashboard[data-art="ip"] .panel-grok .gauge-figure .panel-mascot,
+.dashboard[data-art="ip"] .panel-cursor .gauge-figure .panel-mascot {
   /* Keep the sprite's straight waist edge below the circular crop. */
   translate: 0 10%;
   scale: 1.12;
@@ -1743,12 +1763,32 @@ body {
 .dashboard[data-art="ip"] .panel[data-meter="bar"][data-emerge="right"] .gauge-slot {
   grid-column: 2;
 }
+/* The character emerges from a lower corner of the card: anchored to the
+   card's own edge (past the padding) and cropped by its rounded corner,
+   instead of floating in a padded box with a flat cut at the waist. */
+/* No ring here: drop the slot's size containment so the portrait sizes and
+   positions against the card itself. */
+.dashboard[data-art="ip"] .panel[data-meter="bar"] .gauge-slot {
+  container-type: normal;
+}
 .dashboard[data-art="ip"] .panel[data-meter="bar"] .ip-portrait {
-  position: relative;
-  width: 100%;
-  height: 100%;
+  --corner-size: min(58cqw, 96cqh);
+  --corner-bleed-x: -5%;
+  --corner-drop: 0%;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: var(--corner-size);
+  height: var(--corner-size);
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
+  z-index: 0;
+  pointer-events: none;
+}
+.dashboard[data-art="ip"] .panel[data-meter="bar"][data-emerge="right"] .ip-portrait {
+  left: auto;
+  right: 0;
+  --corner-bleed-x: 5%;
 }
 .dashboard[data-art="ip"] .panel[data-meter="bar"] .panel-mascot {
   position: absolute;
@@ -1756,6 +1796,40 @@ body {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  object-position: bottom left;
+  translate: var(--corner-bleed-x) var(--corner-drop);
+}
+.dashboard[data-art="ip"] .panel[data-meter="bar"][data-emerge="right"] .panel-mascot {
+  object-position: bottom right;
+}
+/* Sprites whose artwork stops short of the canvas bottom sink to the edge. */
+.dashboard[data-art="ip"] .panel-grok[data-meter="bar"] .ip-portrait,
+.dashboard[data-art="ip"] .panel-cursor[data-meter="bar"] .ip-portrait {
+  --corner-drop: 7%;
+}
+/* Bars sit above the art inside the body; the header and status footer sit
+   above the whole body (z-index 2), which holds the art. */
+.dashboard[data-art="ip"] .panel[data-meter="bar"] .ip-bars,
+.dashboard[data-art="ip"] .panel[data-meter="bar"] .reset-credits {
+  position: relative;
+  z-index: 1;
+}
+.dashboard[data-art="ip"] .panel[data-meter="bar"] .panel-head,
+.dashboard[data-art="ip"] .panel[data-meter="bar"] .panel-status {
+  position: relative;
+  z-index: 3;
+}
+/* Corner art already has the corner crop drawn in, so it is placed flush
+   and a little larger than the front-facing fallback sprites. */
+.dashboard[data-art="ip"] .panel[data-meter="bar"] .ip-portrait[data-corner-art="true"] {
+  --corner-size: min(66cqw, 100cqh);
+  --corner-bleed-x: 0%;
+  --corner-drop: 0%;
+}
+/* Stacked (narrow) cards keep the bars on top; the character fills the
+   lower part of the card from its corner. */
+.dashboard[data-art="ip"] .panel[data-meter="bar"][data-ip-layout="stack"] .ip-portrait {
+  --corner-size: min(86cqw, 58cqh);
 }
 .dashboard[data-art="ip"] .panel[data-meter="bar"] .ip-bars {
   display: flex;
@@ -1973,6 +2047,19 @@ body {
 .dashboard .ip-bar-seg-key[data-seg="4"]::before {
   background: color-mix(in srgb, var(--ring-ok, var(--accent)) 30%, #4a4a4a);
 }
+/* Ring parts of a shared pool use the same steps as the bar segments. */
+.dashboard .gauge-seg[data-seg="1"] {
+  color: color-mix(in srgb, var(--ring-ok, var(--accent)) 55%, var(--cream, #fff8f0));
+}
+.dashboard .gauge-seg[data-seg="2"] {
+  color: color-mix(in srgb, var(--ring-ok, var(--accent)) 20%, var(--cream, #fff8f0));
+}
+.dashboard .gauge-seg[data-seg="3"] {
+  color: color-mix(in srgb, var(--ring-ok, var(--accent)) 35%, #8a8a8a);
+}
+.dashboard .gauge-seg[data-seg="4"] {
+  color: color-mix(in srgb, var(--ring-ok, var(--accent)) 30%, #4a4a4a);
+}
 .ip-bar-segs {
   display: flex;
   flex-wrap: wrap;
@@ -2071,9 +2158,40 @@ body {
   right: 50%;
   margin-right: 28px;
 }
+/* Five-fill has three cards on top, like six: sit at the middle card's end. */
+.dashboard[data-art="ip"]:has(.panels[data-count="5"][data-layout="five-fill"]) .topbar {
+  right: 33.333%;
+  margin-right: 20px;
+}
+/* Cards under the floating clock or buttons keep their title clear of them
+   (see topBarCovers in planLayout.ts); a long plan chip truncates. */
+.dashboard[data-art="ip"] .panel[data-under="controls"] .panel-head {
+  padding-right: 112px;
+}
+.dashboard[data-art="ip"] .panel[data-under="clock"] .panel-head {
+  padding-right: 168px;
+}
+.dashboard[data-art="ip"] .panel[data-under="both"] .panel-head {
+  padding-right: 330px;
+}
+.dashboard[data-art="ip"] .panel-titles {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.dashboard[data-art="ip"] .panel-title-row {
+  min-width: 0;
+}
+.dashboard[data-art="ip"] .panel-title,
+.dashboard[data-art="ip"] .panel-glyph {
+  flex: 0 0 auto;
+}
 .dashboard[data-art="ip"]:has(.panels[data-count="6"]) .topbar {
   right: 33.333%;
   margin-right: 20px;
+}
+.dashboard[data-art="ip"]:has(.panels[data-count="7"]) .topbar {
+  right: 25%;
+  margin-right: 16px;
 }
 .dashboard[data-art="ip"] .clockwrap {
   display: flex;
@@ -2135,8 +2253,14 @@ body {
   max-width: none;
   white-space: nowrap;
   overflow-wrap: normal;
-  flex: 0 0 auto;
+  /* Shrinks with an ellipsis when the header reserves room for the clock;
+     block (not flex) so text-overflow applies. */
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
   width: max-content;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .dashboard[data-art="ip"] .panel {
   padding: 12px 14px;
@@ -2261,18 +2385,18 @@ body {
 .dashboard[data-art="ip"] .provider-option.provider-codex { background: #FF3B4A; color: #121212; }
 .dashboard[data-art="ip"] .provider-option.provider-claude { background: #00B8C8; color: #121212; }
 .dashboard[data-art="ip"] .provider-option.provider-deepseek { background: #FFD000; color: #121212; }
-.dashboard[data-art="ip"] .provider-option.provider-grok { background: #5B21FF; color: #fff8f0; }
-.dashboard[data-art="ip"] .provider-option.provider-cursor { background: #E86DB8; color: #121212; }
+.dashboard[data-art="ip"] .provider-option.provider-x { background: #5B21FF; color: #fff8f0; }
 .dashboard[data-art="ip"] .provider-option.provider-antigravity { background: #149878; color: #121212; }
+.dashboard[data-art="ip"] .provider-option.provider-opencodego { background: #ECE6D8; color: #121212; }
 .dashboard[data-art="ip"] .provider-option.provider-codex .provider-name,
 .dashboard[data-art="ip"] .provider-option.provider-claude .provider-name,
 .dashboard[data-art="ip"] .provider-option.provider-deepseek .provider-name,
-.dashboard[data-art="ip"] .provider-option.provider-cursor .provider-name,
-.dashboard[data-art="ip"] .provider-option.provider-antigravity .provider-name {
+.dashboard[data-art="ip"] .provider-option.provider-antigravity .provider-name,
+.dashboard[data-art="ip"] .provider-option.provider-opencodego .provider-name {
   color: #121212;
 }
-.dashboard[data-art="ip"] .provider-option.provider-grok .provider-name,
-.dashboard[data-art="ip"] .provider-option.provider-grok .provider-code {
+.dashboard[data-art="ip"] .provider-option.provider-x .provider-name,
+.dashboard[data-art="ip"] .provider-option.provider-x .provider-code {
   color: #fff8f0;
 }
 .dashboard[data-art="ip"] .provider-option:not(:has(input:checked)) {
@@ -2323,6 +2447,10 @@ body {
   .dashboard[data-art="ip"] .topbar {
     order: -2;
   }
+  /* The clock and buttons stack above the cards here; no space to reserve. */
+  .dashboard[data-art="ip"] .panel[data-under] .panel-head {
+    padding-right: 0;
+  }
   .dashboard[data-art="ip"] .telemetry {
     order: -1;
     display: flex;
@@ -2341,12 +2469,85 @@ body {
 .dashboard[data-art="ring"] .ip-bars {
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  /* `safe` keeps a tall stack from spilling upward over the panel header. */
+  justify-content: safe center;
   gap: 14px;
   width: 100%;
   height: 100%;
   min-height: 0;
   padding: 6px 2px;
+}
+/* Four or more windows (Antigravity's two groups, Cursor's breakdown) need a
+   denser rhythm to fit between the header and the status footer. */
+.dashboard[data-art="ring"] .ip-bars[data-count="4"],
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] {
+  gap: 6px;
+  padding-block: 0;
+}
+/* Dense rows put the reset time on the label line: "7D  RESET …  21%". */
+.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar,
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto 10px;
+  grid-template-areas:
+    "label reset percent"
+    "track track track";
+  column-gap: 10px;
+  row-gap: 3px;
+  align-items: baseline;
+}
+.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar[data-group-start="true"],
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar[data-group-start="true"] {
+  grid-template-rows: auto auto 10px;
+  grid-template-areas:
+    "group group group"
+    "label reset percent"
+    "track track track";
+}
+.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar[data-segmented="true"],
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar[data-segmented="true"] {
+  grid-template-rows: auto 10px auto;
+  grid-template-areas:
+    "label reset percent"
+    "track track track"
+    "segs segs segs";
+}
+.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar-meta,
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar-meta {
+  display: contents;
+}
+.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar-group,
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar-group {
+  grid-area: group;
+}
+.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar-label,
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar-label {
+  grid-area: label;
+}
+.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar-reset,
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar-reset {
+  grid-area: reset;
+}
+.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar-percent,
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar-percent {
+  grid-area: percent;
+}
+.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar-track,
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar-track {
+  grid-area: track;
+  align-self: stretch;
+}
+.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar-segs,
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar-segs {
+  grid-area: segs;
+}
+.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar-track,
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar-track {
+  height: 10px;
+}
+.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar[data-group-start="true"]:not(:nth-child(2)),
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar[data-group-start="true"]:not(:nth-child(2)) {
+  margin-top: 4px;
 }
 .dashboard[data-art="ring"] .ip-bar {
   display: grid;

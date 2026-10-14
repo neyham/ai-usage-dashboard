@@ -4,7 +4,7 @@
 //!   "claude429" — Claude rate-limited, showing cached data + cooldown
 //!   "failures"  — Codex + DeepSeek + Grok failed, showing cached data; UI stays up
 
-use crate::fetchers::{antigravity, claude, codex, cursor, deepseek, grok};
+use crate::fetchers::{antigravity, claude, codex, cursor, deepseek, grok, opencodego};
 use crate::models::{EnabledProviders, Services, UsageSummary};
 use crate::util::fmt_local;
 use chrono::{Duration, Utc};
@@ -17,6 +17,7 @@ const GROK_MONTHLY_JSON: &str = include_str!("../../mocks/grok_monthly_normal.js
 const CURSOR_JSON: &str = include_str!("../../mocks/cursor_usage_normal.json");
 const GROK_BOT_JSON: &str = include_str!("../../mocks/grok_bot_usage_normal.json");
 const ANTIGRAVITY_JSON: &str = include_str!("../../mocks/antigravity_quota_normal.json");
+const OPENCODEGO_JSON: &str = include_str!("../../mocks/opencodego_usage_normal.json");
 
 pub fn summary(mode: &str, enabled: EnabledProviders) -> Option<UsageSummary> {
     let mode = mode.trim().to_lowercase();
@@ -68,6 +69,9 @@ fn summary_from_payloads(
     else {
         return mock_data_error_summary(enabled);
     };
+    let Ok(mut opencodego) = opencodego::parse_usage(OPENCODEGO_JSON) else {
+        return mock_data_error_summary(enabled);
+    };
     if let Some((percent, reset)) = cursor::parse_sand_usage(GROK_BOT_JSON) {
         cursor.grok_bot_percent = Some(percent);
         cursor.grok_bot_reset_local = reset;
@@ -94,6 +98,8 @@ fn summary_from_payloads(
             cursor.status = "API ERROR".into();
             antigravity.from_cache = true;
             antigravity.status = "API ERROR".into();
+            opencodego.from_cache = true;
+            opencodego.status = "API ERROR".into();
         }
         "normal" => {}
         _ => return invalid_mode_summary(enabled),
@@ -107,6 +113,7 @@ fn summary_from_payloads(
             grok,
             cursor,
             antigravity,
+            opencodego,
         },
         EnabledProviders {
             codex: mode == "failures",
@@ -115,6 +122,7 @@ fn summary_from_payloads(
             grok: mode == "failures",
             cursor: mode == "failures",
             antigravity: mode == "failures",
+            opencodego: mode == "failures",
         },
         enabled,
     )
@@ -136,12 +144,14 @@ fn error_summary(message: &str, enabled: EnabledProviders) -> UsageSummary {
     services.grok.status = message.into();
     services.cursor.status = message.into();
     services.antigravity.status = message.into();
+    services.opencodego.status = message.into();
     services.codex.data_may_be_stale = true;
     services.claude.data_may_be_stale = true;
     services.deepseek.data_may_be_stale = true;
     services.grok.data_may_be_stale = true;
     services.cursor.data_may_be_stale = true;
     services.antigravity.data_may_be_stale = true;
+    services.opencodego.data_may_be_stale = true;
 
     UsageSummary {
         refreshed_at: None,
@@ -260,6 +270,7 @@ mod tests {
                 grok: false,
                 cursor: false,
                 antigravity: false,
+                opencodego: false,
             },
         )
         .expect("known mock mode");

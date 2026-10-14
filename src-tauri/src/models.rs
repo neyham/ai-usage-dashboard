@@ -12,6 +12,7 @@ pub struct EnabledProviders {
     pub grok: bool,
     pub cursor: bool,
     pub antigravity: bool,
+    pub opencodego: bool,
 }
 
 impl EnabledProviders {
@@ -31,6 +32,7 @@ impl Default for EnabledProviders {
             grok: false,
             cursor: false,
             antigravity: false,
+            opencodego: false,
         }
     }
 }
@@ -44,6 +46,7 @@ impl EnabledProviders {
             self.grok,
             self.cursor,
             self.antigravity,
+            self.opencodego,
         ]
         .into_iter()
         .filter(|enabled| *enabled)
@@ -304,6 +307,45 @@ impl Default for AntigravityService {
     }
 }
 
+/// OpenCode Go subscription windows from the Zen Go usage API. The API does
+/// not say whether the seat is Go or Go Plus, and limits are per model, so
+/// only server-reported percentages are shown.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCodeGoService {
+    pub status: String,
+    pub from_cache: bool,
+    pub data_may_be_stale: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rolling_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub weekly_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub monthly_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rolling_reset_local: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub weekly_reset_local: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub monthly_reset_local: Option<String>,
+}
+
+impl Default for OpenCodeGoService {
+    fn default() -> Self {
+        Self {
+            status: "AWAITING DATA".into(),
+            from_cache: false,
+            data_may_be_stale: false,
+            rolling_percent: None,
+            weekly_percent: None,
+            monthly_percent: None,
+            rolling_reset_local: None,
+            weekly_reset_local: None,
+            monthly_reset_local: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Services {
@@ -313,6 +355,8 @@ pub struct Services {
     pub grok: GrokService,
     pub cursor: CursorService,
     pub antigravity: AntigravityService,
+    #[serde(default)]
+    pub opencodego: OpenCodeGoService,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

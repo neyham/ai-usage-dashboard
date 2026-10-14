@@ -697,7 +697,7 @@ fn normalize_stored_token(value: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-fn sqlite_file_uri(path: &Path, query: &str) -> String {
+pub(crate) fn sqlite_file_uri(path: &Path, query: &str) -> String {
     let mut rendered = path.to_string_lossy().replace('\\', "/");
     if cfg!(windows)
         && rendered.len() >= 2

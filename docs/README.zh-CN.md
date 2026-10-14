@@ -2,16 +2,16 @@
 
 [English](../README.md)
 
-把 Claude Code、Codex、Grok Build、Cursor、Antigravity Gemini 的当前额度窗口
-与重置时间，以及 DeepSeek API 余额，集中放在一个本地桌面看板里。
+把 Claude Code、Codex、Grok Build、Cursor、Antigravity Gemini、OpenCode Go 的当前
+额度窗口与重置时间，以及 DeepSeek API 余额，集中放在一个本地桌面看板里。
 
 **Windows · macOS · Linux · 无看板账号 · 无 analytics 或 telemetry**
 
-![默认 IP 色块皮肤下四面板 2×2 横向卡，使用合成的 Codex、Claude、DeepSeek 与 Grok 数据](assets/dashboard.png)
+![默认 IP 色块皮肤下四面板 2×2 横向卡，角色从卡片下角探出，使用合成的 Codex、Claude、X Subscription 与 OpenCode Go 数据](assets/dashboard.png)
 
-![六个面板都使用圆环的 IP 皮肤](assets/dashboard-six-rings.png)
+![六个面板都使用圆环的 IP 皮肤：Codex、Claude、Antigravity、X、OpenCode Go、DeepSeek](assets/dashboard-six-rings.png)
 
-![经典 EVA 分段进度条皮肤，六个 provider](assets/dashboard-eva.png)
+![经典 EVA 分段进度条皮肤，同样的六张卡](assets/dashboard-eva.png)
 
 > 图片来自正式 UI 和内置合成数据，不包含真实账号信息或 provider credential。
 
@@ -27,15 +27,24 @@
 | Grok Build | 合并后的 credit 用量（响应里有该字段时）、重置时间、套餐、可选月度 allowance，以及可用的 banked usage-limit reset |
 | Cursor | Included、Auto、named-model API 用量、Grok Bot 配额、套餐和账期重置时间。Bot 查不到时不影响 Included / Auto / API |
 | Antigravity | Gemini 与 Claude/GPT 两组 5 小时和 7 天额度、重置时间、Google AI 套餐 |
-| X Subscription | Grok 与 Cursor 共用的每周额度池，按产品（Chat、Bot、Build、Cursor）分段显示，带重置时间。已切换的账号只要开启 Grok 或 Cursor 任一面板，就合并为一张 X 卡 |
+| X Subscription | Grok 与 Cursor 共用的每周额度池，按产品（Chat、Bot、Build、Cursor）分段显示，带重置时间。已切换的账号合并为一张 X 卡 |
+| OpenCode Go | 5 小时、每周、每月三档订阅额度及重置时间（Go 与 Go Plus） |
 | DeepSeek | API 余额和余额不足状态 |
 
 - 各个 provider 独立刷新；其中一个失败不会清空其他面板。
-- 可以自由选择 0–6 个面板。两个面板左右并排；三个面板是 T 字（上通栏 +
+- 显示设置里 Grok 和 Cursor 合并为一个 **X** 开关。已切换到 X Subscription 的
+  账号显示一张 X 卡；未切换的账号仍分别显示 Grok 和 Cursor，本机没登录的那一边
+  会自动隐藏。
+- OpenCode Go 只读取 `opencode auth login` 保存的 API key（OpenCode 2.x 的
+  `opencode.db`，或 1.x 的 `auth.json`，其次是 `OPENCODE_API_KEY`），只显示服务端
+  返回的百分比。Go 与 Go Plus 按模型分别设限额，因此不会用本地花费去估算额度，
+  也无法区分这两个套餐。和 Grok、Cursor、Antigravity 一样，OpenCode Go 默认关闭，
+  需要在显示设置里手动开启。
+- 可以自由选择 0–7 张卡。两个面板左右并排；三个面板是 T 字（上通栏 +
   下两张）；四个面板是 2×2 横向卡。五个面板会铺满；若只有一个顶级套餐
   （SuperGrok Heavy、Cursor Ultra/Enterprise 或 Google AI Ultra），它会占
-  左半通高；两个顶级套餐则平分上排。
-- 默认皮肤是 IP 色块。小卡用双环，宽的顶级卡用进度条。可在显示设置中切到
+  左半通高；两个顶级套餐则平分上排。六张卡是 3×2，七张卡是上四下三。
+- 默认皮肤是 IP 色块。小卡用双环；宽卡用进度条，角色从卡片下角探出。可在显示设置中切到
   经典 EVA 分段进度条（无看板娘）；选择会写入 `config.json` 的 `artSkin`。
 - 三个平台均支持普通窗口和无边框全屏。
 - 可以在显示设置中开启低功耗模式：停止动画和高开销合成效果，将时钟更新
@@ -92,19 +101,19 @@ macOS 和 Linux 安装脚本会根据 Release 中发布的 SHA-256 文件校验�
 ## 不读取 credential 的离线演示
 
 使用 `--judge-demo` 可以启动隔离的合成数据演示。它不会读取正常配置、credential、
-cache，也不会构造 provider 网络请求；设置中仍可体验 0–6 面板布局。
+cache，也不会构造 provider 网络请求；设置中仍可体验 0–7 张卡的布局。
 
 Windows 安装包目前会添加 **AI Usage Dashboard (Judge Demo)** 开始菜单快捷方式。
 
 ## 兼容性与限制
 
-- 当前版本为 `v0.9.0`：Windows、Linux、macOS。WinGet 社区源在新 GitHub
+- 当前版本为 `v0.9.1`：Windows、Linux、macOS。WinGet 社区源在新 GitHub
   Release 之后可能短暂滞后。
 - 屏保和闲置启动工具仅支持 Windows。
 - 项目使用 provider CLI 的 credential 格式和用量 endpoint，其中一部分不是公开
   API，未来可能变化。
 - DeepSeek 面板显示 API balance，不是聊天产品的 token usage。
-- 本项目与 Anthropic、OpenAI、xAI、Cursor、Antigravity、DeepSeek 没有隶属、背书或官方合作关系。
+- 本项目与 Anthropic、OpenAI、xAI、Cursor、Antigravity、OpenCode、DeepSeek 没有隶属、背书或官方合作关系。
 
 源代码构建、provider 配置、刷新与缓存行为等完整技术说明请继续阅读
 [英文 README](../README.md)。

@@ -61,6 +61,14 @@ export const IP_THEME: Record<ProviderKind, IpTheme> = {
     onField: "#121212",
     emerge: "right",
   },
+  opencodego: {
+    field: "#ECE6D8",
+    ipA: "#121212",
+    ipB: "#3DF2A6",
+    ringOk: "#3DF2A6",
+    onField: "#121212",
+    emerge: "right",
+  },
 };
 
 export function normalizeArtSkin(value: string | undefined | null): ArtSkin {

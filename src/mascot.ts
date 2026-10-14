@@ -48,6 +48,18 @@ export function peakPercent(percents: Array<number | undefined>): number | null 
   return Math.max(...values);
 }
 
+/** Corner-emerging poses for the wide (bar) cards; same file names. */
+const artCorner = import.meta.glob("./assets/mascots-ip-corner/*.png", {
+  eager: true,
+  import: "default",
+}) as Record<string, string>;
+
+/** Corner art for the wide cards, when it exists for this mood. */
+export function cornerMascotSrc(kind: ProviderKind, mood: MascotMood): string | undefined {
+  const art = kind === "cursor" ? "grok" : kind;
+  return artCorner[`./assets/mascots-ip-corner/${art}-${mood}.png`];
+}
+
 export function mascotSrc(
   kind: ProviderKind,
   mood: MascotMood,
@@ -56,7 +68,9 @@ export function mascotSrc(
   if (skin !== "ip") {
     return "";
   }
-  return artIp[`./assets/mascots-ip/${kind}-${mood}.png`] ?? "";
+  // Cursor is part of X: an unswitched Cursor card wears the X (Grok) mascot.
+  const art = kind === "cursor" ? "grok" : kind;
+  return artIp[`./assets/mascots-ip/${art}-${mood}.png`] ?? "";
 }
 
 export function moodColorVar(mood: MascotMood): "--accent" | "--warn" | "--danger" {

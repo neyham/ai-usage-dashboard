@@ -509,12 +509,14 @@ fn config_error_summary(enabled: EnabledProviders) -> UsageSummary {
     summary.services.grok.status = "CONFIG ERROR".into();
     summary.services.cursor.status = "CONFIG ERROR".into();
     summary.services.antigravity.status = "CONFIG ERROR".into();
+    summary.services.opencodego.status = "CONFIG ERROR".into();
     summary.services.codex.data_may_be_stale = true;
     summary.services.claude.data_may_be_stale = true;
     summary.services.deepseek.data_may_be_stale = true;
     summary.services.grok.data_may_be_stale = true;
     summary.services.cursor.data_may_be_stale = true;
     summary.services.antigravity.data_may_be_stale = true;
+    summary.services.opencodego.data_may_be_stale = true;
     summary
 }
 

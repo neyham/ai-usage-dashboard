@@ -15,6 +15,8 @@ export interface EnabledProviders {
   grok: boolean;
   cursor: boolean;
   antigravity: boolean;
+  /** Absent in configs saved before OpenCode Go support. */
+  opencodego?: boolean;
 }
 
 export interface ClaudeService {
@@ -100,6 +102,18 @@ export interface AntigravityService {
   claudeSevenDayResetLocal?: string;
 }
 
+export interface OpenCodeGoService {
+  status: string;
+  fromCache: boolean;
+  dataMayBeStale: boolean;
+  rollingPercent?: number;
+  weeklyPercent?: number;
+  monthlyPercent?: number;
+  rollingResetLocal?: string;
+  weeklyResetLocal?: string;
+  monthlyResetLocal?: string;
+}
+
 export interface Services {
   codex: CodexService;
   claude: ClaudeService;
@@ -107,6 +121,7 @@ export interface Services {
   grok: GrokService;
   cursor: CursorService;
   antigravity: AntigravityService;
+  opencodego?: OpenCodeGoService;
 }
 
 export interface UsageSummary {

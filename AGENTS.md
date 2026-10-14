@@ -6,8 +6,8 @@
 
 | 文件 | 画面 |
 |------|------|
-| `docs/assets/dashboard.png` | 默认 IP 皮肤，**四面板 2×2 横向卡**（Codex / Claude / DeepSeek / Grok，条形用量） |
-| `docs/assets/dashboard-six-rings.png` | IP 皮肤，**六宫格圆环** |
+| `docs/assets/dashboard.png` | 默认 IP 皮肤，**四面板 2×2 横向卡**（Codex / Claude / X / OpenCode Go，条形用量，角色从卡片下角探出） |
+| `docs/assets/dashboard-six-rings.png` | IP 皮肤，**六宫格圆环**（Codex / Claude / Antigravity / X / OpenCode Go / DeepSeek） |
 | `docs/assets/dashboard-eva.png` | EVA 皮肤，六面板分段条 |
 
 做法：

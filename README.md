@@ -8,17 +8,17 @@
 
 **Know your coding-agent limits before they interrupt your session.**
 
-See Claude Code, Codex, Grok Build, Cursor, and Antigravity Gemini usage
-windows, reset times, and service health—plus your DeepSeek API balance—in one
+See Claude Code, Codex, Grok Build, Cursor, Antigravity Gemini, and OpenCode Go
+usage windows, reset times, and service health—plus your DeepSeek API balance—in one
 local desktop view.
 
 **Windows · macOS · Linux · No dashboard account · No analytics or telemetry**
 
-![Four-panel 2×2 landscape cards in the default IP color-slab skin, showing synthetic Codex, Claude, DeepSeek, and Grok data](docs/assets/dashboard.png)
+![Four-panel 2×2 landscape cards in the default IP color-slab skin, with characters emerging from the card corners, showing synthetic Codex, Claude, X Subscription, and OpenCode Go data](docs/assets/dashboard.png)
 
-![Six-panel IP skin with a ring gauge on every card](docs/assets/dashboard-six-rings.png)
+![Six-panel IP skin with a ring gauge on every card: Codex, Claude, Antigravity, X, OpenCode Go, and DeepSeek](docs/assets/dashboard-six-rings.png)
 
-![Classic EVA segmented-bar skin with all six providers](docs/assets/dashboard-eva.png)
+![Classic EVA segmented-bar skin with the same six cards](docs/assets/dashboard-eva.png)
 
 > Production UI rendered with bundled synthetic fixtures. No account information
 > or provider credentials are shown.
@@ -67,17 +67,23 @@ or macOS Gatekeeper may require manual confirmation.
 | Grok Build | Combined credit usage for the server-reported period, reset time, plan, optional monthly allowance, and banked usage-limit resets when available |
 | Cursor | Included, Auto, named-model API usage, Grok Bot quota, plan, and billing-cycle reset |
 | Antigravity | Gemini and Claude/GPT 5-hour and 7-day quotas, reset times, and Google AI plan |
+| OpenCode Go | 5-hour, weekly, and monthly subscription usage with reset times (Go and Go Plus) |
 | DeepSeek | API balance and insufficient-balance state |
 
 - Each provider refreshes independently; one outage does not erase the others.
 - Last-known-good data stays visible and is marked when it may be stale.
-- Choose any zero-to-six provider layout. Two panels sit side by side;
+- Grok and Cursor share one **X** toggle in Display Settings. A switched X
+  Subscription seat shows one X card; an unswitched seat keeps separate Grok
+  and Cursor cards and hides whichever side has no local login.
+- Choose any zero-to-seven card layout. Two panels sit side by side;
   three use a T (full-width top card, two below); four panels use a 2×2
   of landscape cards. Five panels fill the board; a single top-tier plan
   (SuperGrok Heavy, Cursor Ultra/Enterprise, or Google AI Ultra) occupies
-  the left half; two top-tier plans split the top row.
+  the left half; two top-tier plans split the top row. Six cards use a 3×2
+  grid and seven use four over three.
 - The default skin is IP color slabs. Compact cards keep the dual ring;
-  wide top-tier cards use labeled bars. Display Settings can switch to the
+  wide cards use labeled bars with the character emerging from a lower
+  corner of the card. Display Settings can switch to the
   classic EVA segmented-bar HUD (no mascots). The choice is saved as
   `artSkin` in `config.json`.
 - Use a normal window or borderless fullscreen on every platform.
@@ -87,7 +93,7 @@ or macOS Gatekeeper may require manual confirmation.
 
 ## Compatibility and limitations
 
-Version `0.9.0` is the current multi-platform release: Windows (WinGet + NSIS),
+Version `0.9.1` is the current multi-platform release: Windows (WinGet + NSIS),
 Linux (`.deb` / AppImage), and macOS (`.dmg`). Screensaver and scheduled-idle
 helpers remain Windows-only. Published installers are not code-signed. Community
 WinGet indexes can lag a new GitHub release until the version manifest is
@@ -97,7 +103,7 @@ This project reads credential formats and usage endpoints used by provider CLI
 tools. Some of those interfaces are undocumented and can change without notice;
 incompatible responses fail closed to sanitized last-known-good data. This
 project is not affiliated with, endorsed by, or supported by Anthropic, OpenAI,
-xAI, Cursor, Antigravity, or DeepSeek.
+xAI, Cursor, Antigravity, OpenCode, or DeepSeek.
 
 ## Local by design
 
@@ -121,8 +127,8 @@ reporting a vulnerability or suspected credential exposure.
 
 ## Additional installation notes
 
-Pin a version with `VERSION=0.9.0` before the install script, for example
-`VERSION=0.9.0 sh install-linux.sh`.
+Pin a version with `VERSION=0.9.1` before the install script, for example
+`VERSION=0.9.1 sh install-linux.sh`.
 
 ### Windows (WinGet and direct installer)
 
@@ -199,7 +205,7 @@ The isolated offline demo reuses the production parsers and bundled fixtures:
 - refresh actions regenerate fixture data without constructing a live request;
 - provider selections persist separately in the platform config directory
   (`judge-demo.json`) and cannot alter live settings;
-- settings can exercise every zero-to-six panel layout.
+- settings can exercise every zero-to-seven card layout.
 
 It demonstrates the UI and parser-to-renderer boundary without touching live
 accounts. It does not validate authentication, endpoint availability, or live
@@ -291,10 +297,11 @@ leave its password field blank to keep the existing value.
 | Grok Build | `~/.grok/auth.json` | `grokCredentialsPath` (native file path) |
 | Cursor | Official CLI login (`~/.cursor/auth.json` on macOS, `%APPDATA%\Cursor\auth.json` on Windows, `~/.config/cursor/auth.json` then `~/.cursor/auth.json` on Linux; macOS Keychain / Linux `secret-tool` `cursor-access-token`) or Cursor desktop `state.vscdb` | `cursorCredentialsPath` (`auth.json` or `state.vscdb`) |
 | Antigravity | Official `agy` OAuth file `~/.gemini/antigravity-cli/antigravity-oauth-token`, then the OS keyring item `agy` writes (`service=gemini`, `account=antigravity`) | `antigravityCredentialsPath` (native file path; skips the keyring) |
+| OpenCode Go | OpenCode's own API-key login: `opencode.db` (OpenCode 2.x, `credential` row `opencode-go`), then `auth.json` (1.x), under `$XDG_DATA_HOME/opencode` or `~/.local/share/opencode` (also on Windows); then `OPENCODE_API_KEY` | `openCodeGoCredentialsPath` (`opencode.db` or `auth.json`) |
 
-Sign in with the official Claude Code, Codex, Grok Build, Cursor, and
-Antigravity (`agy`) clients before enabling their panels. Grok, Cursor, and
-Antigravity are disabled by default so an upgrade never starts reading a newly
+Sign in with the official Claude Code, Codex, Grok Build, Cursor,
+Antigravity (`agy`), and OpenCode clients before enabling their panels. Grok,
+Cursor, Antigravity, and OpenCode Go are disabled by default so an upgrade never starts reading a newly
 introduced credential source without an explicit selection. Enable Cursor from
 **Display Settings** (gear) or by setting `enabledProviders.cursor` to `true`
 in `config.json`.
@@ -341,6 +348,12 @@ credential files, or asks the official Cursor CLI to renew. The same token also 
 response does not fail Included / Auto / API. An expired session is reported as
 `SESSION EXPIRED`. These are not public APIs; incompatible responses fail
 closed to sanitized last-known-good data.
+
+OpenCode Go reads the API key that `opencode auth login` stored, read-only, and
+calls `opencode.ai/zen/go/v1/usage`. Only the server-reported 5-hour, weekly,
+and monthly percentages are shown. Go and Go Plus set limits per model, so the
+dashboard does not estimate quota from local cost history, and it cannot tell
+the two plans apart.
 
 Antigravity uses the official `agy` OAuth file at
 `~/.gemini/antigravity-cli/antigravity-oauth-token`. Current `agy` builds store
@@ -429,7 +442,8 @@ Example:
     "deepseek": true,
     "grok": false,
     "cursor": false,
-    "antigravity": false
+    "antigravity": false,
+    "opencodego": false
   },
   "deepSeekApiKey": "",
   "claudeCredentialsPath": "",
@@ -441,6 +455,7 @@ Example:
   "grokCredentialsPath": "",
   "cursorCredentialsPath": "",
   "antigravityCredentialsPath": "",
+  "openCodeGoCredentialsPath": "",
   "mockMode": "",
   "windowMode": "normal",
   "lowPowerMode": false,
@@ -579,7 +594,7 @@ The UI suite exercises healthy, rate-limited, partial-failure, and
 insufficient-balance states across seven viewports, including Surface 200%
 landscape, portrait, and half-Snap layouts. It also checks overflow, touch
 targets, refresh state, keyboard behavior, screensaver input exit, offline demo
-disclosure, zero-to-six panel selection layouts, plan-tier large and small
+disclosure, zero-to-seven card selection layouts, plan-tier large and small
 cards, transactional settings failures, CLI fullscreen isolation, modal focus
 behavior, and auth-chip mapping.
 

@@ -7,6 +7,7 @@ pub mod codex;
 pub mod cursor;
 pub mod deepseek;
 pub mod grok;
+pub mod opencodego;
 
 use crate::cache::CacheState;
 use crate::config::Config;
@@ -228,7 +229,7 @@ fn retry_deadline(retry_after: Option<u64>) -> DateTime<Utc> {
 pub fn summary_from_cache(cache: &CacheState, enabled: EnabledProviders) -> UsageSummary {
     use crate::models::{
         AntigravityService, ClaudeService, CodexService, CursorService, DeepSeekService,
-        GrokService,
+        GrokService, OpenCodeGoService,
     };
 
     let cooldown_label = enabled
@@ -273,13 +274,19 @@ pub fn summary_from_cache(cache: &CacheState, enabled: EnabledProviders) -> Usag
         } else {
             AntigravityService::default()
         };
+    let opencodego: OpenCodeGoService = if enabled.opencodego && cache.get("opencodego").is_some() {
+        cached_service(cache, "opencodego", MSG_CACHED, None)
+    } else {
+        OpenCodeGoService::default()
+    };
 
     let any = (enabled.claude && cache.get("claude").is_some())
         || (enabled.codex && cache.get("codex").is_some())
         || (enabled.deepseek && cache.get("deepseek").is_some())
         || (enabled.grok && cache.get("grok").is_some())
         || (enabled.cursor && cache.get("cursor").is_some())
-        || (enabled.antigravity && cache.get("antigravity").is_some());
+        || (enabled.antigravity && cache.get("antigravity").is_some())
+        || (enabled.opencodego && cache.get("opencodego").is_some());
 
     UsageSummary {
         refreshed_at: any
@@ -295,6 +302,7 @@ pub fn summary_from_cache(cache: &CacheState, enabled: EnabledProviders) -> Usag
             grok,
             cursor,
             antigravity,
+            opencodego,
         },
     }
 }
@@ -305,7 +313,7 @@ pub fn summary_from_cache(cache: &CacheState, enabled: EnabledProviders) -> Usag
 pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSummary {
     use crate::models::{
         AntigravityService, ClaudeService, CodexService, CursorService, DeepSeekService,
-        GrokService,
+        GrokService, OpenCodeGoService,
     };
 
     let enabled = config.enabled_providers;
@@ -347,6 +355,11 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
             } else {
                 AntigravityService::default()
             };
+            let opencodego = if enabled.opencodego {
+                cached_service::<OpenCodeGoService>(cache, "opencodego", MSG_FAILED, None)
+            } else {
+                OpenCodeGoService::default()
+            };
             return assemble(
                 Services {
                     codex,
@@ -355,6 +368,7 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
                     grok,
                     cursor,
                     antigravity,
+                    opencodego,
                 },
                 enabled,
                 enabled,
@@ -367,9 +381,16 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
     let fetch_codex = enabled.codex && cache.provider_cooldown_active("codex").is_none();
     let fetch_deepseek = enabled.deepseek && cache.provider_cooldown_active("deepseek").is_none();
     let fetch_grok = enabled.x_pool() && cache.provider_cooldown_active("grok").is_none();
-    let fetch_cursor = enabled.cursor && cache.provider_cooldown_active("cursor").is_none();
+    // A seat already known to be on the unified X pool shows no Cursor card,
+    // so Cursor's own feed is not read. A seat that switches back is picked
+    // up on the next refresh after Grok reports it.
+    let cursor_folded = enabled.x_pool() && cached_x_pool(cache);
+    let fetch_cursor =
+        enabled.cursor && !cursor_folded && cache.provider_cooldown_active("cursor").is_none();
     let fetch_antigravity =
         enabled.antigravity && cache.provider_cooldown_active("antigravity").is_none();
+    let fetch_opencodego =
+        enabled.opencodego && cache.provider_cooldown_active("opencodego").is_none();
 
     let claude_task = fetch_claude.then(|| {
         let config = config.clone();
@@ -401,6 +422,11 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
         let client = client.clone();
         tokio::spawn(async move { antigravity::fetch(&config, &client).await })
     });
+    let opencodego_task = fetch_opencodego.then(|| {
+        let config = config.clone();
+        let client = client.clone();
+        tokio::spawn(async move { opencodego::fetch(&config, &client).await })
+    });
 
     let claude_res = join_optional_fetch(claude_task).await;
     let codex_res = join_optional_fetch(codex_task).await;
@@ -408,6 +434,7 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
     let grok_res = join_optional_fetch(grok_task).await;
     let cursor_res = join_optional_fetch(cursor_task).await;
     let antigravity_res = join_optional_fetch(antigravity_task).await;
+    let opencodego_res = join_optional_fetch(opencodego_task).await;
 
     let (claude, claude_cached) = if !enabled.claude {
         (ClaudeService::default(), false)
@@ -451,14 +478,32 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
     );
     let (grok, grok_cached) =
         apply_standard_fetch(cache, "grok", enabled.x_pool(), fetch_grok, grok_res);
-    let (cursor, cursor_cached) =
-        apply_standard_fetch(cache, "cursor", enabled.cursor, fetch_cursor, cursor_res);
+    let (cursor, cursor_cached) = if enabled.cursor && cursor_folded {
+        // Skipped, not rate limited: hidden behind the X card, or shown from
+        // cache for one cycle if the seat has just left the unified pool.
+        let cached = cache.get("cursor").is_some();
+        let svc = if cached {
+            cached_service(cache, "cursor", MSG_CACHED, None)
+        } else {
+            CursorService::default()
+        };
+        (svc, cached)
+    } else {
+        apply_standard_fetch(cache, "cursor", enabled.cursor, fetch_cursor, cursor_res)
+    };
     let (antigravity, antigravity_cached) = apply_standard_fetch(
         cache,
         "antigravity",
         enabled.antigravity,
         fetch_antigravity,
         antigravity_res,
+    );
+    let (opencodego, opencodego_cached) = apply_standard_fetch(
+        cache,
+        "opencodego",
+        enabled.opencodego,
+        fetch_opencodego,
+        opencodego_res,
     );
 
     cache.updated_at = Some(Utc::now());
@@ -470,6 +515,7 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
             grok,
             cursor,
             antigravity,
+            opencodego,
         },
         EnabledProviders {
             codex: codex_cached,
@@ -478,9 +524,44 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
             grok: grok_cached,
             cursor: cursor_cached,
             antigravity: antigravity_cached,
+            opencodego: opencodego_cached,
         },
         enabled,
     )
+}
+
+fn cached_x_pool(cache: &CacheState) -> bool {
+    cache
+        .get("grok")
+        .and_then(|card| card.data.get("unified"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn login_missing(status: &str) -> bool {
+    status.ends_with(MSG_LOGIN_REQUIRED)
+}
+
+/// Cards actually on screen. Settings expose Grok and Cursor as one X toggle:
+/// a unified pool shows a single X card in the Grok slot, and an unswitched
+/// seat keeps both cards but drops a side that has no local login while the
+/// other side works. Must match `enabledProviderList` in `planLayout.ts`.
+pub(crate) fn shown_providers(enabled: EnabledProviders, services: &Services) -> EnabledProviders {
+    if enabled.x_pool() && services.grok.unified {
+        return EnabledProviders {
+            grok: true,
+            cursor: false,
+            ..enabled
+        };
+    }
+    let grok_missing = login_missing(&services.grok.status);
+    let cursor_missing = login_missing(&services.cursor.status);
+    let both = enabled.grok && enabled.cursor;
+    EnabledProviders {
+        grok: enabled.grok && !(both && grok_missing && !cursor_missing),
+        cursor: enabled.cursor && !(both && cursor_missing && !grok_missing),
+        ..enabled
+    }
 }
 
 pub(crate) fn assemble(
@@ -488,14 +569,7 @@ pub(crate) fn assemble(
     fallbacks: EnabledProviders,
     enabled: EnabledProviders,
 ) -> UsageSummary {
-    // A unified X pool replaces the Cursor card, so Cursor's own fetch must
-    // not degrade the overall status while the X card is healthy.
-    let x_card = enabled.x_pool() && services.grok.unified;
-    let shown = EnabledProviders {
-        grok: enabled.grok || x_card,
-        cursor: enabled.cursor && !x_card,
-        ..enabled
-    };
+    let shown = shown_providers(enabled, &services);
     let active = [
         (shown.claude, &services.claude.status, fallbacks.claude),
         (shown.codex, &services.codex.status, fallbacks.codex),
@@ -510,6 +584,11 @@ pub(crate) fn assemble(
             shown.antigravity,
             &services.antigravity.status,
             fallbacks.antigravity,
+        ),
+        (
+            shown.opencodego,
+            &services.opencodego.status,
+            fallbacks.opencodego,
         ),
     ]
     .into_iter()
@@ -566,6 +645,10 @@ mod tests {
         grok.status = "NOMINAL".into();
         cursor.status = "NOMINAL".into();
         antigravity.status = "NOMINAL".into();
+        let opencodego = crate::models::OpenCodeGoService {
+            status: "NOMINAL".into(),
+            ..Default::default()
+        };
         Services {
             codex,
             claude,
@@ -573,6 +656,7 @@ mod tests {
             grok,
             cursor,
             antigravity,
+            opencodego,
         }
     }
 
@@ -590,6 +674,7 @@ mod tests {
                 grok: false,
                 cursor: false,
                 antigravity: false,
+                opencodego: false,
             },
             EnabledProviders::default(),
         );
@@ -610,6 +695,7 @@ mod tests {
                 grok: false,
                 cursor: false,
                 antigravity: false,
+                opencodego: false,
             },
             EnabledProviders::default(),
         );
@@ -628,6 +714,7 @@ mod tests {
             grok: false,
             cursor: false,
             antigravity: false,
+            opencodego: false,
         };
 
         let fallbacks = EnabledProviders {
@@ -637,6 +724,7 @@ mod tests {
             grok: false,
             cursor: false,
             antigravity: false,
+            opencodego: false,
         };
         let summary = assemble(services, fallbacks, enabled);
 
@@ -654,6 +742,7 @@ mod tests {
             grok: true,
             cursor: false,
             antigravity: false,
+            opencodego: false,
         };
 
         let fallbacks = EnabledProviders {
@@ -663,10 +752,70 @@ mod tests {
             grok: true,
             cursor: false,
             antigravity: false,
+            opencodego: false,
         };
         let summary = assemble(services, fallbacks, enabled);
 
         assert_eq!(summary.status, "error");
+    }
+
+    #[test]
+    fn x_toggle_hides_the_side_without_a_local_login() {
+        let x = EnabledProviders {
+            grok: true,
+            cursor: true,
+            ..EnabledProviders::default()
+        };
+
+        // Cursor-only machine on an unswitched seat.
+        let mut services = nominal_services();
+        services.grok.status = "GROK LOGIN REQUIRED".into();
+        let shown = super::shown_providers(x, &services);
+        assert!(!shown.grok);
+        assert!(shown.cursor);
+
+        // Grok-only machine.
+        let mut services = nominal_services();
+        services.cursor.status = "LOGIN REQUIRED".into();
+        let shown = super::shown_providers(x, &services);
+        assert!(shown.grok);
+        assert!(!shown.cursor);
+
+        // Neither side signed in: keep the X slot so the login hint is visible.
+        let mut services = nominal_services();
+        services.grok.status = "GROK LOGIN REQUIRED".into();
+        services.cursor.status = "LOGIN REQUIRED".into();
+        let shown = super::shown_providers(x, &services);
+        assert!(shown.grok);
+        assert!(shown.cursor);
+
+        // An expired session is not a missing install and stays visible.
+        let mut services = nominal_services();
+        services.cursor.status = "SESSION EXPIRED".into();
+        let shown = super::shown_providers(x, &services);
+        assert!(shown.grok && shown.cursor);
+
+        // A cursor-only legacy config keeps its card even without Grok.
+        let only_cursor = EnabledProviders { grok: false, ..x };
+        let mut services = nominal_services();
+        services.grok.status = "GROK LOGIN REQUIRED".into();
+        assert!(super::shown_providers(only_cursor, &services).cursor);
+    }
+
+    #[test]
+    fn cached_unified_pool_skips_cursor() {
+        let mut cache = CacheState::default();
+        assert!(!super::cached_x_pool(&cache));
+        cache.put(
+            "grok",
+            serde_json::json!({ "status": "NOMINAL", "unified": true }),
+        );
+        assert!(super::cached_x_pool(&cache));
+        cache.put(
+            "grok",
+            serde_json::json!({ "status": "NOMINAL", "unified": false }),
+        );
+        assert!(!super::cached_x_pool(&cache));
     }
 
     #[test]
@@ -681,6 +830,7 @@ mod tests {
             grok: false,
             cursor: true,
             antigravity: false,
+            opencodego: false,
         };
         let no_fallbacks = EnabledProviders {
             cursor: false,
@@ -709,6 +859,7 @@ mod tests {
             grok: false,
             cursor: true,
             antigravity: false,
+            opencodego: false,
         };
 
         let fallbacks = EnabledProviders {
@@ -718,6 +869,7 @@ mod tests {
             grok: false,
             cursor: true,
             antigravity: false,
+            opencodego: false,
         };
         let summary = assemble(services, fallbacks, enabled);
 
@@ -748,6 +900,7 @@ mod tests {
             grok: true,
             cursor: false,
             antigravity: false,
+            opencodego: false,
         };
         let restored = super::summary_from_cache(&cache, enabled);
         assert_eq!(restored.services.grok.status, "LAST KNOWN");
@@ -766,6 +919,7 @@ mod tests {
                 grok: false,
                 cursor: false,
                 antigravity: false,
+                opencodego: false,
             },
             ..Config::default()
         };
