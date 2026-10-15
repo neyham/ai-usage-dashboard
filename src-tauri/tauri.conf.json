@@ -35,7 +35,7 @@
     "targets": "all",
     "category": "Utility",
     "shortDescription": "Cross-platform quota cockpit for AI coding tools",
-    "longDescription": "Local-first desktop dashboard for Claude Code, Codex, Grok Build, Cursor, and Antigravity usage windows plus DeepSeek API balance. Credentials stay in the native backend; the renderer only receives sanitized summaries.",
+    "longDescription": "Local-first desktop dashboard for Claude Code, Codex, Grok Build, Cursor, Antigravity, and OpenCode Go usage windows plus DeepSeek API balance. Credentials stay in the native backend; the renderer only receives sanitized summaries.",
     "resources": {
       "../LICENSE": "LICENSE",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"

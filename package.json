@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.9.1",
   "license": "MIT",
-  "description": "Local, cross-platform quota cockpit for Claude Code, Codex, Grok Build, Cursor, Antigravity, and DeepSeek API balance",
+  "description": "Local, cross-platform quota cockpit for Claude Code, Codex, Grok Build, Cursor, Antigravity, OpenCode Go, and DeepSeek API balance",
   "type": "module",
   "repository": {
     "type": "git",

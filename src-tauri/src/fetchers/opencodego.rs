@@ -150,8 +150,17 @@ fn parse_window(usage: &Value, name: &str) -> Option<Window> {
             .and_then(Value::as_str)
             .and_then(parse_datetime_str)
             .map(fmt_local),
-        limited: !status.eq_ignore_ascii_case("ok") && percent >= 100.0,
+        // A full window is spent whatever the status says. Only "ok" has been
+        // observed, so another status counts only when it names a limit.
+        limited: percent >= 100.0 || status_names_limit(status),
     })
+}
+
+fn status_names_limit(status: &str) -> bool {
+    let status = status.to_ascii_lowercase();
+    ["limit", "exhaust", "exceed", "block"]
+        .iter()
+        .any(|word| status.contains(word))
 }
 
 pub(crate) fn parse_usage(body: &str) -> anyhow::Result<OpenCodeGoService> {
@@ -216,6 +225,21 @@ mod tests {
         assert_eq!(svc.rolling_percent, Some(100.0));
         assert_eq!(svc.weekly_percent, None);
         assert_eq!(svc.monthly_percent, None);
+    }
+
+    #[test]
+    fn spent_window_is_exhausted_whatever_the_status() {
+        let full = parse_usage(r#"{"usage":{"rolling":{"status":"ok","percent":100}}}"#)
+            .expect("full rolling window");
+        assert_eq!(full.status, "QUOTA EXHAUSTED");
+        let limited =
+            parse_usage(r#"{"usage":{"rolling":{"status":"rate_limited","percent":97}}}"#)
+                .expect("limited status");
+        assert_eq!(limited.status, "QUOTA EXHAUSTED");
+        // An unknown non-ok status below 100% is not claimed as exhausted.
+        let warning = parse_usage(r#"{"usage":{"rolling":{"status":"warning","percent":80}}}"#)
+            .expect("warning status");
+        assert_eq!(warning.status, "NOMINAL");
     }
 
     #[test]
