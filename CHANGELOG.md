@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.2] - 2026-10-15
+
+### Fixed
+
+- OpenCode Go ring art was an enlarged crop of the corner art and looked
+  larger than the other characters. It is redrawn as a centred, waist-up
+  pose at the shared ring scale, in all five moods.
+- An OpenCode Go window at 100% showed NOMINAL while the server reported
+  `ok`. A full window is now QUOTA EXHAUSTED whatever the status; another
+  status counts only when it names a limit.
+
+### Changed
+
+- The npm and bundle descriptions list OpenCode Go.
+- Release upgrade checks use 0.9.1 as the baseline.
+
 ## [0.9.1] - 2026-10-15
 
 ### Added
