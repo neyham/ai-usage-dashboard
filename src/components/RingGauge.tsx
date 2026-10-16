@@ -35,13 +35,8 @@ function toneOf(percent: number | undefined): "ok" | "warn" | "danger" | "idle" 
 }
 
 function peakOf(outer?: RingWindow, inner?: RingWindow): number | undefined {
-  return peakWindow(outer, inner)?.percent;
-}
-
-function peakWindow(outer?: RingWindow, inner?: RingWindow): RingWindow | undefined {
-  if (!outer) return inner;
-  if (!inner) return outer;
-  return inner.percent > outer.percent ? inner : outer;
+  if (!outer || !inner) return (outer ?? inner)?.percent;
+  return Math.max(outer.percent, inner.percent);
 }
 
 function polar(radius: number, mathDeg: number): { x: number; y: number } {
@@ -258,7 +253,7 @@ export function RingGauge({
         )}
       </svg>
       {children && <div className="gauge-figure">{children}</div>}
-      <div className={`gauge-readout${mood === "over" ? " is-pulse" : ""}`}>{readout}</div>
+      <div className={`gauge-readout${tone === "danger" ? " is-pulse" : ""}`}>{readout}</div>
     </div>
   );
 }

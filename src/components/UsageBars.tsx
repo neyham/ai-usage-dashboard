@@ -84,7 +84,7 @@ export function UsageBars({
     >
       {skin === "ip" && (
         <div
-          className={`ip-bars-peak${mood === "over" ? " is-pulse" : ""}`}
+          className={`ip-bars-peak${peakTone === "danger" ? " is-pulse" : ""}`}
           data-tone={peakTone}
         >
           {peak == null ? "--" : formatPercent(peak)}

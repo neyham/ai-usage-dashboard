@@ -606,11 +606,10 @@ body {
   font-size: 0.48em;
   color: var(--muted);
 }
-.gauge-stage[data-mood="tense"] .gauge-readout,
+/* The readout is tinted by the figure it shows; mood drives the mascot. */
 .gauge-stage[data-tone="warn"] .gauge-readout {
   color: var(--warn);
 }
-.gauge-stage[data-mood="over"] .gauge-readout,
 .gauge-stage[data-mood="error"] .gauge-readout,
 .gauge-stage[data-tone="danger"] .gauge-readout {
   color: var(--danger);
@@ -1707,8 +1706,6 @@ body {
   transform: translateX(-50%);
 }
 .dashboard[data-art="ip"] .gauge-readout,
-.dashboard[data-art="ip"] .gauge-stage[data-mood="tense"] .gauge-readout,
-.dashboard[data-art="ip"] .gauge-stage[data-mood="over"] .gauge-readout,
 .dashboard[data-art="ip"] .gauge-stage[data-mood="error"] .gauge-readout,
 .dashboard[data-art="ip"] .gauge-stage[data-tone="warn"] .gauge-readout,
 .dashboard[data-art="ip"] .gauge-stage[data-tone="danger"] .gauge-readout {
@@ -2524,14 +2521,6 @@ body {
   row-gap: 3px;
   align-items: baseline;
 }
-.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar[data-group-start="true"],
-.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar[data-group-start="true"] {
-  grid-template-rows: auto auto 10px;
-  grid-template-areas:
-    "group group group"
-    "label reset percent"
-    "track track track";
-}
 .dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar[data-segmented="true"],
 .dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar[data-segmented="true"] {
   grid-template-rows: auto 10px auto;
@@ -2577,22 +2566,22 @@ body {
 .dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar ~ .ip-bar[data-group-start="true"] {
   margin-top: 4px;
 }
-/* Five grouped windows (Antigravity with Argon) put the group name in a
-   leading column instead of its own row: "GEMINI  7D  RESET …  21%". */
-.dashboard[data-art="ring"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar {
+/* Four or five grouped windows (Antigravity's Gemini, Claude/GPT and Argon
+   groups) put the group name in a leading column instead of its own row: "GEMINI  7D  RESET …  21%". */
+.dashboard[data-art="ring"] .ip-bars:is([data-count="4"], [data-count="5"]):has(.ip-bar-group) .ip-bar {
   grid-template-columns: 92px auto minmax(0, 1fr) auto;
   grid-template-rows: auto 10px;
   grid-template-areas:
     "group label reset percent"
     "track track track track";
 }
-.dashboard[data-art="ring"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-group {
+.dashboard[data-art="ring"] .ip-bars:is([data-count="4"], [data-count="5"]):has(.ip-bar-group) .ip-bar-group {
   padding-inline: 0;
   white-space: nowrap;
 }
 /* The IP bar card does the same and moves the reset onto the label line, so
-   five grouped windows fit two rows each under the peak chip. */
-.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar {
+   grouped windows fit two rows each under the peak chip. */
+.dashboard[data-art="ip"] .ip-bars:is([data-count="4"], [data-count="5"]):has(.ip-bar-group) .ip-bar {
   grid-template-columns: 104px auto minmax(0, 1fr) auto;
   grid-template-rows: auto 10px;
   grid-template-areas:
@@ -2602,26 +2591,26 @@ body {
   row-gap: 3px;
   align-items: center;
 }
-.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-meta {
+.dashboard[data-art="ip"] .ip-bars:is([data-count="4"], [data-count="5"]):has(.ip-bar-group) .ip-bar-meta {
   display: contents;
 }
-.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-group {
+.dashboard[data-art="ip"] .ip-bars:is([data-count="4"], [data-count="5"]):has(.ip-bar-group) .ip-bar-group {
   grid-area: group;
   white-space: nowrap;
 }
-.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-label {
+.dashboard[data-art="ip"] .ip-bars:is([data-count="4"], [data-count="5"]):has(.ip-bar-group) .ip-bar-label {
   grid-area: label;
 }
-.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-reset {
+.dashboard[data-art="ip"] .ip-bars:is([data-count="4"], [data-count="5"]):has(.ip-bar-group) .ip-bar-reset {
   grid-area: reset;
 }
-.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-percent {
+.dashboard[data-art="ip"] .ip-bars:is([data-count="4"], [data-count="5"]):has(.ip-bar-group) .ip-bar-percent {
   grid-area: percent;
 }
-.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-track {
+.dashboard[data-art="ip"] .ip-bars:is([data-count="4"], [data-count="5"]):has(.ip-bar-group) .ip-bar-track {
   grid-area: track;
 }
-.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar ~ .ip-bar[data-group-start="true"] {
+.dashboard[data-art="ip"] .ip-bars:is([data-count="4"], [data-count="5"]):has(.ip-bar-group) .ip-bar ~ .ip-bar[data-group-start="true"] {
   margin-top: 4px;
 }
 .dashboard[data-art="ring"] .ip-bar {

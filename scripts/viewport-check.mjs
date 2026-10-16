@@ -1689,6 +1689,15 @@ async function checkMascotMoods(browser) {
       },
     },
     {
+      // A spent 5H window worries the mascot, but the 7D headline stays calm.
+      name: "over-5h",
+      mood: "over",
+      services: {
+        ...baseSummary.services,
+        claude: { ...baseSummary.services.claude, fiveHourPercent: 91, sevenDayPercent: 20 },
+      },
+    },
+    {
       name: "error",
       mood: "error",
       services: {
@@ -1722,6 +1731,12 @@ async function checkMascotMoods(browser) {
     }
     if (testCase.name === "tense") {
       assert.equal(await page.locator(".panel-claude .ip-bars").getAttribute("data-tone"), "warn");
+    }
+    if (testCase.name === "over-5h") {
+      const peak = page.locator(".panel-claude .ip-bars-peak");
+      assert.match((await peak.textContent()) ?? "", /20/);
+      assert.equal(await peak.getAttribute("data-tone"), "ok");
+      assert.equal(await peak.evaluate((el) => el.classList.contains("is-pulse")), false);
     }
     // Each bar carries its own tone so its fill turns amber or red.
     const barTones = await page
@@ -2695,10 +2710,13 @@ async function captureReadmeScreenshots(browser) {
         }),
       );
       assert.deepEqual(overlaps, [], `EVA four-window ${name} ${width}x${height}`);
-      if (name === "four") {
-        // The IP bar card fits Antigravity's five grouped windows (Gemini,
-        // Claude/GPT, Argon) between its title and its bottom edge.
-        const shot = await openShot(summary, { width, height, skin: "ip" });
+      for (const [variant, expectedBars] of name === "four" ? [["five", 5], ["four", 4]] : []) {
+        // The IP bar card fits Antigravity's grouped windows (Gemini,
+        // Claude/GPT, Argon) between its title and its bottom edge, also when
+        // a group reports a single window.
+        const variantSummary = structuredClone(summary);
+        if (variant === "four") delete variantSummary.services.antigravity.claudeFiveHourPercent;
+        const shot = await openShot(variantSummary, { width, height, skin: "ip" });
         const ag = shot.page.locator('.panel-antigravity[data-meter="bar"]');
         await ag.waitFor();
         const fit = await ag.evaluate((panel) => {
@@ -2714,10 +2732,12 @@ async function captureReadmeScreenshots(browser) {
         });
         assert.deepEqual(
           fit,
-          { peakClearsTitle: true, barsInside: true, count: 5 },
-          `IP Antigravity five windows ${width}x${height}`,
+          { peakClearsTitle: true, barsInside: true, count: expectedBars },
+          `IP Antigravity ${variant} windows ${width}x${height}`,
         );
-        await shot.page.screenshot({ path: join(artifactDir, `ip-argon-four-${width}x${height}.png`) });
+        await shot.page.screenshot({
+          path: join(artifactDir, `ip-argon-${variant}-${width}x${height}.png`),
+        });
         await shot.context.close();
       }
       if (name === "six" && width === 1368) {
