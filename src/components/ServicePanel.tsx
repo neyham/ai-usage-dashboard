@@ -221,14 +221,9 @@ function windowsFor(kind: Kind, service: AnyService): {
         ...tag("CLAUDE · GPT", [claudeSeven, claudeFive]),
         ...tag("ARGON", [argonSeven]),
       ];
-      // The ring draws the busiest group (7D outside, 5H inside) so the centre
-      // peak is always one of its arcs; the legend lists every group.
-      const groupPeak = (group: string) =>
-        Math.max(-1, ...lanes.filter((win) => win.group === group && !win.unknown).map((win) => win.percent));
-      const ringGroup = ["CLAUDE · GPT", "ARGON"].reduce(
-        (best, group) => (groupPeak(group) > groupPeak(best) ? group : best),
-        "GEMINI",
-      );
+      // The ring draws Gemini (7D outside, 5H inside), whose 7D is the
+      // readout; without Gemini it falls back to the next group listed.
+      const ringGroup = lanes[0]?.group;
       const ringed = lanes.filter((win) => win.group === ringGroup);
       const [outer, inner] = ringed.length > 0 ? ringed : lanes;
       return {
@@ -361,6 +356,10 @@ export function ServicePanel({
   const legend =
     orderedLegend ??
     [outer, inner, ...extra].filter((win): win is GaugeWindow => Boolean(win));
+  // The headline figure is the first 7D window (Gemini's on Antigravity);
+  // cards without one show their busiest window.
+  const sevenDay = (bars ?? legend).find((win) => win.label === "7D" && !win.unknown);
+  const headline = sevenDay?.percent ?? peak;
   const meter: "ring" | "bar" = artSkin !== "ip" || wide ? "bar" : "ring";
   const resetCredits = service.resetCreditsAvailable;
   const ringOuter = outer?.unknown ? undefined : outer;
@@ -397,10 +396,10 @@ export function ServicePanel({
     ) : (
       <span className="balance-number">--</span>
     );
-  } else if (peak != null) {
+  } else if (headline != null) {
     readout = (
       <>
-        {formatPercent(peak)}
+        {formatPercent(headline)}
         <i>%</i>
       </>
     );
@@ -490,6 +489,7 @@ export function ServicePanel({
                 outer={kind === "deepseek" ? undefined : ringOuter}
                 inner={kind === "deepseek" ? undefined : ringInner}
                 readout={readout}
+                readoutPercent={kind === "deepseek" ? null : headline}
                 mood={mood}
                 ariaLabel={ariaLabel}
                 artSkin={artSkin}
@@ -515,6 +515,7 @@ export function ServicePanel({
           <UsageBars
             skin={artSkin === "ip" ? "ip" : "ring"}
             windows={kind === "deepseek" ? [] : (bars ?? legend)}
+            featuredLabel="7D"
             mood={mood}
             ariaLabel={ariaLabel}
             balance={

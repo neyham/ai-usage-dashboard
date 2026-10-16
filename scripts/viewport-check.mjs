@@ -1338,10 +1338,10 @@ async function checkAntigravityPanel(browser) {
     (await contentPage.locator(".panel-antigravity .gauge-legend").textContent()) ?? "",
     /RESET/,
   );
-  // The headline is the tightest window (5H 27%), matching the mascot mood.
+  // The headline is the Gemini 7D figure, not the tighter 5H window.
   assert.match(
     (await contentPage.locator(".panel-antigravity .ip-bars-peak").textContent()) ?? "",
-    /27/,
+    /21/,
   );
   assert.deepEqual(await inspectLayout(contentPage, { width: 1600, height: 900 }), []);
   await contentContext.close();
@@ -1491,11 +1491,12 @@ async function checkXSubscription(browser) {
   assert.equal(await page.locator(".panel-grok .gauge-seg[data-seg]").count(), 3);
   const agLegend = (await page.locator(".panel-antigravity .gauge-legend").textContent()) ?? "";
   assert.match(agLegend, /GEMINI 7D 21.*GEMINI 5H 27.*CLAUDE · GPT 7D 12.*CLAUDE · GPT 5H 40.*ARGON 7D 14/);
-  // The ring draws the busier group, so the 40% centre sits on an arc.
+  // The ring draws Gemini, so the Gemini 7D readout sits on the outer arc.
   assert.match(
     (await page.locator(".panel-antigravity .gauge-stage").getAttribute("aria-label")) ?? "",
-    /usage: CLAUDE · GPT 7D 12%, CLAUDE · GPT 5H 40%, GEMINI/,
+    /usage: GEMINI 7D 21%.*GEMINI 5H 27%.*CLAUDE/,
   );
+  assert.match((await page.locator(".panel-antigravity .gauge-readout").textContent()) ?? "", /21/);
   assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
   await page.screenshot({ path: join(artifactDir, "x-subscription-rings.png"), fullPage: true });
 
@@ -1597,9 +1598,10 @@ async function checkXSubscription(browser) {
     ["GEMINI", "CLAUDE · GPT", "ARGON"],
   );
   assert.equal(await page.locator(".panel-antigravity .ip-bar").count(), 5);
+  // Gemini 7D heads the card even when Claude/GPT 5H is busier.
   assert.match(
     (await page.locator(".panel-antigravity .ip-bars-peak").textContent()) ?? "",
-    /40/,
+    /21/,
   );
   assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
   await context.close();
@@ -1715,7 +1717,8 @@ async function checkMascotMoods(browser) {
         await page.locator(".panel-claude .ip-bars-peak").evaluate((el) => el.classList.contains("is-pulse")),
         true,
       );
-      assert.match((await page.locator(".panel-claude .ip-bars-peak").textContent()) ?? "", /91/);
+      // The headline is 7D (88%), not the busier 5H window (91%).
+      assert.match((await page.locator(".panel-claude .ip-bars-peak").textContent()) ?? "", /88/);
     }
     if (testCase.name === "tense") {
       assert.equal(await page.locator(".panel-claude .ip-bars").getAttribute("data-tone"), "warn");
@@ -2051,7 +2054,7 @@ async function checkIpPlanCards(browser) {
     await assertPlanPill(page, ".panel-antigravity", "GOOGLE AI PRO");
     assert.match(
       (await page.locator(".panel-antigravity .gauge-readout").textContent()) ?? "",
-      /27/,
+      /21/,
     );
     assert.doesNotMatch(
       (await page.locator(".panel-antigravity").textContent()) ?? "",

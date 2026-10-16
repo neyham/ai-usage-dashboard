@@ -141,6 +141,7 @@ export function RingGauge({
   outer,
   inner,
   readout,
+  readoutPercent,
   mood,
   children,
   ariaLabel,
@@ -149,6 +150,8 @@ export function RingGauge({
   outer?: RingWindow;
   inner?: RingWindow;
   readout: ReactNode;
+  /** The figure the readout shows; its tone colours the readout. */
+  readoutPercent?: number | null;
   mood: MascotMood;
   children?: ReactNode;
   ariaLabel: string;
@@ -185,9 +188,10 @@ export function RingGauge({
   const innerTrack = ip ? (compact ? 10 : 12) : INNER_WIDTH;
   const innerFill = ip ? 8 : INNER_WIDTH;
   const shownInner = compact ? undefined : inner;
-  const shownOuter = compact ? peakWindow(outer, inner) : outer;
+  // A compact gauge keeps the outer (7D) arc, which is what the readout shows.
+  const shownOuter = compact ? (outer ?? inner) : outer;
   const rings = shownInner ? 2 : 1;
-  const tone = toneOf(peakOf(shownOuter, shownInner));
+  const tone = toneOf(readoutPercent ?? peakOf(shownOuter, shownInner));
   const ticks = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 
   return (
