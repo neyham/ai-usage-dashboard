@@ -2,6 +2,38 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.3] - 2026-10-16
+
+### Added
+
+- Antigravity: the separate Gemini 4 Argon weekly quota on paid Pro plans
+  (`argonSevenDayPercent`, `argonSevenDayResetLocal`), shown as an ARGON lane.
+
+### Fixed
+
+- The Antigravity card failed when the quota summary returned only the
+  "Claude and GPT models" group. Only a summary with no usable window is an
+  error now.
+- The quota summary returns only the groups the calling client version knows;
+  the request now names the Antigravity CLI version, restoring Gemini.
+- Usage bars carry their own warning tone again (amber past 70%, red past 88%).
+- Cached summaries show RATE LIMITED for any provider in its 429 cooldown.
+- OpenCode Go: an unreadable configured credentials file reports CREDENTIAL
+  ERROR; an oversized `auth.json` is rejected instead of truncated.
+- The Antigravity CLI's `go-keyring-base64:` keychain entry is decoded.
+
+### Changed
+
+- Each card's headline is its first 7D window (Gemini 7D on Antigravity, the
+  weekly pool on X); cards with no 7D window keep the busiest figure. The
+  readout colour and pulse follow the figure shown; card tone and mood still
+  follow the busiest window.
+- Antigravity's ring draws Gemini first.
+- Grouped quota windows put the group name in a leading column in IP cards
+  and the EVA skin.
+- Ring cards in a row share one ring size; ring characters share one scale.
+- Release upgrade checks use 0.9.2 as the baseline.
+
 ## [0.9.2] - 2026-10-15
 
 ### Fixed
