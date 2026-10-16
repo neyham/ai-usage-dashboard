@@ -34,6 +34,11 @@ use std::time::Instant;
 const QUOTA_URL: &str =
     "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
 const ASSIST_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
+/// The quota summary returns only the groups the calling client version knows:
+/// a bare `antigravity` agent gets just Claude and GPT (since 2026-10-16),
+/// `antigravity/cli/1.2` adds Gemini, and `antigravity/cli/1.3.6` (the agy
+/// release that shipped it) adds the Gemini 4 Argon group.
+const QUOTA_CLIENT_VERSION: &str = "1.3.6";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const LOGIN_REQUIRED: &str = MSG_LOGIN_REQUIRED;
 const SESSION_EXPIRED: &str = "SESSION EXPIRED";
@@ -166,12 +171,19 @@ async fn service_from_quota_and_plan(
     Ok(service)
 }
 
+fn quota_user_agent() -> String {
+    format!(
+        "ai-usage-dashboard/{} antigravity/cli/{QUOTA_CLIENT_VERSION}",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
 fn quota_request(client: &Client, token: &str) -> RequestBuilder {
     client
         .post(QUOTA_URL)
         .bearer_auth(token)
         .header("Accept", "application/json")
-        .header("User-Agent", "antigravity")
+        .header("User-Agent", quota_user_agent())
         .json(&serde_json::json!({}))
 }
 
@@ -207,11 +219,12 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<AntigravityService> {
         .context("Antigravity quota summary missing groups")?;
 
     let gemini = groups.iter().find(|group| {
-        group_is_gemini(group.get("displayName").and_then(Value::as_str))
-            || group
-                .get("buckets")
-                .and_then(Value::as_array)
-                .is_some_and(|buckets| buckets.iter().any(bucket_is_gemini))
+        !group_is_argon(group)
+            && (group_is_gemini(group.get("displayName").and_then(Value::as_str))
+                || group
+                    .get("buckets")
+                    .and_then(Value::as_array)
+                    .is_some_and(|buckets| buckets.iter().any(bucket_is_gemini)))
     });
     // Either group may be missing: since 2026-10-16 some accounts get only the
     // Claude and GPT group from the summary. Fail only when neither has a window.
@@ -236,15 +249,24 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<AntigravityService> {
         claude_buckets.and_then(|list| list.iter().find(|bucket| bucket_window(bucket, "5h")));
     let claude_weekly =
         claude_buckets.and_then(|list| list.iter().find(|bucket| bucket_window(bucket, "weekly")));
+    // Paid Pro plans get a separate weekly Gemini 4 Argon quota.
+    let argon_weekly = groups
+        .iter()
+        .find(|group| group_is_argon(group))
+        .and_then(|group| group.get("buckets"))
+        .and_then(Value::as_array)
+        .and_then(|list| list.iter().find(|bucket| bucket_window(bucket, "weekly")));
     let five_hour_percent = five_hour.and_then(used_percent);
     let seven_day_percent = weekly.and_then(used_percent);
     let claude_five_hour_percent = claude_five_hour.and_then(used_percent);
     let claude_seven_day_percent = claude_weekly.and_then(used_percent);
+    let argon_seven_day_percent = argon_weekly.and_then(used_percent);
     if [
         five_hour_percent,
         seven_day_percent,
         claude_five_hour_percent,
         claude_seven_day_percent,
+        argon_seven_day_percent,
     ]
     .iter()
     .all(Option::is_none)
@@ -271,6 +293,10 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<AntigravityService> {
             .and_then(|bucket| bucket.get("resetTime"))
             .and_then(local_label),
         claude_seven_day_reset_local: claude_weekly
+            .and_then(|bucket| bucket.get("resetTime"))
+            .and_then(local_label),
+        argon_seven_day_percent,
+        argon_seven_day_reset_local: argon_weekly
             .and_then(|bucket| bucket.get("resetTime"))
             .and_then(local_label),
     })
@@ -331,6 +357,25 @@ fn canonical_plan_label(value: &str) -> Option<&'static str> {
         }
         _ => None,
     }
+}
+
+fn group_is_argon(group: &Value) -> bool {
+    let named = group
+        .get("displayName")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name.to_ascii_lowercase().contains("argon"));
+    named
+        || group
+            .get("buckets")
+            .and_then(Value::as_array)
+            .is_some_and(|buckets| {
+                buckets.iter().any(|bucket| {
+                    bucket
+                        .get("bucketId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| id.to_ascii_lowercase().contains("argon"))
+                })
+            })
 }
 
 fn group_is_gemini(name: Option<&str>) -> bool {
@@ -929,6 +974,19 @@ fn default_auth_path() -> Option<PathBuf> {
 }
 
 fn parse_auth_text(text: &str) -> Result<AuthState, AuthError> {
+    // agy stores the keyring copy through go-keyring, which base64-wraps it.
+    let decoded;
+    let text = match text.trim().strip_prefix("go-keyring-base64:") {
+        Some(encoded) => {
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded.trim())
+                .map_err(|_| AuthError::Invalid)?;
+            decoded = String::from_utf8(bytes).map_err(|_| AuthError::Invalid)?;
+            decoded.as_str()
+        }
+        None => text,
+    };
     let root: Value = serde_json::from_str(text).map_err(|_| AuthError::Invalid)?;
     let token = root.get("token").unwrap_or(&root);
     let access = token
@@ -1214,8 +1272,8 @@ fn is_missing_io(error: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_plan_label, load_auth, parse_auth_text, parse_plan, parse_usage, AuthError,
-        AuthState,
+        canonical_plan_label, load_auth, parse_auth_text, parse_plan, parse_usage,
+        quota_user_agent, AuthError, AuthState,
     };
     use chrono::{Duration, Utc};
 
@@ -1258,6 +1316,51 @@ mod tests {
         assert_eq!(service.seven_day_percent, None);
         assert_eq!(service.claude_seven_day_percent.map(f64::round), Some(45.0));
         assert_eq!(service.claude_five_hour_percent, Some(0.0));
+    }
+
+    #[test]
+    fn argon_group_is_separate_from_gemini_in_any_order() {
+        // Live shape from agy 1.3.6 on 2026-10-16, with Argon listed first.
+        let service = parse_usage(
+            r#"{"groups":[
+              {"displayName":"Gemini 4 Argon","buckets":[
+                {"bucketId":"gemini-argon-wtu-weekly","window":"weekly",
+                 "remainingFraction":0.858625,"resetTime":"2026-10-23T02:13:23Z"}]},
+              {"displayName":"Gemini Models","buckets":[
+                {"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.9769,
+                 "resetTime":"2026-10-23T01:08:57Z"},
+                {"bucketId":"gemini-5h","window":"5h","remainingFraction":0.9433,
+                 "resetTime":"2026-10-16T06:08:57Z"}]},
+              {"displayName":"Claude and GPT models","buckets":[
+                {"bucketId":"3p-weekly","window":"weekly","remainingFraction":0.553582,
+                 "resetTime":"2026-10-20T14:51:38Z"}]}]}"#,
+        )
+        .expect("three-group summary");
+        assert_eq!(service.seven_day_percent.map(f64::round), Some(2.0));
+        assert_eq!(service.five_hour_percent.map(f64::round), Some(6.0));
+        assert_eq!(service.argon_seven_day_percent.map(f64::round), Some(14.0));
+        assert!(service.argon_seven_day_reset_local.is_some());
+        assert_eq!(service.claude_seven_day_percent.map(f64::round), Some(45.0));
+    }
+
+    #[test]
+    fn quota_user_agent_names_a_cli_version_with_argon() {
+        assert!(quota_user_agent().ends_with(" antigravity/cli/1.3.6"));
+    }
+
+    #[test]
+    fn go_keyring_wrapped_token_parses() {
+        use base64::Engine as _;
+        let json = r#"{"token":{"access_token":"ya29.test","refresh_token":"1//r",
+            "expiry":"2099-01-01T00:00:00Z"},"auth_method":"consumer"}"#;
+        let wrapped = format!(
+            "go-keyring-base64:{}",
+            base64::engine::general_purpose::STANDARD.encode(json)
+        );
+        match parse_auth_text(&wrapped) {
+            Ok(AuthState::Active(auth)) => assert_eq!(auth.access_token, "ya29.test"),
+            _ => panic!("wrapped keyring token should parse"),
+        }
     }
 
     #[test]

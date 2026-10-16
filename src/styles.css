@@ -2577,6 +2577,53 @@ body {
 .dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar ~ .ip-bar[data-group-start="true"] {
   margin-top: 4px;
 }
+/* Five grouped windows (Antigravity with Argon) put the group name in a
+   leading column instead of its own row: "GEMINI  7D  RESET …  21%". */
+.dashboard[data-art="ring"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar {
+  grid-template-columns: 92px auto minmax(0, 1fr) auto;
+  grid-template-rows: auto 10px;
+  grid-template-areas:
+    "group label reset percent"
+    "track track track track";
+}
+.dashboard[data-art="ring"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-group {
+  padding-inline: 0;
+  white-space: nowrap;
+}
+/* The IP bar card does the same and moves the reset onto the label line, so
+   five grouped windows fit two rows each under the peak chip. */
+.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar {
+  grid-template-columns: 104px auto minmax(0, 1fr) auto;
+  grid-template-rows: auto 10px;
+  grid-template-areas:
+    "group label reset percent"
+    "track track track track";
+  column-gap: 8px;
+  row-gap: 3px;
+  align-items: center;
+}
+.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-meta {
+  display: contents;
+}
+.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-group {
+  grid-area: group;
+  white-space: nowrap;
+}
+.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-label {
+  grid-area: label;
+}
+.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-reset {
+  grid-area: reset;
+}
+.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-percent {
+  grid-area: percent;
+}
+.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar-track {
+  grid-area: track;
+}
+.dashboard[data-art="ip"] .ip-bars[data-count="5"]:has(.ip-bar-group) .ip-bar ~ .ip-bar[data-group-start="true"] {
+  margin-top: 4px;
+}
 .dashboard[data-art="ring"] .ip-bar {
   display: grid;
   grid-template-rows: auto 16px 1.15em;

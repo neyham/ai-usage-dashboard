@@ -1473,6 +1473,8 @@ async function checkXSubscription(browser) {
         ...baseSummary.services.antigravity,
         claudeSevenDayPercent: 12,
         claudeFiveHourPercent: 40,
+        argonSevenDayPercent: 14,
+        argonSevenDayResetLocal: "08-23 10:13",
       },
     },
   };
@@ -1488,7 +1490,7 @@ async function checkXSubscription(browser) {
   assert.equal(await page.locator(".panel-grok .gauge-stage").getAttribute("data-rings"), "1");
   assert.equal(await page.locator(".panel-grok .gauge-seg[data-seg]").count(), 3);
   const agLegend = (await page.locator(".panel-antigravity .gauge-legend").textContent()) ?? "";
-  assert.match(agLegend, /GEMINI 7D 21.*GEMINI 5H 27.*CLAUDE · GPT 7D 12.*CLAUDE · GPT 5H 40/);
+  assert.match(agLegend, /GEMINI 7D 21.*GEMINI 5H 27.*CLAUDE · GPT 7D 12.*CLAUDE · GPT 5H 40.*ARGON 7D 14/);
   // The ring draws the busier group, so the 40% centre sits on an arc.
   assert.match(
     (await page.locator(".panel-antigravity .gauge-stage").getAttribute("aria-label")) ?? "",
@@ -1582,6 +1584,8 @@ async function checkXSubscription(browser) {
         claudeFiveHourPercent: 40,
         claudeSevenDayResetLocal: "08-20 11:59",
         claudeFiveHourResetLocal: "08-19 14:20",
+        argonSevenDayPercent: 14,
+        argonSevenDayResetLocal: "08-23 10:13",
       },
     },
   };
@@ -1590,9 +1594,9 @@ async function checkXSubscription(browser) {
   await page.locator('.panel-antigravity[data-meter="bar"]').waitFor();
   assert.deepEqual(
     await page.locator(".panel-antigravity .ip-bar-group").allTextContents(),
-    ["GEMINI", "CLAUDE · GPT"],
+    ["GEMINI", "CLAUDE · GPT", "ARGON"],
   );
-  assert.equal(await page.locator(".panel-antigravity .ip-bar").count(), 4);
+  assert.equal(await page.locator(".panel-antigravity .ip-bar").count(), 5);
   assert.match(
     (await page.locator(".panel-antigravity .ip-bars-peak").textContent()) ?? "",
     /40/,
@@ -2649,6 +2653,8 @@ async function captureReadmeScreenshots(browser) {
       claudeSevenDayPercent: 12,
       claudeFiveHourResetLocal: "08-19 14:20",
       claudeSevenDayResetLocal: "08-20 11:59",
+      argonSevenDayPercent: 14,
+      argonSevenDayResetLocal: "08-23 10:13",
     });
     const fourCards = {
       ...fourWindows,
@@ -2686,6 +2692,31 @@ async function captureReadmeScreenshots(browser) {
         }),
       );
       assert.deepEqual(overlaps, [], `EVA four-window ${name} ${width}x${height}`);
+      if (name === "four") {
+        // The IP bar card fits Antigravity's five grouped windows (Gemini,
+        // Claude/GPT, Argon) between its title and its bottom edge.
+        const shot = await openShot(summary, { width, height, skin: "ip" });
+        const ag = shot.page.locator('.panel-antigravity[data-meter="bar"]');
+        await ag.waitFor();
+        const fit = await ag.evaluate((panel) => {
+          const box = panel.getBoundingClientRect();
+          const title = panel.querySelector(".panel-title").getBoundingClientRect();
+          const peak = panel.querySelector(".ip-bars-peak").getBoundingClientRect();
+          const bars = Array.from(panel.querySelectorAll(".ip-bar")).map((bar) => bar.getBoundingClientRect());
+          return {
+            peakClearsTitle: peak.top >= title.bottom - 0.5,
+            barsInside: bars.every((bar) => bar.bottom <= box.bottom + 0.5),
+            count: bars.length,
+          };
+        });
+        assert.deepEqual(
+          fit,
+          { peakClearsTitle: true, barsInside: true, count: 5 },
+          `IP Antigravity five windows ${width}x${height}`,
+        );
+        await shot.page.screenshot({ path: join(artifactDir, `ip-argon-four-${width}x${height}.png`) });
+        await shot.context.close();
+      }
       if (name === "six" && width === 1368) {
         // Same data with Grok signed out: the X toggle keeps only Cursor.
         const cursorOnly = structuredClone(summary);

@@ -100,6 +100,8 @@ export interface AntigravityService {
   claudeSevenDayPercent?: number;
   claudeFiveHourResetLocal?: string;
   claudeSevenDayResetLocal?: string;
+  argonSevenDayPercent?: number;
+  argonSevenDayResetLocal?: string;
 }
 
 export interface OpenCodeGoService {

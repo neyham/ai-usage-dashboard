@@ -286,6 +286,11 @@ pub struct AntigravityService {
     pub claude_five_hour_reset_local: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub claude_seven_day_reset_local: Option<String>,
+    /// Separate weekly Gemini 4 Argon quota on paid Pro plans.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub argon_seven_day_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub argon_seven_day_reset_local: Option<String>,
 }
 
 impl Default for AntigravityService {
@@ -303,6 +308,8 @@ impl Default for AntigravityService {
             claude_seven_day_percent: None,
             claude_five_hour_reset_local: None,
             claude_seven_day_reset_local: None,
+            argon_seven_day_percent: None,
+            argon_seven_day_reset_local: None,
         }
     }
 }

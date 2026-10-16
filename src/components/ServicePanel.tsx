@@ -67,6 +67,8 @@ type AnyService = (
   weeklyResetLocal?: string;
   claudeFiveHourResetLocal?: string;
   claudeSevenDayResetLocal?: string;
+  argonSevenDayPercent?: number;
+  argonSevenDayResetLocal?: string;
 };
 
 type GaugeWindow = RingWindow & {
@@ -209,20 +211,24 @@ function windowsFor(kind: Kind, service: AnyService): {
     const claudeFive = windowOf("5H", service.claudeFiveHourPercent, service.claudeFiveHourResetLocal);
     const geminiSeven = windowOf("7D", service.sevenDayPercent, service.sevenDayResetLocal);
     const geminiFive = windowOf("5H", service.fiveHourPercent, service.fiveHourResetLocal);
-    if (claudeSeven || claudeFive) {
-      // Two quota groups: Gemini, then Claude and GPT models.
+    const argonSeven = windowOf("7D", service.argonSevenDayPercent, service.argonSevenDayResetLocal);
+    if (claudeSeven || claudeFive || argonSeven) {
+      // Quota groups: Gemini, Claude and GPT models, and (paid Pro) Argon.
       const tag = (group: string, wins: (GaugeWindow | undefined)[]): GaugeWindow[] =>
         wins.filter((win): win is GaugeWindow => Boolean(win)).map((win) => ({ ...win, group }));
       const lanes = [
         ...tag("GEMINI", [geminiSeven, geminiFive]),
         ...tag("CLAUDE · GPT", [claudeSeven, claudeFive]),
+        ...tag("ARGON", [argonSeven]),
       ];
-      // The ring draws the busier group (7D outside, 5H inside) so the centre
-      // peak is always one of its arcs; the legend lists both groups.
+      // The ring draws the busiest group (7D outside, 5H inside) so the centre
+      // peak is always one of its arcs; the legend lists every group.
       const groupPeak = (group: string) =>
         Math.max(-1, ...lanes.filter((win) => win.group === group && !win.unknown).map((win) => win.percent));
-      const ringGroup =
-        groupPeak("CLAUDE · GPT") > groupPeak("GEMINI") ? "CLAUDE · GPT" : "GEMINI";
+      const ringGroup = ["CLAUDE · GPT", "ARGON"].reduce(
+        (best, group) => (groupPeak(group) > groupPeak(best) ? group : best),
+        "GEMINI",
+      );
       const ringed = lanes.filter((win) => win.group === ringGroup);
       const [outer, inner] = ringed.length > 0 ? ringed : lanes;
       return {
@@ -343,6 +349,7 @@ export function ServicePanel({
     service.grokBotPercent,
     service.claudeFiveHourPercent,
     service.claudeSevenDayPercent,
+    service.argonSevenDayPercent,
     service.rollingPercent,
     service.weeklyPercent,
   ];
