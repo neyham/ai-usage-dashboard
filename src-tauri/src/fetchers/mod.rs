@@ -184,6 +184,17 @@ async fn join_optional_fetch<T>(
     }
 }
 
+/// Last known card for a provider, labelled RATE LIMITED while its 429
+/// cooldown is still running.
+fn cached_or_cooling<T: DeserializeOwned + Default>(cache: &CacheState, key: &str) -> T {
+    let message = if cache.provider_cooldown_active(key).is_some() {
+        MSG_RATE_LIMITED
+    } else {
+        MSG_CACHED
+    };
+    cached_service(cache, key, message, None)
+}
+
 fn apply_standard_fetch<T>(
     cache: &mut CacheState,
     key: &'static str,
@@ -249,33 +260,33 @@ pub fn summary_from_cache(cache: &CacheState, enabled: EnabledProviders) -> Usag
         ClaudeService::default()
     };
     let codex: CodexService = if enabled.codex && cache.get("codex").is_some() {
-        cached_service(cache, "codex", MSG_CACHED, None)
+        cached_or_cooling(cache, "codex")
     } else {
         CodexService::default()
     };
     let deepseek: DeepSeekService = if enabled.deepseek && cache.get("deepseek").is_some() {
-        cached_service(cache, "deepseek", MSG_CACHED, None)
+        cached_or_cooling(cache, "deepseek")
     } else {
         DeepSeekService::default()
     };
     let grok: GrokService = if enabled.x_pool() && cache.get("grok").is_some() {
-        cached_service(cache, "grok", MSG_CACHED, None)
+        cached_or_cooling(cache, "grok")
     } else {
         GrokService::default()
     };
     let cursor: CursorService = if enabled.cursor && cache.get("cursor").is_some() {
-        cached_service(cache, "cursor", MSG_CACHED, None)
+        cached_or_cooling(cache, "cursor")
     } else {
         CursorService::default()
     };
     let antigravity: AntigravityService =
         if enabled.antigravity && cache.get("antigravity").is_some() {
-            cached_service(cache, "antigravity", MSG_CACHED, None)
+            cached_or_cooling(cache, "antigravity")
         } else {
             AntigravityService::default()
         };
     let opencodego: OpenCodeGoService = if enabled.opencodego && cache.get("opencodego").is_some() {
-        cached_service(cache, "opencodego", MSG_CACHED, None)
+        cached_or_cooling(cache, "opencodego")
     } else {
         OpenCodeGoService::default()
     };
@@ -906,6 +917,22 @@ mod tests {
         assert_eq!(restored.services.grok.status, "LAST KNOWN");
         assert_eq!(restored.services.grok.usage_percent, Some(12.0));
         assert!(restored.services.grok.from_cache);
+    }
+
+    #[test]
+    fn cached_summary_keeps_a_running_provider_cooldown() {
+        let mut cache = CacheState::default();
+        cache.put(
+            "grok",
+            serde_json::to_value(GrokService::default()).expect("serialize Grok cache"),
+        );
+        cache.set_provider_cooldown("grok", chrono::Utc::now() + chrono::Duration::minutes(5));
+        let enabled = EnabledProviders {
+            grok: true,
+            ..EnabledProviders::default()
+        };
+        let summary = super::summary_from_cache(&cache, enabled);
+        assert_eq!(summary.services.grok.status, "RATE LIMITED");
     }
 
     #[test]

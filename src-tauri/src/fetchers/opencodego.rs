@@ -9,7 +9,9 @@
 //! Only the server-reported percentages are used. OpenCode Go and Go Plus set
 //! limits per model, so device-local cost totals cannot stand in for quota.
 
-use super::{require_success, send_with_one_retry, FetchError, Resp, MSG_KEY_MISSING};
+use super::{
+    require_success, send_with_one_retry, FetchError, Resp, MSG_CREDENTIAL_ERROR, MSG_KEY_MISSING,
+};
 use crate::config::Config;
 use crate::models::OpenCodeGoService;
 use crate::util::{clamp_percent, fmt_local, parse_datetime_str};
@@ -28,11 +30,8 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<OpenCodeGoService
     let override_path = config.open_code_go_credentials_path.trim().to_string();
     let key = tokio::task::spawn_blocking(move || resolve_key(&override_path))
         .await
-        .ok()
-        .flatten()
-        .ok_or(FetchError::Auth {
-            message: MSG_KEY_MISSING,
-        })?;
+        .unwrap_or(Err(MSG_KEY_MISSING))
+        .map_err(|message| FetchError::Auth { message })?;
 
     let resp: Resp = send_with_one_retry(|| {
         client
@@ -47,19 +46,27 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<OpenCodeGoService
     parse_usage(&resp.body).map_err(FetchError::Other)
 }
 
-fn resolve_key(override_path: &str) -> Option<String> {
+/// A configured path that exists but cannot be read is a CREDENTIAL ERROR;
+/// the default locations fall through to the next source instead.
+fn resolve_key(override_path: &str) -> Result<String, &'static str> {
     if !override_path.is_empty() {
-        return key_from_path(Path::new(override_path));
+        return match key_from_path(Path::new(override_path)) {
+            Ok(Some(key)) => Ok(key),
+            Ok(None) => Err(MSG_KEY_MISSING),
+            Err(_) => Err(MSG_CREDENTIAL_ERROR),
+        };
     }
-    let dir = data_dir()?;
-    key_from_path(&dir.join("opencode.db"))
-        .or_else(|| key_from_path(&dir.join("auth.json")))
+    let from_file =
+        |name: &str| data_dir().and_then(|dir| key_from_path(&dir.join(name)).ok().flatten());
+    from_file("opencode.db")
+        .or_else(|| from_file("auth.json"))
         .or_else(|| {
             std::env::var("OPENCODE_API_KEY")
                 .ok()
                 .map(|key| key.trim().to_string())
                 .filter(|key| !key.is_empty())
         })
+        .ok_or(MSG_KEY_MISSING)
 }
 
 /// OpenCode stores data under the XDG data dir on every platform, including
@@ -72,17 +79,17 @@ fn data_dir() -> Option<PathBuf> {
     Some(base.join("opencode"))
 }
 
-fn key_from_path(path: &Path) -> Option<String> {
+fn key_from_path(path: &Path) -> anyhow::Result<Option<String>> {
     if !path.is_file() {
-        return None;
+        return Ok(None);
     }
     let is_json = path
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
     if is_json {
-        key_from_auth_json(path).ok().flatten()
+        key_from_auth_json(path)
     } else {
-        key_from_db(path).ok().flatten()
+        key_from_db(path)
     }
 }
 
@@ -109,9 +116,13 @@ fn key_from_auth_json(path: &Path) -> anyhow::Result<Option<String>> {
     let mut text = String::new();
     std::fs::File::open(path)
         .context("open OpenCode auth.json")?
-        .take(MAX_AUTH_BYTES)
+        .take(MAX_AUTH_BYTES + 1)
         .read_to_string(&mut text)
         .context("read OpenCode auth.json")?;
+    anyhow::ensure!(
+        text.len() as u64 <= MAX_AUTH_BYTES,
+        "OpenCode auth.json is too large"
+    );
     let root: Value = serde_json::from_str(&text).context("parse OpenCode auth.json")?;
     Ok(root.get(INTEGRATION_ID).and_then(api_key_from_value))
 }
@@ -195,7 +206,10 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<OpenCodeGoService> {
 
 #[cfg(test)]
 mod tests {
-    use super::{api_key_from_value, key_from_auth_json, key_from_db, parse_usage};
+    use super::{
+        api_key_from_value, key_from_auth_json, key_from_db, parse_usage, resolve_key,
+        MAX_AUTH_BYTES, MSG_CREDENTIAL_ERROR, MSG_KEY_MISSING,
+    };
     use rusqlite::Connection;
     use serde_json::json;
 
@@ -316,6 +330,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(key_from_auth_json(&auth).unwrap().as_deref(), Some("sk-v1"));
+        assert_eq!(resolve_key(auth.to_str().unwrap()).as_deref(), Ok("sk-v1"));
+
+        // A configured file that is unreadable is a credential error, not a
+        // missing key; one without an OpenCode Go entry is a missing key.
+        let broken = dir.join("broken.json");
+        std::fs::write(&broken, "{not json").unwrap();
+        assert_eq!(
+            resolve_key(broken.to_str().unwrap()),
+            Err(MSG_CREDENTIAL_ERROR)
+        );
+        let other = dir.join("other.json");
+        std::fs::write(&other, r#"{"anthropic":{"type":"oauth"}}"#).unwrap();
+        assert_eq!(resolve_key(other.to_str().unwrap()), Err(MSG_KEY_MISSING));
+        let huge = dir.join("huge.json");
+        std::fs::write(&huge, " ".repeat(MAX_AUTH_BYTES as usize + 1)).unwrap();
+        assert!(key_from_auth_json(&huge).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

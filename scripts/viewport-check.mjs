@@ -1489,16 +1489,25 @@ async function checkXSubscription(browser) {
   assert.equal(await page.locator(".panel-grok .gauge-seg[data-seg]").count(), 3);
   const agLegend = (await page.locator(".panel-antigravity .gauge-legend").textContent()) ?? "";
   assert.match(agLegend, /GEMINI 7D 21.*GEMINI 5H 27.*CLAUDE · GPT 7D 12.*CLAUDE · GPT 5H 40/);
+  // The ring draws the busier group, so the 40% centre sits on an arc.
+  assert.match(
+    (await page.locator(".panel-antigravity .gauge-stage").getAttribute("aria-label")) ?? "",
+    /usage: CLAUDE · GPT 7D 12%, CLAUDE · GPT 5H 40%, GEMINI/,
+  );
   assert.deepEqual(await inspectLayout(page, { width: 1600, height: 900 }), []);
   await page.screenshot({ path: join(artifactDir, "x-subscription-rings.png"), fullPage: true });
 
-  // With a single Gemini window the ring draws only that window; Claude/GPT
-  // never takes the inner ring.
+  // When Gemini is busier and has a single window, the ring draws only that
+  // window; Claude/GPT never takes the inner ring.
   await installTauriMock(page, {
     ...ringPair,
     services: {
       ...ringPair.services,
-      antigravity: { ...ringPair.services.antigravity, fiveHourPercent: undefined },
+      antigravity: {
+        ...ringPair.services.antigravity,
+        fiveHourPercent: undefined,
+        claudeFiveHourPercent: 20,
+      },
     },
   });
   await page.goto(baseUrl, { waitUntil: "networkidle" });
@@ -1707,6 +1716,12 @@ async function checkMascotMoods(browser) {
     if (testCase.name === "tense") {
       assert.equal(await page.locator(".panel-claude .ip-bars").getAttribute("data-tone"), "warn");
     }
+    // Each bar carries its own tone so its fill turns amber or red.
+    const barTones = await page
+      .locator(".panel-claude .ip-bar")
+      .evaluateAll((els) => els.map((el) => el.getAttribute("data-tone")));
+    const expectedTone = { over: "danger", tense: "warn" }[testCase.name];
+    if (expectedTone) assert.deepEqual(barTones, [expectedTone, expectedTone], testCase.name);
     assert.deepEqual(await inspectLayout(page, { width: 1368, height: 912 }), []);
     await context.close();
   }

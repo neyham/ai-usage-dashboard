@@ -99,6 +99,7 @@ export function UsageBars({
             key={`${win.group ?? ""}:${win.label}`}
             className="ip-bar"
             data-window={win.label}
+            data-tone={win.unknown ? undefined : toneOf(win.percent)}
             data-group-start={heading ? "true" : undefined}
             data-segmented={segments.length > 0 ? "true" : undefined}
           >

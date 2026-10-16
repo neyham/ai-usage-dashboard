@@ -2022,7 +2022,7 @@ body {
 .dashboard[data-art="ring"] .ip-bar[data-group-start="true"] {
   grid-template-rows: auto auto 16px 1.15em;
 }
-.ip-bar[data-group-start="true"]:not(:nth-child(2)) {
+.ip-bar ~ .ip-bar[data-group-start="true"] {
   margin-top: 8px;
 }
 .ip-bar-group {
@@ -2573,8 +2573,8 @@ body {
 .dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar-track {
   height: 10px;
 }
-.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar[data-group-start="true"]:not(:nth-child(2)),
-.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar[data-group-start="true"]:not(:nth-child(2)) {
+.dashboard[data-art="ring"] .ip-bars[data-count="4"] .ip-bar ~ .ip-bar[data-group-start="true"],
+.dashboard[data-art="ring"] .ip-bars[data-count="5"] .ip-bar ~ .ip-bar[data-group-start="true"] {
   margin-top: 4px;
 }
 .dashboard[data-art="ring"] .ip-bar {

@@ -217,10 +217,14 @@ function windowsFor(kind: Kind, service: AnyService): {
         ...tag("GEMINI", [geminiSeven, geminiFive]),
         ...tag("CLAUDE · GPT", [claudeSeven, claudeFive]),
       ];
-      // The ring draws Gemini (7D outside, 5H inside) and lists Claude/GPT in
-      // the legend. Accounts whose summary has no Gemini group ring Claude/GPT.
-      const gemini = lanes.filter((win) => win.group === "GEMINI");
-      const [outer, inner] = gemini.length > 0 ? gemini : lanes;
+      // The ring draws the busier group (7D outside, 5H inside) so the centre
+      // peak is always one of its arcs; the legend lists both groups.
+      const groupPeak = (group: string) =>
+        Math.max(-1, ...lanes.filter((win) => win.group === group && !win.unknown).map((win) => win.percent));
+      const ringGroup =
+        groupPeak("CLAUDE · GPT") > groupPeak("GEMINI") ? "CLAUDE · GPT" : "GEMINI";
+      const ringed = lanes.filter((win) => win.group === ringGroup);
+      const [outer, inner] = ringed.length > 0 ? ringed : lanes;
       return {
         outer,
         inner,
