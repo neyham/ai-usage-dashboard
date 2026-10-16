@@ -1512,6 +1512,30 @@ async function checkXSubscription(browser) {
     /CLAUDE · GPT 7D 12/,
   );
 
+  // A summary without the Gemini group (seen 2026-10-16) rings Claude/GPT.
+  await installTauriMock(page, {
+    ...ringPair,
+    services: {
+      ...ringPair.services,
+      antigravity: {
+        ...ringPair.services.antigravity,
+        fiveHourPercent: undefined,
+        sevenDayPercent: undefined,
+        fiveHourResetLocal: undefined,
+        sevenDayResetLocal: undefined,
+      },
+    },
+  });
+  await page.goto(baseUrl, { waitUntil: "networkidle" });
+  await page.locator('.panel-antigravity[data-meter="ring"]').waitFor();
+  assert.equal(
+    await page.locator(".panel-antigravity .gauge-stage").getAttribute("data-rings"),
+    "2",
+  );
+  const claudeOnly = (await page.locator(".panel-antigravity .gauge-legend").textContent()) ?? "";
+  assert.match(claudeOnly, /CLAUDE · GPT 7D 12.*CLAUDE · GPT 5H 40/);
+  assert.doesNotMatch(claudeOnly, /GEMINI/);
+
   // The classic ring skin keeps a distinct tint per X segment.
   const fourX = {
     ...baseSummary,

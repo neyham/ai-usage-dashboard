@@ -217,9 +217,10 @@ function windowsFor(kind: Kind, service: AnyService): {
         ...tag("GEMINI", [geminiSeven, geminiFive]),
         ...tag("CLAUDE · GPT", [claudeSeven, claudeFive]),
       ];
-      // The ring only draws Gemini (7D outside, 5H inside). Claude/GPT is
-      // listed in the legend under its group name, never on the ring.
-      const [outer, inner] = lanes.filter((win) => win.group === "GEMINI");
+      // The ring draws Gemini (7D outside, 5H inside) and lists Claude/GPT in
+      // the legend. Accounts whose summary has no Gemini group ring Claude/GPT.
+      const gemini = lanes.filter((win) => win.group === "GEMINI");
+      const [outer, inner] = gemini.length > 0 ? gemini : lanes;
       return {
         outer,
         inner,
@@ -512,7 +513,11 @@ export function ServicePanel({
             }
           />
         )}
-        <div className="gauge-legend">
+        <div className="gauge-foot">
+        <div
+          className="gauge-legend"
+          data-compact={legend.length >= 4 && legend.some((win) => win.group) ? "true" : undefined}
+        >
           {kind === "deepseek" ? (
             <span className="gauge-legend-item" data-window="BALANCE">
               {artSkin === "ip" ? "BALANCE" : "CURRENT BALANCE"}
@@ -551,6 +556,7 @@ export function ServicePanel({
             {service.resetCreditsExpireLocal ? ` · FIRST EXP ${service.resetCreditsExpireLocal}` : ""}
           </div>
         )}
+        </div>
       </div>
 
       <footer className="panel-status">

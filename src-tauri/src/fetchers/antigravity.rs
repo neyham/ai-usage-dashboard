@@ -213,20 +213,15 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<AntigravityService> {
                 .and_then(Value::as_array)
                 .is_some_and(|buckets| buckets.iter().any(bucket_is_gemini))
     });
-    let Some(gemini) = gemini else {
-        bail!("Antigravity quota summary has no Gemini group");
-    };
+    // Either group may be missing: since 2026-10-16 some accounts get only the
+    // Claude and GPT group from the summary. Fail only when neither has a window.
     let buckets = gemini
-        .get("buckets")
-        .and_then(Value::as_array)
-        .context("Gemini quota group has no buckets")?;
-
-    let five_hour = buckets.iter().find(|bucket| bucket_window(bucket, "5h"));
-    let weekly = buckets
-        .iter()
-        .find(|bucket| bucket_window(bucket, "weekly"));
-    // Claude (and GPT) models share a second quota group. It is optional:
-    // a missing group never fails the Gemini panel.
+        .and_then(|group| group.get("buckets"))
+        .and_then(Value::as_array);
+    let five_hour = buckets.and_then(|list| list.iter().find(|bucket| bucket_window(bucket, "5h")));
+    let weekly =
+        buckets.and_then(|list| list.iter().find(|bucket| bucket_window(bucket, "weekly")));
+    // Claude (and GPT) models share a second quota group.
     let claude_buckets = groups
         .iter()
         .find(|group| {
@@ -243,8 +238,18 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<AntigravityService> {
         claude_buckets.and_then(|list| list.iter().find(|bucket| bucket_window(bucket, "weekly")));
     let five_hour_percent = five_hour.and_then(used_percent);
     let seven_day_percent = weekly.and_then(used_percent);
-    if five_hour_percent.is_none() && seven_day_percent.is_none() {
-        bail!("Gemini quota group has no usable usage windows");
+    let claude_five_hour_percent = claude_five_hour.and_then(used_percent);
+    let claude_seven_day_percent = claude_weekly.and_then(used_percent);
+    if [
+        five_hour_percent,
+        seven_day_percent,
+        claude_five_hour_percent,
+        claude_seven_day_percent,
+    ]
+    .iter()
+    .all(Option::is_none)
+    {
+        bail!("Antigravity quota summary has no usable usage windows");
     }
 
     Ok(AntigravityService {
@@ -260,8 +265,8 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<AntigravityService> {
         seven_day_reset_local: weekly
             .and_then(|bucket| bucket.get("resetTime"))
             .and_then(local_label),
-        claude_five_hour_percent: claude_five_hour.and_then(used_percent),
-        claude_seven_day_percent: claude_weekly.and_then(used_percent),
+        claude_five_hour_percent,
+        claude_seven_day_percent,
         claude_five_hour_reset_local: claude_five_hour
             .and_then(|bucket| bucket.get("resetTime"))
             .and_then(local_label),
@@ -1236,6 +1241,23 @@ mod tests {
         .expect("Gemini-only quota");
         assert_eq!(service.seven_day_percent, Some(50.0));
         assert_eq!(service.claude_seven_day_percent, None);
+    }
+
+    #[test]
+    fn claude_only_summary_still_parses() {
+        // Live shape from 2026-10-16: the Gemini group is gone from the summary.
+        let service = parse_usage(
+            r#"{"groups":[{"displayName":"Claude and GPT models","buckets":[
+                {"bucketId":"3p-weekly","window":"weekly","remainingFraction":0.553582,
+                 "resetTime":"2026-10-20T14:51:38Z"},
+                {"bucketId":"3p-5h","window":"5h","remainingFraction":1,
+                 "resetTime":"2026-10-16T06:02:39Z"}]}]}"#,
+        )
+        .expect("claude-only summary");
+        assert_eq!(service.five_hour_percent, None);
+        assert_eq!(service.seven_day_percent, None);
+        assert_eq!(service.claude_seven_day_percent.map(f64::round), Some(45.0));
+        assert_eq!(service.claude_five_hour_percent, Some(0.0));
     }
 
     #[test]

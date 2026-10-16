@@ -630,6 +630,10 @@ body {
 .gauge-stage[data-mood="over"] .gauge-cap {
   animation: halo-pulse 1.8s ease-in-out infinite;
 }
+.gauge-foot {
+  /* Groups the legend and banked resets; only the IP ring gives it a box. */
+  display: contents;
+}
 .gauge-legend {
   max-width: 100%;
   font-family: var(--mono);
@@ -1729,15 +1733,39 @@ body {
   object-position: bottom center;
 }
 /* Position the artwork inside the fixed circular mask, without moving the ring. */
-.dashboard[data-art="ip"] .panel-antigravity .gauge-figure .panel-mascot {
-  translate: 0 8%;
+/* Every IP ring card reserves the same room under its ring (one row of dated
+   chips plus the banked-resets line), so rings in a row share one size no
+   matter how much each card lists. A grouped legend of four or more chips
+   (Antigravity's Gemini and Claude/GPT) drops its dates to fit two rows. */
+.dashboard[data-art="ip"] .panel[data-meter="ring"] .gauge-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px;
+  min-height: 54px;
+  max-width: 100%;
 }
-.dashboard[data-art="ip"] .panel-grok .gauge-figure .panel-mascot,
-.dashboard[data-art="ip"] .panel-cursor .gauge-figure .panel-mascot {
-  /* Keep the sprite's straight waist edge below the circular crop. */
-  translate: 0 10%;
-  scale: 1.12;
+.dashboard[data-art="ip"] .panel[data-meter="ring"] .gauge-legend[data-compact="true"] .legend-reset {
+  display: none;
 }
+/* Ring sprites are drawn at different head sizes, heights and offsets.
+   Normalise each to the same eye spacing (104/512) and eye line (262/512),
+   with the face centred, while keeping the waist cut below the circle.
+   Measured from each idle sprite's pupils; moods share the same framing.
+   OpenCode Go's head is tilted, so its eye spacing overstates the head size;
+   its scale is set by eye instead. */
+.dashboard[data-art="ip"] .gauge-figure .panel-mascot {
+  scale: var(--ring-scale, 1);
+  translate: var(--ring-x, 0%) var(--ring-y, 0%);
+}
+.dashboard[data-art="ip"] .panel-codex { --ring-scale: 1.05; --ring-x: 3.3%; --ring-y: -3.3%; }
+.dashboard[data-art="ip"] .panel-claude { --ring-scale: 1.21; --ring-x: 2.4%; --ring-y: -1.2%; }
+.dashboard[data-art="ip"] .panel-grok,
+.dashboard[data-art="ip"] .panel-cursor { --ring-scale: 1.28; --ring-x: -1.3%; --ring-y: 3.2%; }
+.dashboard[data-art="ip"] .panel-deepseek { --ring-scale: 1.3; --ring-x: 11.7%; --ring-y: 3.2%; }
+.dashboard[data-art="ip"] .panel-antigravity { --ring-scale: 1.13; --ring-x: 0.2%; --ring-y: 14.0%; }
+.dashboard[data-art="ip"] .panel-opencodego { --ring-scale: 1.05; --ring-x: 3.3%; --ring-y: 9.4%; }
 .dashboard[data-art="ip"] .panel[data-emerge="left"] .panel-mascot {
   object-position: bottom left;
 }
