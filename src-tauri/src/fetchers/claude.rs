@@ -21,6 +21,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration as StdDuration, Instant};
 
@@ -433,7 +435,7 @@ fn run_claude_code_touch(
             pixel_height: 0,
         })
         .context("open Claude Code terminal")?;
-    let mut cmd = CommandBuilder::new(config.claude_code_command.trim());
+    let mut cmd = claude_code_command(config.claude_code_command.trim());
     cmd.args(claude_code_touch_arguments());
     cmd.cwd(&probe);
     // The reader and CLI must address the same profile. Keep the default
@@ -458,6 +460,7 @@ fn run_claude_code_touch(
         writer: None,
         master: None,
         reader: None,
+        cursor_queries: Arc::new(AtomicUsize::new(0)),
     };
     drop(pair.slave);
     session.writer = Some(
@@ -469,9 +472,71 @@ fn run_claude_code_touch(
         .master
         .try_clone_reader()
         .context("Claude Code terminal reader")?;
-    session.reader = Some(discard_pty_output(reader));
+    session.reader = Some(discard_pty_output(reader, session.cursor_queries.clone()));
     session.master = Some(pair.master);
     session.wait_until(timeout, &mut refreshed)
+}
+
+#[cfg(not(windows))]
+fn claude_code_command(command: &str) -> CommandBuilder {
+    CommandBuilder::new(command)
+}
+
+/// portable-pty takes the first PATH match even without an extension, so an
+/// npm install's extensionless `claude` shell shim fails with os error 193.
+/// Resolve through PATHEXT instead and start batch shims through cmd.exe.
+#[cfg(windows)]
+fn claude_code_command(command: &str) -> CommandBuilder {
+    match resolve_windows_command(command) {
+        Some(path) if is_windows_batch(&path) => {
+            // `call` keeps cmd.exe /c from stripping the first and last quote
+            // when the shim path is quoted.
+            let mut cmd = CommandBuilder::new("cmd.exe");
+            cmd.args(["/d", "/c", "call"]);
+            cmd.arg(path);
+            cmd
+        }
+        Some(path) => CommandBuilder::new(path),
+        None => CommandBuilder::new(command),
+    }
+}
+
+#[cfg(windows)]
+fn resolve_windows_command(command: &str) -> Option<PathBuf> {
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    let extensions: Vec<&str> = pathext.split(';').filter(|ext| !ext.is_empty()).collect();
+    resolve_command_in(command, std::env::var_os("PATH"), &extensions)
+}
+
+#[cfg(any(windows, test))]
+fn resolve_command_in(
+    command: &str,
+    path_var: Option<std::ffi::OsString>,
+    extensions: &[&str],
+) -> Option<PathBuf> {
+    let executable = |base: &Path| -> Option<PathBuf> {
+        if base.extension().is_some() && base.is_file() {
+            return Some(base.to_path_buf());
+        }
+        extensions.iter().find_map(|ext| {
+            let mut name = base.as_os_str().to_os_string();
+            name.push(ext);
+            let candidate = PathBuf::from(name);
+            candidate.is_file().then_some(candidate)
+        })
+    };
+    let path = Path::new(command);
+    if path.is_absolute() || path.components().count() > 1 {
+        return executable(path);
+    }
+    std::env::split_paths(&path_var?).find_map(|dir| executable(&dir.join(path)))
+}
+
+#[cfg(any(windows, test))]
+fn is_windows_batch(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
 }
 
 struct RunningClaudeTouch {
@@ -479,6 +544,9 @@ struct RunningClaudeTouch {
     writer: Option<Box<dyn Write + Send>>,
     master: Option<Box<dyn MasterPty + Send>>,
     reader: Option<JoinHandle<()>>,
+    /// Cursor position queries seen in the output. Windows ConPTY sends one at
+    /// startup and does not start the child until the terminal answers.
+    cursor_queries: Arc<AtomicUsize>,
 }
 
 impl RunningClaudeTouch {
@@ -490,6 +558,7 @@ impl RunningClaudeTouch {
         let start = Instant::now();
         let mut sent_status = false;
         let mut last_enter = start;
+        let mut answered_queries = 0;
         loop {
             if refreshed() {
                 return Ok(());
@@ -498,6 +567,12 @@ impl RunningClaudeTouch {
                 bail!("Claude Code refresh timed out");
             }
             if let Some(writer) = self.writer.as_mut() {
+                let queries = self.cursor_queries.load(Ordering::Acquire);
+                while answered_queries < queries {
+                    let _ = writer.write_all(CURSOR_POSITION_REPORT);
+                    let _ = writer.flush();
+                    answered_queries += 1;
+                }
                 if !sent_status && start.elapsed() >= StdDuration::from_millis(2500) {
                     let _ = writer.write_all(b"/status\r");
                     let _ = writer.flush();
@@ -539,13 +614,22 @@ impl Drop for RunningClaudeTouch {
     }
 }
 
-fn discard_pty_output(mut reader: Box<dyn Read + Send>) -> JoinHandle<()> {
+fn discard_pty_output(
+    mut reader: Box<dyn Read + Send>,
+    cursor_queries: Arc<AtomicUsize>,
+) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let mut buf = [0_u8; 4096];
+        let mut scanner = CursorQueryScanner::default();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
-                Ok(_) => {}
+                Ok(read) => {
+                    let found = scanner.scan(&buf[..read]);
+                    if found > 0 {
+                        cursor_queries.fetch_add(found, Ordering::Release);
+                    }
+                }
                 Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
@@ -553,9 +637,45 @@ fn discard_pty_output(mut reader: Box<dyn Read + Send>) -> JoinHandle<()> {
     })
 }
 
+const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
+const CURSOR_POSITION_REPORT: &[u8] = b"\x1b[1;1R";
+
+/// Counts cursor position queries, including ones split across reads.
+#[derive(Default)]
+struct CursorQueryScanner {
+    tail: Vec<u8>,
+}
+
+impl CursorQueryScanner {
+    fn scan(&mut self, chunk: &[u8]) -> usize {
+        let mut data = std::mem::take(&mut self.tail);
+        data.extend_from_slice(chunk);
+        let found = data
+            .windows(CURSOR_POSITION_QUERY.len())
+            .filter(|window| *window == CURSOR_POSITION_QUERY)
+            .count();
+        let keep = data.len().min(CURSOR_POSITION_QUERY.len() - 1);
+        self.tail = data[data.len() - keep..].to_vec();
+        found
+    }
+}
+
 fn terminate_claude_touch(child: &mut Box<dyn Child + Send + Sync>) {
     #[cfg(unix)]
     let pid = child.process_id();
+    // A batch shim runs Claude Code as a grandchild of cmd.exe; end the tree.
+    #[cfg(windows)]
+    if let Some(pid) = child.process_id() {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
     let _ = child.kill();
     // setsid() makes the child its own process group. SIGHUP from kill() does
     // not cover grandchildren if Claude Code handles that signal.
@@ -725,9 +845,9 @@ mod tests {
     use super::{
         adopt_refreshed_credentials, auth_failure_message, claude_code_touch_arguments,
         claude_plan_label, claude_profile_dir, credential_paths, credentials_refreshed,
-        delegates_to_claude_code, load_selected, parse_credentials, parse_usage,
-        reserve_claude_code_recovery_at, resolve_and_read, try_claude_code_refresh_blocking_at,
-        Creds, OsFileLock, RefreshError,
+        delegates_to_claude_code, is_windows_batch, load_selected, parse_credentials, parse_usage,
+        reserve_claude_code_recovery_at, resolve_and_read, resolve_command_in,
+        try_claude_code_refresh_blocking_at, Creds, CursorQueryScanner, OsFileLock, RefreshError,
     };
     use crate::config::Config;
     use chrono::{Duration, TimeZone, Utc};
@@ -791,6 +911,43 @@ mod tests {
             result,
             Err(RefreshError::DirectRefreshUnavailable)
         ));
+    }
+
+    #[test]
+    fn cursor_queries_are_counted_across_reads() {
+        let mut scanner = CursorQueryScanner::default();
+        assert_eq!(scanner.scan(b"\x1b[6n"), 1);
+        assert_eq!(scanner.scan(b"text\x1b["), 0);
+        assert_eq!(scanner.scan(b"6n more \x1b[6n"), 2);
+        assert_eq!(scanner.scan(b"\x1b[6"), 0);
+        assert_eq!(scanner.scan(b"m"), 0);
+    }
+
+    #[test]
+    fn windows_command_skips_the_extensionless_npm_shim() {
+        let dir = test_dir("claude-pathext");
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["claude", "claude.cmd", "claude.ps1"] {
+            std::fs::write(dir.join(name), b"").unwrap();
+        }
+        let path = std::env::join_paths([dir.clone()]).unwrap();
+        // Lowercase so the test also holds on case-sensitive file systems.
+        let exts = [".com", ".exe", ".bat", ".cmd"];
+
+        let found = resolve_command_in("claude", Some(path.clone()), &exts).unwrap();
+        assert_eq!(found, dir.join("claude.cmd"));
+        assert!(is_windows_batch(&found));
+
+        std::fs::write(dir.join("claude.exe"), b"").unwrap();
+        let found = resolve_command_in("claude", Some(path.clone()), &exts).unwrap();
+        assert!(!is_windows_batch(&found));
+        let explicit = dir.join("claude.cmd");
+        assert_eq!(
+            resolve_command_in(explicit.to_str().unwrap(), None, &exts),
+            Some(explicit)
+        );
+        assert_eq!(resolve_command_in("missing", Some(path), &exts), None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
