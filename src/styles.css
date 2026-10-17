@@ -1733,7 +1733,7 @@ body {
 /* Every IP ring card reserves the same room under its ring (one row of dated
    chips plus the banked-resets line), so rings in a row share one size no
    matter how much each card lists. A grouped legend of four or more chips
-   (Antigravity's Gemini and Claude/GPT) drops its dates to fit two rows. */
+   (Antigravity) shows a short reset inline to fit two rows. */
 .dashboard[data-art="ip"] .panel[data-meter="ring"] .gauge-foot {
   display: flex;
   flex-direction: column;
@@ -1743,8 +1743,18 @@ body {
   min-height: 54px;
   max-width: 100%;
 }
-.dashboard[data-art="ip"] .panel[data-meter="ring"] .gauge-legend[data-compact="true"] .legend-reset {
-  display: none;
+.dashboard[data-art="ip"] .legend-reset-inline {
+  opacity: 0.6;
+}
+.dashboard[data-art="ip"] .panel[data-meter="ring"] .gauge-legend[data-compact="true"] .gauge-legend-item {
+  padding-inline: 7px;
+}
+/* Too narrow for two rows of dated chips (six cards at 960x540): keep the
+   ring its row's size and drop the dates, as before. */
+@container ip-panel (max-width: 380px) {
+  .dashboard[data-art="ip"] .panel[data-meter="ring"] .gauge-legend[data-compact="true"] .legend-reset-inline {
+    display: none;
+  }
 }
 /* Ring sprites are drawn at different head sizes, heights and offsets.
    Normalise each to the same eye spacing (104/512) and eye line (262/512),

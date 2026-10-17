@@ -1367,6 +1367,65 @@ async function checkAntigravityPanel(browser) {
     path: join(artifactDir, "antigravity-six-panels.png"),
     fullPage: true,
   });
+
+  // Five grouped windows put a short reset on each chip (date for 7D, time
+  // for 5H) on one line, so the Antigravity ring keeps its size.
+  const groupedSix = {
+    ...sixPanel,
+    services: {
+      ...sixPanel.services,
+      antigravity: {
+        ...sixPanel.services.antigravity,
+        claudeSevenDayPercent: 45,
+        claudeSevenDayResetLocal: "08-24 22:51",
+        claudeFiveHourPercent: 100,
+        claudeFiveHourResetLocal: "08-19 23:11",
+        argonSevenDayPercent: 23,
+        argonSevenDayResetLocal: "08-23 10:13",
+      },
+    },
+  };
+  for (const viewport of [
+    { width: 1824, height: 1216 },
+    { width: 1600, height: 900 },
+    { width: 1368, height: 912 },
+    { width: 960, height: 540 },
+  ]) {
+    await layoutPage.setViewportSize(viewport);
+    await installTauriMock(layoutPage, groupedSix);
+    await layoutPage.goto(baseUrl, { waitUntil: "networkidle" });
+    await layoutPage.locator('.panel-antigravity[data-meter="ring"]').waitFor();
+    // Shown text only: the narrowest six-card layout hides the dates.
+    const chips = await layoutPage
+      .locator(".panel-antigravity .gauge-legend-item")
+      .evaluateAll((els) => els.map((el) => el.innerText.replace(/\s+/g, " ").trim()));
+    const dated = ["GEMINI 7D 21 08-20", "GEMINI 5H 27 14:20", "CLAUDE · GPT 7D 45 08-24", "CLAUDE · GPT 5H 100 23:11", "ARGON 7D 23 08-23"];
+    const expected = viewport.width <= 960 ? dated.map((chip) => chip.replace(/ \S+$/, "")) : dated;
+    assert.deepEqual(chips, expected, `grouped chips at ${viewport.width}x${viewport.height}`);
+    // The ring keeps the size of its row (Claude has no banked-resets line).
+    const ringWidth = (selector) =>
+      layoutPage.locator(`${selector} .gauge-stage`).evaluate((el) => el.getBoundingClientRect().width);
+    const [agRing, claudeRing] = [await ringWidth(".panel-antigravity"), await ringWidth(".panel-claude")];
+    assert.ok(
+      Math.abs(agRing - claudeRing) <= 2,
+      `Antigravity ring matches its row at ${viewport.width}x${viewport.height}: ${agRing} vs ${claudeRing}`,
+    );
+    // Every chip stays inside the card, above the status pill.
+    const chipsInside = await layoutPage.locator(".panel-antigravity").evaluate((panel) => {
+      const status = panel.querySelector(".panel-status")?.getBoundingClientRect();
+      const box = panel.getBoundingClientRect();
+      return [...panel.querySelectorAll(".gauge-legend-item")].every((chip) => {
+        const r = chip.getBoundingClientRect();
+        return r.left >= box.left && r.right <= box.right && (!status || r.bottom <= status.top + 1);
+      });
+    });
+    assert.ok(chipsInside, `grouped chips stay inside the card at ${viewport.width}x${viewport.height}`);
+    assert.deepEqual(await inspectLayout(layoutPage, viewport), []);
+    await layoutPage.screenshot({
+      path: join(artifactDir, `antigravity-six-grouped-${viewport.width}x${viewport.height}.png`),
+      fullPage: true,
+    });
+  }
   await layoutContext.close();
 
   const compactContext = await browser.newContext({

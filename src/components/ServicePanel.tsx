@@ -111,6 +111,12 @@ function legendText(win: GaugeWindow, compact = false): string {
     : `${label} ${shownPercent(win)}`;
 }
 
+/** One-line reset for compact chips: the time for 5H, the date otherwise. */
+function shortReset(win: GaugeWindow): string | undefined {
+  const [date, time] = win.reset?.trim().split(/\s+/) ?? [];
+  return win.label === "5H" ? (time ?? date) : date;
+}
+
 /** X Subscription tiers; xAI still reports legacy names for some switched seats. */
 const X_TIERS = new Set(["plus", "premium", "super", "ultra"]);
 
@@ -358,6 +364,9 @@ export function ServicePanel({
     [outer, inner, ...extra].filter((win): win is GaugeWindow => Boolean(win));
   // The headline figure is the first 7D window (Gemini's on Antigravity);
   // cards without one show their busiest window.
+  // Four or more grouped chips (Antigravity) put a short reset on the chip's
+  // own line so the legend still fits two rows.
+  const compactLegend = legend.length >= 4 && legend.some((win) => win.group);
   const sevenDay = (bars ?? legend).find((win) => win.label === "7D" && !win.unknown);
   const headline = sevenDay?.percent ?? peak;
   const meter: "ring" | "bar" = artSkin !== "ip" || wide ? "bar" : "ring";
@@ -526,10 +535,7 @@ export function ServicePanel({
           />
         )}
         <div className="gauge-foot">
-        <div
-          className="gauge-legend"
-          data-compact={legend.length >= 4 && legend.some((win) => win.group) ? "true" : undefined}
-        >
+        <div className="gauge-legend" data-compact={compactLegend ? "true" : undefined}>
           {kind === "deepseek" ? (
             <span className="gauge-legend-item" data-window="BALANCE">
               {artSkin === "ip" ? "BALANCE" : "CURRENT BALANCE"}
@@ -542,8 +548,11 @@ export function ServicePanel({
                     <span className="legend-main">
                       {win.group ? `${win.group} ` : ""}
                       {win.label} {shownPercent(win)}
+                      {compactLegend && shortReset(win) ? (
+                        <span className="legend-reset-inline"> {shortReset(win)}</span>
+                      ) : null}
                     </span>
-                    {win.reset ? <span className="legend-reset">{win.reset}</span> : null}
+                    {win.reset && !compactLegend ? <span className="legend-reset">{win.reset}</span> : null}
                   </>
                 ) : (
                   legendText(win)
