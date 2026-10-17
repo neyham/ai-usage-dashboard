@@ -28,7 +28,7 @@
     "app:build": "node scripts/build-release.mjs"
   },
   "dependencies": {
-    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/rajdhani": "^5.2.7",
     "@tauri-apps/api": "^2.12.3",
     "lucide-react": "1.24.0",
