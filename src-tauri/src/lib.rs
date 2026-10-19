@@ -163,6 +163,19 @@ async fn art_skin(state: State<'_, AppState>) -> Result<String, String> {
     Ok(state.config.lock().await.art_skin.clone())
 }
 
+/// Whether Config holds a DeepSeek key, never the key itself. A key from the
+/// environment is not counted: the dashboard cannot clear it.
+#[tauri::command]
+async fn deepseek_key_saved(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(!state
+        .config
+        .lock()
+        .await
+        .deep_seek_api_key
+        .trim()
+        .is_empty())
+}
+
 fn normalize_art_skin(value: &str) -> String {
     if value.trim().eq_ignore_ascii_case("ring") {
         "ring".into()
@@ -178,6 +191,7 @@ struct DisplaySettings {
     window_mode: String,
     low_power_mode: bool,
     art_skin: String,
+    deepseek_key_saved: bool,
 }
 
 /// Atomically save changed display settings. Omitted fields are left untouched,
@@ -190,6 +204,7 @@ async fn save_display_settings(
     deepseek_api_key: Option<String>,
     low_power_mode: Option<bool>,
     art_skin: Option<String>,
+    clear_deepseek_api_key: Option<bool>,
 ) -> Result<DisplaySettings, String> {
     let requested_window = match window_mode {
         Some(mode) => {
@@ -197,7 +212,8 @@ async fn save_display_settings(
         }
         None => None,
     };
-    let requested_deepseek_key = normalize_deepseek_api_key(deepseek_api_key)?;
+    let requested_deepseek_key =
+        requested_deepseek_key(deepseek_api_key, clear_deepseek_api_key.unwrap_or(false))?;
     let state = app.state::<AppState>();
     if state.judge_demo && requested_deepseek_key.is_some() {
         return Err("CREDENTIAL STORAGE DISABLED IN DEMO".into());
@@ -288,6 +304,7 @@ async fn save_display_settings(
         window_mode: current_mode.clone(),
         low_power_mode: current_config.low_power_mode,
         art_skin: current_config.art_skin.clone(),
+        deepseek_key_saved: !current_config.deep_seek_api_key.trim().is_empty(),
     };
     drop(current_config);
     drop(current_mode);
@@ -306,6 +323,17 @@ async fn save_display_settings(
     }
 
     Ok(saved)
+}
+
+/// `Some("")` clears the saved key; a replacement and a clear together are
+/// contradictory, so neither is applied.
+fn requested_deepseek_key(value: Option<String>, clear: bool) -> Result<Option<String>, String> {
+    let replacement = normalize_deepseek_api_key(value)?;
+    match (clear, replacement) {
+        (true, Some(_)) => Err("DEEPSEEK KEY CANNOT BE REPLACED AND CLEARED".into()),
+        (true, None) => Ok(Some(String::new())),
+        (false, replacement) => Ok(replacement),
+    }
 }
 
 /// Blank input means "leave the existing key unchanged". A non-blank value is
@@ -592,6 +620,7 @@ pub fn run() {
             launch_mode,
             low_power_mode,
             art_skin,
+            deepseek_key_saved,
             judge_demo
         ])
         .setup(move |app| {
@@ -645,9 +674,27 @@ pub fn run() {
 mod tests {
     use super::{
         effective_refresh_interval_minutes, launch_chrome_failure_is_fatal, mode_after_failed_save,
-        normalize_art_skin, normalize_deepseek_api_key, normalize_window_mode, resolve_launch_mode,
-        AppOptions,
+        normalize_art_skin, normalize_deepseek_api_key, normalize_window_mode,
+        requested_deepseek_key, resolve_launch_mode, AppOptions,
     };
+
+    #[test]
+    fn deepseek_key_clear_is_explicit_and_exclusive() {
+        assert_eq!(
+            requested_deepseek_key(None, true).unwrap(),
+            Some(String::new())
+        );
+        assert_eq!(
+            requested_deepseek_key(Some("  ".into()), true).unwrap(),
+            Some(String::new())
+        );
+        assert!(requested_deepseek_key(Some("sk-new".into()), true).is_err());
+        assert_eq!(requested_deepseek_key(None, false).unwrap(), None);
+        assert_eq!(
+            requested_deepseek_key(Some("sk-new".into()), false).unwrap(),
+            Some("sk-new".into())
+        );
+    }
 
     #[test]
     fn deepseek_key_input_is_optional_trimmed_and_bounded() {

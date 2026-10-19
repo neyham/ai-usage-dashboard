@@ -32,6 +32,7 @@ export function ProviderSettings({
   lowPowerMode,
   artSkin,
   judgeDemo,
+  deepseekKeySaved,
   onClose,
   onSave,
 }: {
@@ -41,6 +42,8 @@ export function ProviderSettings({
   lowPowerMode: boolean;
   artSkin: ArtSkin;
   judgeDemo: boolean;
+  /** Config holds a key (an environment key cannot be cleared here). */
+  deepseekKeySaved: boolean;
   onClose: () => void;
   onSave: (
     value?: EnabledProviders,
@@ -48,6 +51,7 @@ export function ProviderSettings({
     deepseekApiKey?: string,
     lowPowerMode?: boolean,
     artSkin?: ArtSkin,
+    clearDeepseekApiKey?: boolean,
   ) => Promise<void>;
 }) {
   const [draft, setDraft] = useState(value);
@@ -58,6 +62,7 @@ export function ProviderSettings({
   const [draftArtSkin, setDraftArtSkin] = useState<ArtSkin>(artSkin);
   const [artSkinTouched, setArtSkinTouched] = useState(false);
   const [deepseekApiKey, setDeepseekApiKey] = useState("");
+  const [clearDeepseekKey, setClearDeepseekKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const savingRef = useRef(false);
@@ -87,17 +92,26 @@ export function ProviderSettings({
     setError(null);
     try {
       const providersChanged = PROVIDER_KEYS.some((key) => draft[key] !== value[key]);
-      const keyToSave = deepseekApiKey.trim();
-      if (providersChanged || windowModeTouched || lowPowerTouched || artSkinTouched || keyToSave) {
+      const keyToSave = clearDeepseekKey ? "" : deepseekApiKey.trim();
+      if (
+        providersChanged ||
+        windowModeTouched ||
+        lowPowerTouched ||
+        artSkinTouched ||
+        keyToSave ||
+        clearDeepseekKey
+      ) {
         await onSave(
           providersChanged ? draft : undefined,
           windowModeTouched ? draftWindow : undefined,
           keyToSave || undefined,
           lowPowerTouched ? draftLowPower : undefined,
           artSkinTouched ? draftArtSkin : undefined,
+          clearDeepseekKey || undefined,
         );
       }
       setDeepseekApiKey("");
+      setClearDeepseekKey(false);
       onClose();
     } catch (err) {
       console.error("settings save failed", err);
@@ -270,28 +284,50 @@ export function ProviderSettings({
 
           <fieldset className="credential-options" disabled={saving || judgeDemo}>
             <legend className="settings-section-label">DEEPSEEK API KEY</legend>
-            <label className="credential-field" htmlFor="deepseek-api-key">
-              <span className="credential-input-shell">
-                <KeyRound size={17} aria-hidden />
-                <input
-                  id="deepseek-api-key"
-                  name="deepseek-api-key-new"
-                  type="password"
-                  value={deepseekApiKey}
-                  onChange={(event) => setDeepseekApiKey(event.target.value)}
-                  autoComplete="new-password"
-                  spellCheck={false}
-                  maxLength={2_048}
-                  placeholder={judgeDemo ? "DISABLED IN SYNTHETIC DEMO" : "PASTE KEY TO REPLACE"}
-                  aria-describedby="deepseek-key-help"
-                />
-              </span>
+            <div className="credential-field">
+              <div className="credential-row">
+                <span className="credential-input-shell">
+                  <KeyRound size={17} aria-hidden />
+                  <input
+                    id="deepseek-api-key"
+                    name="deepseek-api-key-new"
+                    type="password"
+                    value={clearDeepseekKey ? "" : deepseekApiKey}
+                    onChange={(event) => setDeepseekApiKey(event.target.value)}
+                    disabled={clearDeepseekKey}
+                    autoComplete="new-password"
+                    spellCheck={false}
+                    maxLength={2_048}
+                    placeholder={
+                      judgeDemo
+                        ? "DISABLED IN SYNTHETIC DEMO"
+                        : clearDeepseekKey
+                          ? "SAVED KEY WILL BE REMOVED"
+                          : "PASTE KEY TO REPLACE"
+                    }
+                    aria-label="DeepSeek API key"
+                    aria-describedby="deepseek-key-help"
+                  />
+                </span>
+                {deepseekKeySaved && !judgeDemo ? (
+                  <button
+                    type="button"
+                    className="credential-clear"
+                    aria-pressed={clearDeepseekKey}
+                    onClick={() => setClearDeepseekKey((current) => !current)}
+                  >
+                    {clearDeepseekKey ? "UNDO" : "CLEAR"}
+                  </button>
+                ) : null}
+              </div>
               <span id="deepseek-key-help" className="credential-help">
                 {judgeDemo
                   ? "CREDENTIALS ARE NEVER SAVED IN DEMO MODE"
-                  : "LEAVE BLANK TO KEEP CURRENT KEY · SAVED IN PER-USER CONFIG"}
+                  : clearDeepseekKey
+                    ? "SAVED KEY IS DELETED FROM PER-USER CONFIG ON SAVE"
+                    : "LEAVE BLANK TO KEEP CURRENT KEY · SAVED IN PER-USER CONFIG"}
               </span>
-            </label>
+            </div>
           </fieldset>
 
           <footer className="settings-actions">

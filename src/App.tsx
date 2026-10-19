@@ -81,6 +81,7 @@ export default function App() {
   const [launchMode, setLaunchMode] = useState<LaunchMode>("normal");
   const [lowPowerMode, setLowPowerMode] = useState(false);
   const [artSkin, setArtSkin] = useState<ArtSkin>("ip");
+  const [deepseekKeySaved, setDeepseekKeySaved] = useState(false);
   const [pageVisible, setPageVisible] = useState(() => !document.hidden);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [uiError, setUiError] = useState<string | null>(null);
@@ -230,6 +231,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    invoke<boolean>("deepseek_key_saved")
+      .then((saved) => {
+        if (!disposed) setDeepseekKeySaved(saved);
+      })
+      .catch((err) => console.error("deepseek_key_saved failed", err));
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const onVisibilityChange = () => setPageVisible(!document.hidden);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -371,6 +384,7 @@ export default function App() {
       deepseekApiKey?: string,
       nextLowPowerMode?: boolean,
       nextArtSkin?: ArtSkin,
+      clearDeepseekApiKey?: boolean,
     ) => {
       try {
         const args: {
@@ -379,6 +393,7 @@ export default function App() {
           deepseekApiKey: string | null;
           lowPowerMode?: boolean;
           artSkin?: ArtSkin;
+          clearDeepseekApiKey?: boolean;
         } = {
           enabledProviders: enabledProviders ?? null,
           windowMode: nextWindowMode ?? null,
@@ -386,16 +401,19 @@ export default function App() {
         };
         if (nextLowPowerMode !== undefined) args.lowPowerMode = nextLowPowerMode;
         if (nextArtSkin !== undefined) args.artSkin = nextArtSkin;
+        if (clearDeepseekApiKey) args.clearDeepseekApiKey = true;
         const saved = await invoke<{
           enabledProviders: EnabledProviders;
           windowMode: WindowMode;
           lowPowerMode: boolean;
           artSkin: string;
+          deepseekKeySaved: boolean;
         }>("save_display_settings", args);
         setSummary((current) => ({ ...current, enabledProviders: saved.enabledProviders }));
         setLaunchMode(saved.windowMode);
         setLowPowerMode(saved.lowPowerMode);
         setArtSkin(normalizeArtSkin(saved.artSkin));
+        setDeepseekKeySaved(saved.deepseekKeySaved);
       } catch (err) {
         try {
           const actualMode = await invoke<string>("launch_mode");
@@ -480,6 +498,7 @@ export default function App() {
           lowPowerMode={lowPowerMode}
           artSkin={artSkin}
           judgeDemo={judgeDemo}
+          deepseekKeySaved={deepseekKeySaved}
           onClose={closeSettings}
           onSave={saveSettings}
         />

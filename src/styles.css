@@ -863,6 +863,7 @@ body {
 .panels-empty button:focus-visible,
 .settings-cancel:focus-visible,
 .settings-save:focus-visible,
+.credential-clear:focus-visible,
 .credential-input-shell:focus-within {
   outline: 2px solid var(--focus);
   outline-offset: 3px;
@@ -1137,6 +1138,28 @@ body {
 .credential-field {
   display: grid;
   gap: 8px;
+}
+.credential-row {
+  display: flex;
+  gap: 8px;
+}
+.credential-row .credential-input-shell {
+  flex: 1;
+  min-width: 0;
+}
+.credential-clear {
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid rgba(120, 160, 150, 0.28);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+.credential-clear[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  color: var(--danger);
 }
 .credential-input-shell {
   min-height: 48px;

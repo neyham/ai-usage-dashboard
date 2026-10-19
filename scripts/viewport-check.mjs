@@ -207,6 +207,7 @@ async function installTauriMock(
       let mode = initialMode;
       let lowPowerMode = initialLowPower;
       let artSkin = String(initialSkin).trim().toLowerCase() === "ring" ? "ring" : "ip";
+      let deepseekKeySaved = false;
       let nextCallbackId = 1;
       let nextEventId = 1;
       const callbacks = new Map();
@@ -279,6 +280,7 @@ async function installTauriMock(
           if (command === "launch_mode") return mode;
           if (command === "low_power_mode") return lowPowerMode;
           if (command === "art_skin") return artSkin;
+          if (command === "deepseek_key_saved") return deepseekKeySaved;
           if (command === "judge_demo") return demo;
           if (command === "refresh_now") {
             stats.refreshes += 1;
@@ -330,11 +332,20 @@ async function installTauriMock(
             if (args.artSkin != null) {
               artSkin = String(args.artSkin).trim().toLowerCase() === "ring" ? "ring" : "ip";
             }
+            if (args.clearDeepseekApiKey) {
+              if (args.deepseekApiKey != null) {
+                throw new Error("DEEPSEEK KEY CANNOT BE REPLACED AND CLEARED");
+              }
+              deepseekKeySaved = false;
+            } else if (args.deepseekApiKey) {
+              deepseekKeySaved = true;
+            }
             return {
               enabledProviders: structuredClone(currentSummary.enabledProviders),
               windowMode: mode,
               lowPowerMode,
               artSkin,
+              deepseekKeySaved,
             };
           }
           if (command === "exit_app") {
@@ -980,6 +991,7 @@ async function checkDeepSeekKeySettings(browser) {
 
   await page.locator(".tm-settings").click();
   const keyInput = page.locator("#deepseek-api-key");
+  assert.equal(await page.locator(".credential-clear").count(), 0, "nothing saved to clear");
   assert.equal(await keyInput.getAttribute("type"), "password");
   assert.equal(await keyInput.getAttribute("autocomplete"), "new-password");
   assert.equal(await keyInput.inputValue(), "");
@@ -1012,6 +1024,33 @@ async function checkDeepSeekKeySettings(browser) {
 
   await page.locator(".tm-settings").click();
   assert.equal(await page.locator("#deepseek-api-key").inputValue(), "");
+  await page.keyboard.press("Escape");
+  await page.locator(".settings-dialog").waitFor({ state: "detached" });
+
+  // A saved key can be cleared; UNDO restores the field before saving.
+  await page.locator(".tm-settings").click();
+  const clear = page.locator(".credential-clear");
+  await page.locator("#deepseek-api-key").fill("sk-typed-then-cleared");
+  await clear.click();
+  assert.equal(await clear.getAttribute("aria-pressed"), "true");
+  assert.equal(await page.locator("#deepseek-api-key").isDisabled(), true);
+  assert.equal(await page.locator("#deepseek-api-key").inputValue(), "");
+  await clear.click();
+  assert.equal(await page.locator("#deepseek-api-key").isDisabled(), false);
+  await clear.click();
+  await page
+    .locator(".settings-dialog")
+    .screenshot({ path: join(artifactDir, "settings-deepseek-clear.png") });
+  await page.locator(".settings-save").click();
+  await page.locator(".settings-dialog").waitFor({ state: "detached" });
+  assert.deepEqual(await page.evaluate(() => window.__DASHBOARD_TEST__.saveCalls[1]), {
+    enabledProviders: null,
+    windowMode: null,
+    clearDeepseekApiKey: true,
+  });
+  assert.equal(await page.evaluate(() => window.__DASHBOARD_TEST__.deepseekKeySubmissions), 1);
+  await page.locator(".tm-settings").click();
+  assert.equal(await page.locator(".credential-clear").count(), 0, "cleared key has no button");
   await page.keyboard.press("Escape");
   await page.locator(".settings-dialog").waitFor({ state: "detached" });
 
@@ -1895,6 +1934,24 @@ async function checkUsageVariants(browser) {
       codexLabels: ["7D", "5H"],
       claudeLabels: ["7D", "5H"],
     },
+    {
+      name: "claude-banked-resets",
+      summary: {
+        ...baseSummary,
+        services: {
+          ...baseSummary.services,
+          codex: dualWindowCodex,
+          claude: {
+            ...dualWindowClaude,
+            resetCreditsAvailable: 2,
+            resetCreditsExpireLocal: "08-01 09:00",
+          },
+        },
+      },
+      codexLabels: ["7D", "5H"],
+      claudeLabels: ["7D", "5H"],
+      claudeResets: "2 AVAILABLE · FIRST EXP 08-01 09:00",
+    },
   ];
 
   for (const variant of variants) {
@@ -1917,6 +1974,11 @@ async function checkUsageVariants(browser) {
     await page.locator(".panel-codex .reset-credits", { hasText: "3 AVAILABLE" }).waitFor();
     await page.locator(".panel-codex .reset-credits", { hasText: "FIRST EXP" }).waitFor();
     assert.deepEqual(await legendWindows(page, ".panel-claude"), variant.claudeLabels);
+    if (variant.claudeResets) {
+      await page.locator(".panel-claude .reset-credits", { hasText: variant.claudeResets }).waitFor();
+    } else {
+      assert.equal(await page.locator(".panel-claude .reset-credits").count(), 0);
+    }
     assert.deepEqual(await legendWindows(page, ".panel-grok"), ["7D", "MONTH"]);
     assert.deepEqual(await inspectLayout(page, viewport), []);
     assert.deepEqual(pageErrors, [], `${variant.name} page errors`);
