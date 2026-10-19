@@ -481,7 +481,7 @@ mod tests {
         let err = read_auth_text(&missing.to_string_lossy()).expect_err("missing explicit path");
         let message = format!("{err:#}");
         assert!(
-            message.contains("read Codex auth.json") || message.contains("No such file"),
+            message.contains("read Codex file"),
             "unexpected error: {message}"
         );
     }
