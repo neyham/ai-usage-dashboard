@@ -30,6 +30,8 @@ export interface ClaudeService {
   fiveHourResetLocal?: string;
   sevenDayResetLocal?: string;
   extraUsagePercent?: number;
+  resetCreditsAvailable?: number;
+  resetCreditsExpireLocal?: string;
 }
 
 export interface CodexService {

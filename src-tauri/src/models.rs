@@ -74,6 +74,10 @@ pub struct ClaudeService {
     pub seven_day_reset_local: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub extra_usage_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reset_credits_available: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reset_credits_expire_local: Option<String>,
 }
 
 impl Default for ClaudeService {
@@ -89,6 +93,8 @@ impl Default for ClaudeService {
             five_hour_reset_local: None,
             seven_day_reset_local: None,
             extra_usage_percent: None,
+            reset_credits_available: None,
+            reset_credits_expire_local: None,
         }
     }
 }

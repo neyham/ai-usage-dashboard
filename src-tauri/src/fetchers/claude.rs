@@ -11,7 +11,7 @@ use crate::config::{
 };
 use crate::fs_util::{atomic_write, OsFileLock};
 use crate::models::ClaudeService;
-use crate::util::{clamp_percent, local_label, parse_datetime};
+use crate::util::{clamp_percent, fmt_local, local_label, parse_datetime};
 use anyhow::{anyhow, bail, Context};
 use chrono::{DateTime, Duration, Utc};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -27,6 +27,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration as StdDuration, Instant};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+/// Same endpoint, also asking for saved limit resets ("Reset for free") in `cedar_ember`.
+const USAGE_WITH_RESETS_URL: &str = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1";
+/// More saved resets or grant records than this is treated as malformed.
+const MAX_RESET_CREDITS: u64 = 50;
+const MAX_RESET_GRANTS: usize = 200;
 const ANTHROPIC_BETA: &str = "oauth-2025-04-20";
 const MSG_LOGIN_REQUIRED: &str = "LOGIN REQUIRED";
 const MSG_AUTH_EXPIRED: &str = "AUTH EXPIRED";
@@ -59,15 +64,11 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<ClaudeService, Fe
         refresh_or_recover(&config, client, &mut creds).await?;
     }
 
-    let mut resp = send_with_one_retry(|| usage_request(client, &creds.access_token))
-        .await
-        .map_err(FetchError::Other)?;
+    let mut resp = fetch_usage(client, &creds.access_token).await?;
 
     if resp.status == 401 {
         refresh_or_recover(&config, client, &mut creds).await?;
-        resp = send_with_one_retry(|| usage_request(client, &creds.access_token))
-            .await
-            .map_err(FetchError::Other)?;
+        resp = fetch_usage(client, &creds.access_token).await?;
     }
 
     if resp.status == 429 {
@@ -149,9 +150,23 @@ fn load_error(err: anyhow::Error) -> FetchError {
     }
 }
 
-fn usage_request(client: &Client, access_token: &str) -> reqwest::RequestBuilder {
+/// The reset inventory is optional: when the server rejects that query, ask
+/// again without it so the usage windows still arrive.
+async fn fetch_usage(client: &Client, access_token: &str) -> Result<super::Resp, FetchError> {
+    let resp = send_with_one_retry(|| usage_request(client, USAGE_WITH_RESETS_URL, access_token))
+        .await
+        .map_err(FetchError::Other)?;
+    if !matches!(resp.status, 400 | 403) {
+        return Ok(resp);
+    }
+    send_with_one_retry(|| usage_request(client, USAGE_URL, access_token))
+        .await
+        .map_err(FetchError::Other)
+}
+
+fn usage_request(client: &Client, url: &str, access_token: &str) -> reqwest::RequestBuilder {
     client
-        .get(USAGE_URL)
+        .get(url)
         .header("Authorization", format!("Bearer {access_token}"))
         .header("anthropic-beta", ANTHROPIC_BETA)
 }
@@ -161,6 +176,9 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<ClaudeService> {
     let five = usage_window(&root, "five_hour");
     let seven = weekly_usage_window(&root);
     let extra_usage_percent = extra_usage_percent(&root);
+    let resets = root
+        .get("cedar_ember")
+        .and_then(|block| reset_credits(block, Utc::now()));
 
     if five.is_none() && seven.is_none() && extra_usage_percent.is_none() {
         bail!("Claude usage has no usable windows");
@@ -177,7 +195,60 @@ pub(crate) fn parse_usage(body: &str) -> anyhow::Result<ClaudeService> {
         five_hour_reset_local: five.and_then(|window| window.1),
         seven_day_reset_local: seven.and_then(|window| window.1),
         extra_usage_percent,
+        reset_credits_available: resets.as_ref().map(|summary| summary.0),
+        reset_credits_expire_local: resets.and_then(|summary| summary.1),
     })
+}
+
+/// Saved resets usable now and the earliest expiry among them. Only an
+/// eligible block counts; a grant with an unreadable field is dropped, and an
+/// implausibly large inventory yields nothing.
+fn reset_credits(block: &Value, now: DateTime<Utc>) -> Option<(u64, Option<String>)> {
+    if block.get("eligible").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let grants = block.get("grants")?.as_array()?;
+    if grants.len() > MAX_RESET_GRANTS {
+        return None;
+    }
+    let mut available = 0;
+    let mut earliest: Option<DateTime<Utc>> = None;
+    for grant in grants {
+        let Some((left, ends_at)) = available_resets(grant, now) else {
+            continue;
+        };
+        available += left;
+        if available > MAX_RESET_CREDITS {
+            return None;
+        }
+        if let Some(ends_at) = ends_at {
+            earliest = Some(earliest.map_or(ends_at, |current| current.min(ends_at)));
+        }
+    }
+    (available > 0).then(|| (available, earliest.map(fmt_local)))
+}
+
+fn available_resets(grant: &Value, now: DateTime<Utc>) -> Option<(u64, Option<DateTime<Utc>>)> {
+    let left = grant.get("resets_left")?.as_u64()?;
+    if let Some(total) = grant.get("resets_total").filter(|value| !value.is_null()) {
+        if total.as_u64()? < left {
+            return None;
+        }
+    }
+    let paused = grant.get("paused")?.as_bool()?;
+    let bound = |key: &str| -> Option<Option<DateTime<Utc>>> {
+        match grant.get(key) {
+            None | Some(Value::Null) => Some(None),
+            Some(value) => parse_datetime(value).map(Some),
+        }
+    };
+    let starts_at = bound("starts_at")?;
+    let ends_at = bound("ends_at")?;
+    let usable = !paused
+        && left > 0
+        && starts_at.is_none_or(|start| start <= now)
+        && ends_at.is_none_or(|end| end > now);
+    usable.then_some((left, ends_at))
 }
 
 fn usage_window(root: &Value, key: &str) -> Option<(f64, Option<String>)> {
@@ -188,17 +259,15 @@ fn usage_window(root: &Value, key: &str) -> Option<(f64, Option<String>)> {
 }
 
 fn weekly_usage_window(root: &Value) -> Option<(f64, Option<String>)> {
-    for key in [
-        "seven_day",
-        "seven_day_oauth_apps",
-        "seven_day_sonnet",
-        "seven_day_opus",
-    ] {
-        if let Some(window) = usage_window(root, key) {
-            return Some(window);
-        }
+    if let Some(window) = usage_window(root, "seven_day") {
+        return Some(window);
     }
-    weekly_limit_window(root)
+    // Without the all-models week, show the most constrained scoped one.
+    ["seven_day_oauth_apps", "seven_day_sonnet", "seven_day_opus"]
+        .into_iter()
+        .filter_map(|key| usage_window(root, key))
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .or_else(|| weekly_limit_window(root))
 }
 
 fn weekly_limit_window(root: &Value) -> Option<(f64, Option<String>)> {
@@ -222,7 +291,14 @@ fn weekly_limit_window(root: &Value) -> Option<(f64, Option<String>)> {
         .iter()
         .find(|entry| is_all_models_limit(entry))
         .copied()
-        .or_else(|| weekly.first().copied())?;
+        .or_else(|| {
+            weekly.iter().copied().max_by(|a, b| {
+                let percent = |entry: &Value| entry.get("percent").and_then(flexible_number);
+                percent(a)
+                    .unwrap_or(0.0)
+                    .total_cmp(&percent(b).unwrap_or(0.0))
+            })
+        })?;
     let percent = flexible_number(entry.get("percent")?).map(clamp_percent)?;
     let reset = entry.get("resets_at").and_then(local_label);
     Some((percent, reset))
@@ -846,12 +922,14 @@ mod tests {
         adopt_refreshed_credentials, auth_failure_message, claude_code_touch_arguments,
         claude_plan_label, claude_profile_dir, credential_paths, credentials_refreshed,
         delegates_to_claude_code, is_windows_batch, load_selected, parse_credentials, parse_usage,
-        reserve_claude_code_recovery_at, resolve_and_read, resolve_command_in,
+        reserve_claude_code_recovery_at, reset_credits, resolve_and_read, resolve_command_in,
         try_claude_code_refresh_blocking_at, Creds, CursorQueryScanner, OsFileLock, RefreshError,
     };
     use crate::config::Config;
-    use chrono::{Duration, TimeZone, Utc};
+    use crate::util::fmt_local;
+    use chrono::{DateTime, Duration, TimeZone, Utc};
     use reqwest::Client;
+    use serde_json::Value;
     use std::path::PathBuf;
     use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 
@@ -1342,6 +1420,12 @@ exit 7
         .expect("valid model-specific weekly Claude response");
         assert_eq!(legacy.seven_day_percent, Some(44.0));
 
+        let tightest = parse_usage(
+            r#"{"seven_day":null,"seven_day_sonnet":{"utilization":20},"seven_day_opus":{"utilization":81}}"#,
+        )
+        .expect("valid scoped weekly Claude response");
+        assert_eq!(tightest.seven_day_percent, Some(81.0));
+
         let limits = parse_usage(
             r#"{
                 "limits":[
@@ -1353,6 +1437,70 @@ exit 7
         .expect("valid limits-array Claude response");
         assert_eq!(limits.seven_day_percent, Some(31.0));
         assert!(limits.seven_day_reset_local.is_some());
+
+        let scoped_only = parse_usage(
+            r#"{"limits":[
+                {"kind":"weekly_scoped","percent":12,"scope":{"model":{"display_name":"Sonnet"}}},
+                {"kind":"weekly_scoped","percent":66,"scope":{"model":{"display_name":"Fable"}}}
+            ]}"#,
+        )
+        .expect("valid scoped-only limits Claude response");
+        assert_eq!(scoped_only.seven_day_percent, Some(66.0));
+    }
+
+    #[test]
+    fn claude_reset_credits_count_only_usable_grants() {
+        let now = DateTime::parse_from_rfc3339("2026-10-19T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let block: Value = serde_json::from_str(
+            r#"{"eligible":true,"grants":[
+                {"id":"g1","resets_left":2,"resets_total":2,"paused":false,"ends_at":"2026-11-01T00:00:00Z"},
+                {"id":"g2","resets_left":1,"paused":false,"starts_at":"2026-10-01T00:00:00Z","ends_at":"2026-10-25T00:00:00Z"},
+                {"id":"paused","resets_left":1,"paused":true},
+                {"id":"future","resets_left":1,"paused":false,"starts_at":"2026-10-20T00:00:00Z"},
+                {"id":"expired","resets_left":1,"paused":false,"ends_at":"2026-10-18T00:00:00Z"},
+                {"id":"unknown-pause","resets_left":1},
+                {"id":"bad-date","resets_left":1,"paused":false,"ends_at":"soon"},
+                {"id":"bad-total","resets_left":3,"resets_total":1,"paused":false}
+            ]}"#,
+        )
+        .unwrap();
+        let (available, expiry) = reset_credits(&block, now).expect("usable resets");
+        assert_eq!(available, 3);
+        assert_eq!(
+            expiry,
+            Some(fmt_local(
+                DateTime::parse_from_rfc3339("2026-10-25T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc)
+            ))
+        );
+    }
+
+    #[test]
+    fn claude_reset_credits_need_an_eligible_plausible_inventory() {
+        let now = Utc::now();
+        for body in [
+            r#"{"eligible":false,"grants":[{"resets_left":1,"paused":false}]}"#,
+            r#"{"eligible":true,"grants":[]}"#,
+            r#"{"eligible":true,"grants":[{"resets_left":51,"paused":false}]}"#,
+        ] {
+            let block: Value = serde_json::from_str(body).unwrap();
+            assert_eq!(
+                reset_credits(&block, now),
+                None,
+                "unexpectedly counted {body}"
+            );
+        }
+
+        // The live shape for an ineligible account leaves usage untouched.
+        let service = parse_usage(
+            r#"{"seven_day":{"utilization":30},"cedar_ember":{"eligible":false,"ineligible_reason":"x","grants":[]}}"#,
+        )
+        .expect("usage with an ineligible reset block");
+        assert_eq!(service.seven_day_percent, Some(30.0));
+        assert_eq!(service.reset_credits_available, None);
     }
 
     #[test]

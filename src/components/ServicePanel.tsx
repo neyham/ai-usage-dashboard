@@ -563,7 +563,7 @@ export function ServicePanel({
             <span className="usage-unavailable">USAGE DATA UNAVAILABLE</span>
           )}
         </div>
-        {(kind === "codex" || kind === "grok") && typeof resetCredits === "number" && resetCredits > 0 && (
+        {(kind === "claude" || kind === "codex" || kind === "grok") && typeof resetCredits === "number" && resetCredits > 0 && (
           <div
             className="reset-credits"
             role="status"

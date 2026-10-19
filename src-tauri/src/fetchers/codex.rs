@@ -3,7 +3,9 @@
 //! API, so malformed responses fall back to last-known-good cached data.
 //!
 //! Credential discovery uses the native home path, or an explicit
-//! `codexAuthPath` file override. Explicit paths are fail closed.
+//! `codexAuthPath` file override. Explicit paths are fail closed. A top-level
+//! `chatgpt_base_url` in the `config.toml` beside that file moves the backend,
+//! as it does for the Codex CLI.
 
 use super::{
     require_success, send, send_with_one_retry, FetchError, Resp, MSG_CREDENTIAL_ERROR,
@@ -21,8 +23,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
-const RESET_CREDITS_URL: &str = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
+const BACKEND_USAGE_PATH: &str = "/wham/usage";
+const CODEX_API_USAGE_PATH: &str = "/api/codex/usage";
+const RESET_CREDITS_PATH: &str = "/wham/rate-limit-reset-credits";
 const RESET_CREDITS_TIMEOUT: Duration = Duration::from_secs(4);
 const LONG_WINDOW_THRESHOLD_SECONDS: u64 = 24 * 60 * 60;
 const MAX_AUTH_BYTES: usize = 64 * 1024;
@@ -57,6 +61,7 @@ struct ResetCreditSummary {
 }
 
 pub async fn fetch(config: &Config, client: &Client) -> Result<CodexService, FetchError> {
+    let endpoints = Endpoints::from_base(configured_base_url(config).as_deref());
     let auth = match read_auth(config) {
         Ok(auth) => auth,
         Err(CodexAuthError::Missing) => {
@@ -71,14 +76,14 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<CodexService, Fet
         }
     };
 
-    let resp: Resp = send_with_one_retry(|| authenticated_get(client, USAGE_URL, &auth))
+    let resp: Resp = send_with_one_retry(|| authenticated_get(client, &endpoints.usage, &auth))
         .await
         .map_err(FetchError::Other)?;
 
     require_success(&resp, "Codex usage")?;
     let mut service = parse_usage(&resp.body).map_err(FetchError::Other)?;
 
-    let request = authenticated_get(client, RESET_CREDITS_URL, &auth)
+    let request = authenticated_get(client, &endpoints.reset_credits, &auth)
         .timeout(RESET_CREDITS_TIMEOUT)
         .header("Accept", "application/json")
         .header("OpenAI-Beta", "codex-1")
@@ -224,11 +229,84 @@ fn read_auth(config: &Config) -> Result<CodexAuth, CodexAuthError> {
 }
 
 fn read_auth_text(configured: &str) -> anyhow::Result<String> {
-    if !configured.is_empty() {
-        return read_file_limited(Path::new(configured));
-    }
+    read_file_limited(&auth_path(configured)?)
+}
 
-    read_file_limited(&default_auth_path()?)
+fn auth_path(configured: &str) -> anyhow::Result<PathBuf> {
+    if configured.is_empty() {
+        default_auth_path()
+    } else {
+        Ok(PathBuf::from(configured))
+    }
+}
+
+struct Endpoints {
+    usage: String,
+    reset_credits: String,
+}
+
+impl Endpoints {
+    /// Mirrors the Codex CLI: ChatGPT hosts live under `/backend-api`, and any
+    /// other base serves the Codex API path.
+    fn from_base(base: Option<&str>) -> Self {
+        let mut base = base
+            .map(str::trim)
+            .filter(|value| value.starts_with("https://"))
+            .unwrap_or(DEFAULT_BASE_URL)
+            .trim_end_matches('/')
+            .to_string();
+        let chatgpt_host = ["https://chatgpt.com", "https://chat.openai.com"]
+            .iter()
+            .any(|host| base == *host || base.starts_with(&format!("{host}/")));
+        if chatgpt_host && !base.contains("/backend-api") {
+            base.push_str("/backend-api");
+        }
+        let usage_path = if base.contains("/backend-api") {
+            BACKEND_USAGE_PATH
+        } else {
+            CODEX_API_USAGE_PATH
+        };
+        Self {
+            usage: format!("{base}{usage_path}"),
+            reset_credits: format!("{base}{RESET_CREDITS_PATH}"),
+        }
+    }
+}
+
+fn configured_base_url(config: &Config) -> Option<String> {
+    let auth = auth_path(config.codex_auth_path.trim()).ok()?;
+    let text = read_file_limited(&auth.parent()?.join("config.toml")).ok()?;
+    parse_base_url(&text)
+}
+
+/// Top-level `chatgpt_base_url` only: keys after a `[table]` header belong to
+/// that table. Comments and simple quoting are handled; nothing else is.
+fn parse_base_url(contents: &str) -> Option<String> {
+    for raw in contents.lines() {
+        let line = raw.split('#').next().unwrap_or_default().trim();
+        if line.starts_with('[') {
+            return None;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "chatgpt_base_url" {
+            continue;
+        }
+        let value = value.trim();
+        let unquoted = value
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .or_else(|| {
+                value
+                    .strip_prefix('\'')
+                    .and_then(|rest| rest.strip_suffix('\''))
+            })
+            .unwrap_or(value)
+            .trim();
+        return (!unquoted.is_empty()).then(|| unquoted.to_string());
+    }
+    None
 }
 
 fn default_auth_path() -> anyhow::Result<PathBuf> {
@@ -239,8 +317,8 @@ fn default_auth_path() -> anyhow::Result<PathBuf> {
 }
 
 fn read_file_limited(path: &Path) -> anyhow::Result<String> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("read Codex auth.json at {}", path.display()))?;
+    let file =
+        std::fs::File::open(path).with_context(|| format!("read Codex file {}", path.display()))?;
     read_bounded_utf8(file)
 }
 
@@ -251,9 +329,9 @@ fn read_bounded_utf8(reader: impl Read) -> anyhow::Result<String> {
         .read_to_end(&mut bytes)
         .context("read Codex credential data")?;
     if bytes.len() > MAX_AUTH_BYTES {
-        bail!("Codex auth.json exceeds {MAX_AUTH_BYTES} bytes");
+        bail!("Codex file exceeds {MAX_AUTH_BYTES} bytes");
     }
-    String::from_utf8(bytes).context("Codex auth.json is not UTF-8")
+    String::from_utf8(bytes).context("Codex file is not UTF-8")
 }
 
 fn parse_auth(text: &str) -> anyhow::Result<CodexAuth> {
@@ -281,8 +359,8 @@ fn parse_auth(text: &str) -> anyhow::Result<CodexAuth> {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_auth_path, parse_auth, parse_reset_credits, parse_usage, read_auth, read_auth_text,
-        CodexAuthError,
+        default_auth_path, parse_auth, parse_base_url, parse_reset_credits, parse_usage, read_auth,
+        read_auth_text, CodexAuthError, Endpoints,
     };
     use crate::config::Config;
     use crate::util::local_label;
@@ -296,9 +374,10 @@ mod tests {
             token: "synthetic-token".into(),
             account_id: Some("synthetic-account".into()),
         };
-        let request = super::authenticated_get(&client, super::USAGE_URL, &auth)
-            .build()
-            .unwrap();
+        let request =
+            super::authenticated_get(&client, &super::Endpoints::from_base(None).usage, &auth)
+                .build()
+                .unwrap();
         let headers = request.headers();
 
         assert_eq!(headers["accept"], "application/json");
@@ -472,5 +551,52 @@ mod tests {
     fn codex_default_auth_path_is_home_dot_codex() {
         let path = default_auth_path().expect("home");
         assert!(path.ends_with(std::path::Path::new(".codex").join("auth.json")));
+    }
+
+    #[test]
+    fn codex_base_url_comes_from_top_level_config_only() {
+        assert_eq!(parse_base_url(""), None);
+        assert_eq!(
+            parse_base_url("model = \"o4\"\nchatgpt_base_url = \"https://proxy.example/backend-api/\" # proxy\n"),
+            Some("https://proxy.example/backend-api/".into())
+        );
+        assert_eq!(
+            parse_base_url("# chatgpt_base_url = \"https://old.example\"\nchatgpt_base_url='https://new.example'"),
+            Some("https://new.example".into())
+        );
+        assert_eq!(
+            parse_base_url("[profiles.work]\nchatgpt_base_url = \"https://scoped.example\""),
+            None
+        );
+    }
+
+    #[test]
+    fn codex_endpoints_follow_the_cli_path_rules() {
+        let default = Endpoints::from_base(None);
+        assert_eq!(default.usage, "https://chatgpt.com/backend-api/wham/usage");
+        assert_eq!(
+            default.reset_credits,
+            "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+        );
+        assert_eq!(
+            Endpoints::from_base(Some("https://chatgpt.com/")).usage,
+            "https://chatgpt.com/backend-api/wham/usage"
+        );
+        assert_eq!(
+            Endpoints::from_base(Some("https://proxy.example/backend-api/")).usage,
+            "https://proxy.example/backend-api/wham/usage"
+        );
+        assert_eq!(
+            Endpoints::from_base(Some("https://codex.example")).usage,
+            "https://codex.example/api/codex/usage"
+        );
+        // The bearer token never goes to a plaintext or malformed base.
+        for base in ["http://proxy.example", "proxy.example", ""] {
+            assert_eq!(
+                Endpoints::from_base(Some(base)).usage,
+                default.usage,
+                "{base}"
+            );
+        }
     }
 }
