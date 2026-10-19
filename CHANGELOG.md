@@ -2,6 +2,34 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.4] - 2026-10-19
+
+### Added
+
+- Claude: saved limit resets ("Reset for free") usable now, with the earliest
+  expiry, on the BANKED RESETS line (`resetCreditsAvailable`,
+  `resetCreditsExpireLocal`). The usage request asks for `cedar_ember=1` and
+  retries once without it on 400/403.
+- Codex: a top-level `chatgpt_base_url` in the `config.toml` beside
+  `auth.json` moves the usage and reset-credit endpoints. Only https bases are
+  used.
+- Display Settings can clear a saved DeepSeek key (CLEAR, then SAVE). A key
+  from `DEEPSEEK_API_KEY` is not affected.
+
+### Fixed
+
+- Windows: renewing an expired Claude login now starts Claude Code through its
+  npm `.cmd` shim, answers the console's cursor-position query so it does not
+  stall, and ends the whole process tree afterwards.
+- Claude: when the all-models week is missing, the 7D figure is the most
+  constrained scoped weekly window rather than the first one listed.
+
+### Changed
+
+- Antigravity's grouped ring chips show a short reset inline (the date for 7D,
+  the time for 5H). The narrowest six-card layout still hides them.
+- Release upgrade checks use 0.9.3 as the baseline.
+
 ## [0.9.3] - 2026-10-16
 
 ### Added
