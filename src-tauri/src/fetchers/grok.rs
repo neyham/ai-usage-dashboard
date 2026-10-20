@@ -474,6 +474,10 @@ fn successful_body(result: &anyhow::Result<Resp>) -> Option<&str> {
 }
 
 fn parse_credits(body: &str) -> anyhow::Result<PeriodUsage> {
+    parse_credits_at(body, Utc::now())
+}
+
+fn parse_credits_at(body: &str, now: DateTime<Utc>) -> anyhow::Result<PeriodUsage> {
     let root: Value = serde_json::from_str(body).context("parse Grok credits body")?;
     let config = root
         .get("config")
@@ -499,14 +503,16 @@ fn parse_credits(body: &str) -> anyhow::Result<PeriodUsage> {
         .find(|(name, _)| product_key(name) == "grokbuild")
         .map(|(_, percent)| *percent);
     // Under The X Subscription one weekly pool covers Chat, Bot, Build and
-    // Cursor. A Build-only breakdown is the older Grok Build allowance.
+    // Cursor. A Build-only breakdown is the older Grok Build allowance; an
+    // untouched pool omits the breakdown entirely.
     let unified = config
         .get("isUnifiedBillingUser")
         .and_then(Value::as_bool)
         .unwrap_or(false)
-        && raw_products
-            .iter()
-            .any(|(name, _)| product_key(name) != "grokbuild");
+        && (raw_products.is_empty()
+            || raw_products
+                .iter()
+                .any(|(name, _)| product_key(name) != "grokbuild"));
     let products = if unified {
         raw_products
             .iter()
@@ -522,12 +528,27 @@ fn parse_credits(body: &str) -> anyhow::Result<PeriodUsage> {
     };
     // creditUsagePercent is the account cap across products. A Grok Build
     // slice is only a fallback when that combined figure is absent.
+    let period = config.get("currentPeriod").and_then(Value::as_object);
+    // proto3 JSON omits zeros: a unified pool inside its current period with
+    // no usage figure at all is untouched (seen right after a weekly reset).
+    let untouched_pool = unified
+        && raw_products.is_empty()
+        && config.get("creditUsagePercent").is_none()
+        && period.is_some_and(|period| {
+            let bound = |key: &str| {
+                period
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .and_then(parse_datetime_str)
+            };
+            matches!((bound("start"), bound("end")), (Some(start), Some(end)) if start <= now && now < end)
+        });
     let percent = config
         .get("creditUsagePercent")
         .and_then(number_value)
-        .or(product_percent);
+        .or(product_percent)
+        .or(untouched_pool.then_some(0.0));
 
-    let period = config.get("currentPeriod").and_then(Value::as_object);
     let (label, caption) = period_display(
         period
             .and_then(|value| value.get("type"))
@@ -537,8 +558,8 @@ fn parse_credits(body: &str) -> anyhow::Result<PeriodUsage> {
         .and_then(|value| value.get("end"))
         .or_else(|| config.get("billingPeriodEnd"))
         .and_then(local_label);
-    // Unified billing can confirm the weekly window and still omit the
-    // percentage. That is unknown usage, not zero and not a failed fetch.
+    // A period outside its own bounds without a percentage is unknown usage,
+    // not zero and not a failed fetch.
     if percent.is_none() && reset_local.is_none() {
         bail!("Grok credits missing usage percentage");
     }
@@ -1067,15 +1088,17 @@ fn compare_candidates(left: &AuthCandidate, right: &AuthCandidate) -> Ordering {
 mod tests {
     use super::{
         finish_optional_settings, grok_api_request, grok_home_from_auth_path, parse_auth_at,
-        parse_auth_state_at, parse_credits, parse_monthly, parse_remaining_resets_json,
-        parse_settings_plan, plan_from_access_token, read_bounded_utf8, reserve_auth_refresh_at,
-        service_from_responses, AuthState, ACCESS_UNAVAILABLE, BILLING_URL, CREDITS_URL,
-        GROK_CLIENT_SURFACE, LOGIN_REQUIRED, MAX_AUTH_BYTES, SETTINGS_URL,
+        parse_auth_state_at, parse_credits, parse_credits_at, parse_monthly,
+        parse_remaining_resets_json, parse_settings_plan, plan_from_access_token,
+        read_bounded_utf8, reserve_auth_refresh_at, service_from_responses, AuthState,
+        ACCESS_UNAVAILABLE, BILLING_URL, CREDITS_URL, GROK_CLIENT_SURFACE, LOGIN_REQUIRED,
+        MAX_AUTH_BYTES, SETTINGS_URL,
     };
     #[cfg(unix)]
     use super::{read_auth_with_refresh_dir, renew_auth_with_official_cli};
     use crate::config::Config;
     use crate::fetchers::{build_client, FetchError, Resp};
+    use crate::util::parse_datetime_str;
     use chrono::{Duration as ChronoDuration, TimeZone, Utc};
     use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
     use std::io::Cursor;
@@ -1663,6 +1686,37 @@ EOF
         assert_eq!(service.period_label.as_deref(), Some("7D"));
         assert!(service.usage_reset_local.is_some());
         assert_eq!(service.plan.as_deref(), Some("SuperGrok Heavy"));
+    }
+
+    #[test]
+    fn untouched_unified_pool_reads_as_zero_inside_its_period() {
+        // Shape captured on 2026-10-20 one minute after a weekly reset.
+        let body = r#"{"config":{
+            "currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY",
+                "start":"2026-10-19T23:55:10.500+00:00","end":"2026-10-26T23:55:10.500+00:00"},
+            "isUnifiedBillingUser":true,"prepaidBalance":{"val":0},
+            "billingPeriodStart":"2026-10-19T23:55:10.500+00:00",
+            "billingPeriodEnd":"2026-10-26T23:55:10.500+00:00"}}"#;
+        let at = |text: &str| parse_datetime_str(text).unwrap();
+        let usage = parse_credits_at(body, at("2026-10-19T23:56:25Z")).expect("fresh pool");
+        assert!(usage.unified, "an untouched pool is still the X pool");
+        assert_eq!(usage.percent, Some(0.0));
+        assert!(usage.products.is_empty());
+
+        // Outside its period the missing figure stays unknown.
+        let late = parse_credits_at(body, at("2026-10-27T00:00:00Z")).expect("stale period");
+        assert_eq!(late.percent, None);
+
+        // A Build-only breakdown is still the older Grok Build allowance.
+        let build_only = parse_credits_at(
+            r#"{"config":{"isUnifiedBillingUser":true,
+                "productUsage":[{"product":"GrokBuild","usagePercent":12}],
+                "currentPeriod":{"start":"2026-10-19T00:00:00Z","end":"2026-10-26T00:00:00Z"}}}"#,
+            at("2026-10-20T00:00:00Z"),
+        )
+        .expect("build-only usage");
+        assert!(!build_only.unified);
+        assert_eq!(build_only.percent, Some(12.0));
     }
 
     #[test]
