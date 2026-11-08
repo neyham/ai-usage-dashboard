@@ -294,7 +294,7 @@ pub fn summary_from_cache(cache: &CacheState, enabled: EnabledProviders) -> Usag
     let any = (enabled.claude && cache.get("claude").is_some())
         || (enabled.codex && cache.get("codex").is_some())
         || (enabled.deepseek && cache.get("deepseek").is_some())
-        || (enabled.grok && cache.get("grok").is_some())
+        || (enabled.x_pool() && cache.get("grok").is_some())
         || (enabled.cursor && cache.get("cursor").is_some())
         || (enabled.antigravity && cache.get("antigravity").is_some())
         || (enabled.opencodego && cache.get("opencodego").is_some());
@@ -917,6 +917,26 @@ mod tests {
         assert_eq!(restored.services.grok.status, "LAST KNOWN");
         assert_eq!(restored.services.grok.usage_percent, Some(12.0));
         assert!(restored.services.grok.from_cache);
+    }
+
+    #[test]
+    fn cursor_only_x_card_counts_as_cached_data() {
+        let mut cache = CacheState::default();
+        cache.put(
+            "grok",
+            serde_json::to_value(GrokService::default()).expect("serialize Grok cache"),
+        );
+        let enabled = EnabledProviders {
+            codex: false,
+            claude: false,
+            deepseek: false,
+            grok: false,
+            cursor: true,
+            antigravity: false,
+            opencodego: false,
+        };
+        let summary = super::summary_from_cache(&cache, enabled);
+        assert_eq!(summary.status, "partial");
     }
 
     #[test]
