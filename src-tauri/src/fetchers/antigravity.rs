@@ -53,7 +53,7 @@ const OAUTH_SCAN_OVERLAP: usize = 160;
 const OAUTH_SECRET_PREFIX: &str = "GOCSPX-";
 const OAUTH_SECRET_BODY_MIN: usize = 20;
 const OAUTH_SECRET_BODY_MAX: usize = 40;
-const OAUTH_SECRET_BODY_GUESSES: &[usize] = &[24, 28, 32, 36];
+const OAUTH_SECRET_BODY_GUESSES: &[usize] = &[28, 24, 32, 36];
 const OAUTH_PAIR_CARTESIAN_MAX: usize = 16;
 const KEYRING_SERVICE: &str = "gemini";
 const KEYRING_ACCOUNT: &str = "antigravity";
@@ -886,15 +886,12 @@ fn push_secret_variants(raw: &str, found: &mut Vec<String>) {
         return;
     }
     let body = raw.len() - OAUTH_SECRET_PREFIX.len();
-    if (OAUTH_SECRET_BODY_MIN..=OAUTH_SECRET_BODY_MAX).contains(&body) {
-        if !found.iter().any(|existing| existing == raw) {
-            found.push(raw.to_string());
-        }
+    if body < OAUTH_SECRET_BODY_MIN {
         return;
     }
-    if body <= OAUTH_SECRET_BODY_MAX {
-        return;
-    }
+    // Go binaries pack string literals back to back, so a secret can run into
+    // a few trailing identifier bytes (agy 1.4+: 33/36-byte runs around a
+    // 28-byte secret). Offer the usual lengths before the raw run.
     for &guess in OAUTH_SECRET_BODY_GUESSES {
         if guess > body {
             continue;
@@ -903,6 +900,9 @@ fn push_secret_variants(raw: &str, found: &mut Vec<String>) {
         if !found.iter().any(|existing| existing == candidate) {
             found.push(candidate.to_string());
         }
+    }
+    if body <= OAUTH_SECRET_BODY_MAX && !found.iter().any(|existing| existing == raw) {
+        found.push(raw.to_string());
     }
 }
 
@@ -1498,6 +1498,26 @@ mod tests {
                 |client| client.client_id == client_id && client.client_secret == client_secret
             ),
             "expected stripped client, got {clients:?}"
+        );
+    }
+
+    #[test]
+    fn oauth_scan_trims_short_trailing_bytes_after_secret() {
+        // agy 1.4+ lays the secret out with only ~5 identifier bytes after it,
+        // which keeps the run inside the plausible-length window.
+        let client_id = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+        let client_secret = format!("GOCSPX-{}", "abcdefghijklmnopqrstuvwxyz12");
+        let mut hay = Vec::new();
+        hay.extend_from_slice(client_id.as_bytes());
+        hay.extend_from_slice(b"\0");
+        hay.extend_from_slice(client_secret.as_bytes());
+        hay.extend_from_slice(b"oauth");
+        let clients = super::parse_oauth_clients_from_bytes(&hay);
+        assert!(
+            clients.iter().any(
+                |client| client.client_id == client_id && client.client_secret == client_secret
+            ),
+            "expected trimmed client, got {clients:?}"
         );
     }
 }
