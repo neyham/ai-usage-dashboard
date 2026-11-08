@@ -20,7 +20,7 @@ All notable changes to this project are documented in this file.
 ### Changed
 
 - Dependencies: reqwest 0.13.4 (form encoding opt-in), dirs 7.0.0, tokio
-  1.54.0, serde_json 1.0.154, tauri-build 2.7.2, lucide-react 1.57.0,
+  1.54.1 (1.54.0 was yanked for RUSTSEC-2026-0384), serde_json 1.0.154, tauri-build 2.7.2, lucide-react 1.57.0,
   @fontsource/jetbrains-mono 5.3.0, postcss 8.5.31, playwright 1.64.1.
 - Release upgrade checks use 0.9.4 as the baseline.
 
