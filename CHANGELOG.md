@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.5] - 2026-11-08
+
+### Fixed
+
+- Antigravity: refreshing an expired access token works again with `agy` 1.4
+  and later. Those binaries place the OAuth client secret beside a few
+  identifier bytes, so the scanned run was 33 or 36 characters instead of 28
+  and Google returned `invalid_client`. Secret candidates now try the
+  standard lengths (28, 24, 32, 36) before the raw run.
+- Grok: right after a weekly reset, a unified X pool response with no usage
+  figures stays one X pool card at 0% inside its current period instead of
+  splitting into Grok and Cursor at `--%`.
+- With only Cursor enabled, a cached X pool card counts as cached data, so the
+  summary is partial rather than empty.
+
+### Changed
+
+- Dependencies: reqwest 0.13.4 (form encoding opt-in), dirs 7.0.0, tokio
+  1.54.0, serde_json 1.0.154, tauri-build 2.7.2, lucide-react 1.57.0,
+  @fontsource/jetbrains-mono 5.3.0, postcss 8.5.31, playwright 1.64.1.
+- Release upgrade checks use 0.9.4 as the baseline.
+
 ## [0.9.4] - 2026-10-19
 
 ### Added
