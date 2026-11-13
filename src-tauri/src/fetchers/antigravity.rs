@@ -20,10 +20,12 @@ use anyhow::{bail, Context};
 use chrono::{DateTime, Utc};
 use reqwest::{Client, RequestBuilder};
 use serde_json::Value;
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 #[cfg(not(windows))]
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::Duration as StdDuration;
 #[cfg(not(windows))]
 use std::time::Instant;
@@ -141,7 +143,10 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<AntigravityServic
     };
 
     if needs_refresh(&auth) {
-        auth = refresh_access_token(client, auth).await?;
+        auth = match remembered_access(&auth, Utc::now()) {
+            Some(fresh) => fresh,
+            None => refresh_access_token(client, auth).await?,
+        };
     }
 
     let quota = send_with_one_retry(|| quota_request(client, &auth.access_token))
@@ -438,72 +443,182 @@ fn needs_refresh(auth: &AntigravityAuth) -> bool {
     }
 }
 
+/// The last successful in-memory refresh. `agy` only rewrites its login while
+/// it runs, so without this every refresh cycle would scan the installed
+/// binary for the OAuth client and ask Google for a new token again.
+struct RememberedRefresh {
+    /// Identifies the login without keeping a second copy of the refresh token.
+    login: u64,
+    client: OAuthClient,
+    access_token: String,
+    expires_at: DateTime<Utc>,
+}
+
+static REMEMBERED_REFRESH: Mutex<Option<RememberedRefresh>> = Mutex::new(None);
+
+fn login_fingerprint(refresh_token: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    refresh_token.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn remembered_for(refresh_token: &str) -> Option<(OAuthClient, String, DateTime<Utc>)> {
+    let guard = REMEMBERED_REFRESH.lock().ok()?;
+    let entry = guard.as_ref()?;
+    (entry.login == login_fingerprint(refresh_token)).then(|| {
+        (
+            entry.client.clone(),
+            entry.access_token.clone(),
+            entry.expires_at,
+        )
+    })
+}
+
+/// A still-valid access token from an earlier refresh of this same login.
+fn remembered_access(auth: &AntigravityAuth, now: DateTime<Utc>) -> Option<AntigravityAuth> {
+    let refresh = auth.refresh_token.as_deref()?;
+    let (client, access_token, expires_at) = remembered_for(refresh)?;
+    if expires_at.timestamp() <= now.timestamp() + TOKEN_EXPIRY_MARGIN_SECS {
+        return None;
+    }
+    Some(AntigravityAuth {
+        access_token,
+        refresh_token: auth.refresh_token.clone(),
+        expires_at: Some(expires_at),
+        oauth_client_id: Some(client.client_id),
+        oauth_client_secret: Some(client.client_secret),
+    })
+}
+
+fn remember_refresh(refresh_token: &str, client: &OAuthClient, auth: &AntigravityAuth) {
+    let Some(expires_at) = auth.expires_at else {
+        return;
+    };
+    if let Ok(mut guard) = REMEMBERED_REFRESH.lock() {
+        *guard = Some(RememberedRefresh {
+            login: login_fingerprint(refresh_token),
+            client: client.clone(),
+            access_token: auth.access_token.clone(),
+            expires_at,
+        });
+    }
+}
+
 async fn refresh_access_token(
     client: &Client,
     auth: AntigravityAuth,
 ) -> Result<AntigravityAuth, FetchError> {
     let refresh = auth
         .refresh_token
-        .as_deref()
+        .clone()
         .filter(|token| !token.is_empty())
         .ok_or(FetchError::Auth {
             message: SESSION_EXPIRED,
         })?;
 
+    // The client that worked last time needs no scan of the installed binary.
+    let remembered = remembered_for(&refresh).map(|(pair, _, _)| pair);
+    let mut tried = 0;
+    let mut last_answer = String::new();
+    if let Some(pair) = &remembered {
+        match refresh_with_client(client, &auth, &refresh, pair).await? {
+            Ok(fresh) => return Ok(fresh),
+            Err(answer) => (tried, last_answer) = (tried + 1, answer),
+        }
+    }
+
     let clients = resolve_oauth_clients(&auth);
-    if clients.is_empty() {
-        return Err(FetchError::Auth {
-            message: SESSION_EXPIRED,
-        });
+    for pair in clients
+        .iter()
+        .filter(|pair| Some(*pair) != remembered.as_ref())
+    {
+        match refresh_with_client(client, &auth, &refresh, pair).await? {
+            Ok(fresh) => return Ok(fresh),
+            Err(answer) => (tried, last_answer) = (tried + 1, answer),
+        }
     }
 
-    for client_pair in clients {
-        let resp = send(
-            client
-                .post(TOKEN_URL)
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .form(&[
-                    ("client_id", client_pair.client_id.as_str()),
-                    ("client_secret", client_pair.client_secret.as_str()),
-                    ("refresh_token", refresh),
-                    ("grant_type", "refresh_token"),
-                ]),
-        )
-        .await
-        .map_err(FetchError::Other)?;
-        if resp.status == 401 || resp.status == 400 {
-            continue;
-        }
-        if !resp.is_success() {
-            continue;
-        }
-        let root: Value = serde_json::from_str(&resp.body).map_err(|_| FetchError::Auth {
-            message: SESSION_EXPIRED,
-        })?;
-        let access = root
-            .get("access_token")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|token| !token.is_empty())
-            .ok_or(FetchError::Auth {
-                message: SESSION_EXPIRED,
-            })?;
-        let expires_in = root
-            .get("expires_in")
-            .and_then(Value::as_i64)
-            .unwrap_or(3500);
-        return Ok(AntigravityAuth {
-            access_token: access.to_string(),
-            refresh_token: auth.refresh_token,
-            expires_at: Some(Utc::now() + chrono::Duration::seconds(expires_in)),
-            oauth_client_id: Some(client_pair.client_id),
-            oauth_client_secret: Some(client_pair.client_secret),
-        });
-    }
-
+    crate::diag::detail(
+        "antigravity",
+        &if tried == 0 {
+            "token refresh skipped: no OAuth client found (is agy installed and on PATH?)".into()
+        } else {
+            format!(
+                "token refresh rejected for all {tried} OAuth client candidates; last answer: {last_answer}"
+            )
+        },
+    );
     Err(FetchError::Auth {
         message: SESSION_EXPIRED,
     })
+}
+
+/// The inner `Err` means Google rejected this client or the request, so the
+/// next candidate may still work. It carries the HTTP status and Google's
+/// error code for the diagnostic log, never the response body.
+async fn refresh_with_client(
+    client: &Client,
+    auth: &AntigravityAuth,
+    refresh: &str,
+    pair: &OAuthClient,
+) -> Result<Result<AntigravityAuth, String>, FetchError> {
+    let resp = send(
+        client
+            .post(TOKEN_URL)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&[
+                ("client_id", pair.client_id.as_str()),
+                ("client_secret", pair.client_secret.as_str()),
+                ("refresh_token", refresh),
+                ("grant_type", "refresh_token"),
+            ]),
+    )
+    .await
+    .map_err(FetchError::Other)?;
+    if !resp.is_success() {
+        return Ok(Err(refresh_rejection(resp.status, &resp.body)));
+    }
+    let root: Value = serde_json::from_str(&resp.body).map_err(|_| FetchError::Auth {
+        message: SESSION_EXPIRED,
+    })?;
+    let access = root
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .ok_or(FetchError::Auth {
+            message: SESSION_EXPIRED,
+        })?;
+    let expires_in = root
+        .get("expires_in")
+        .and_then(Value::as_i64)
+        .unwrap_or(3500);
+    let fresh = AntigravityAuth {
+        access_token: access.to_string(),
+        refresh_token: auth.refresh_token.clone(),
+        expires_at: Some(Utc::now() + chrono::Duration::seconds(expires_in)),
+        oauth_client_id: Some(pair.client_id.clone()),
+        oauth_client_secret: Some(pair.client_secret.clone()),
+    };
+    remember_refresh(refresh, pair, &fresh);
+    Ok(Ok(fresh))
+}
+
+/// "HTTP 401 invalid_client": the status plus Google's short error code, when
+/// it is one.
+fn refresh_rejection(status: u16, body: &str) -> String {
+    let code = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|root| root.get("error")?.as_str().map(str::to_string))
+        .filter(|code| {
+            !code.is_empty()
+                && code.len() <= 40
+                && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+        });
+    match code {
+        Some(code) => format!("HTTP {status} {code}"),
+        None => format!("HTTP {status}"),
+    }
 }
 
 fn json_nonempty(objects: [&Value; 2], keys: &[&str]) -> Option<String> {
@@ -1499,6 +1614,51 @@ mod tests {
             ),
             "expected stripped client, got {clients:?}"
         );
+    }
+
+    #[test]
+    fn refreshed_access_is_reused_for_the_same_login_until_it_expires() {
+        let now = Utc::now();
+        let auth = |refresh: &str| super::AntigravityAuth {
+            access_token: "expired".into(),
+            refresh_token: Some(refresh.into()),
+            expires_at: Some(now - Duration::hours(1)),
+            oauth_client_id: None,
+            oauth_client_secret: None,
+        };
+        let (client_id, client_secret) = sample_oauth_client();
+        let pair = super::OAuthClient {
+            client_id: client_id.clone(),
+            client_secret,
+        };
+        let fresh = super::AntigravityAuth {
+            access_token: "fresh".into(),
+            expires_at: Some(now + Duration::minutes(50)),
+            ..auth("login-a")
+        };
+        super::remember_refresh("login-a", &pair, &fresh);
+
+        let reused = super::remembered_access(&auth("login-a"), now).expect("same login");
+        assert_eq!(reused.access_token, "fresh");
+        assert_eq!(reused.oauth_client_id.as_deref(), Some(client_id.as_str()));
+        assert!(super::remembered_access(&auth("login-b"), now).is_none());
+        assert!(super::remembered_access(&auth("login-a"), now + Duration::minutes(50)).is_none());
+    }
+
+    #[test]
+    fn refresh_rejection_keeps_the_status_and_googles_error_code_only() {
+        assert_eq!(
+            super::refresh_rejection(
+                401,
+                r#"{"error":"invalid_client","error_description":"The provided client secret is invalid."}"#
+            ),
+            "HTTP 401 invalid_client"
+        );
+        assert_eq!(
+            super::refresh_rejection(400, r#"{"error":"Bad token ya29.secret"}"#),
+            "HTTP 400"
+        );
+        assert_eq!(super::refresh_rejection(503, "<html>"), "HTTP 503");
     }
 
     #[test]

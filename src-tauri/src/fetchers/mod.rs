@@ -13,7 +13,7 @@ use crate::cache::CacheState;
 use crate::config::Config;
 use crate::models::{EnabledProviders, Services, UsageSummary};
 use crate::util::fmt_local;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
 use reqwest::{Client, RequestBuilder};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -125,6 +125,7 @@ fn cached_service<T: DeserializeOwned + Default>(
         let stale = card.is_stale();
         let mut v = card.data.clone();
         if let Some(obj) = v.as_object_mut() {
+            drop_reset_windows(obj, card.updated_at, Utc::now());
             obj.insert("fromCache".into(), json!(true));
             obj.insert("status".into(), json!(message));
             obj.insert("dataMayBeStale".into(), json!(stale));
@@ -144,6 +145,82 @@ fn cached_service<T: DeserializeOwned + Default>(
         obj.insert("cooldownUntilLocal".into(), json!(c));
     }
     serde_json::from_value(Value::Object(obj)).unwrap_or_default()
+}
+
+/// Each reset label and the figures that stop being true once it passes.
+const RESET_WINDOWS: &[(&str, &[&str])] = &[
+    ("fiveHourResetLocal", &["fiveHourPercent"]),
+    ("sevenDayResetLocal", &["sevenDayPercent"]),
+    ("claudeFiveHourResetLocal", &["claudeFiveHourPercent"]),
+    ("claudeSevenDayResetLocal", &["claudeSevenDayPercent"]),
+    ("argonSevenDayResetLocal", &["argonSevenDayPercent"]),
+    (
+        "usageResetLocal",
+        &[
+            "usagePercent",
+            "includedPercent",
+            "apiPercent",
+            "onDemandPercent",
+            "productUsage",
+        ],
+    ),
+    ("monthlyResetLocal", &["monthlyPercent"]),
+    ("grokBotResetLocal", &["grokBotPercent"]),
+    ("rollingResetLocal", &["rollingPercent"]),
+    ("weeklyResetLocal", &["weeklyPercent"]),
+    // Past the earliest expiry the saved-reset count is no longer known.
+    ("resetCreditsExpireLocal", &["resetCreditsAvailable"]),
+];
+
+/// A cached card can outlive its windows. Once a window's reset time has
+/// passed, its last known percentage describes the previous window, so drop
+/// it and the reset label rather than show it as current.
+fn drop_reset_windows(
+    card: &mut serde_json::Map<String, Value>,
+    saved_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) {
+    let mut dropped = false;
+    for (reset_key, figures) in RESET_WINDOWS {
+        let reset_at = card
+            .get(*reset_key)
+            .and_then(Value::as_str)
+            .and_then(|label| reset_label_instant(label, saved_at));
+        if reset_at.is_some_and(|reset_at| reset_at <= now) {
+            dropped = true;
+            card.remove(*reset_key);
+            for figure in *figures {
+                card.remove(*figure);
+            }
+        }
+    }
+    // A Claude card with extra usage and no window reads as an account that
+    // has only extra usage. Do not turn a stale card into one.
+    if dropped && !card.contains_key("fiveHourPercent") && !card.contains_key("sevenDayPercent") {
+        card.remove("extraUsagePercent");
+    }
+}
+
+/// Reset labels are local "MM-DD HH:mm" with no year. A reset lies ahead of
+/// the moment its card was fetched, and no window is longer than a month, so
+/// it is the first such time from a month before the card was saved. The
+/// allowance covers the label's missing seconds and a save that follows the
+/// fetch by minutes.
+fn reset_label_instant(label: &str, saved_at: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let (date, time) = label.trim().split_once(' ')?;
+    let (month, day) = date.split_once('-')?;
+    let (hour, minute) = time.split_once(':')?;
+    let (month, day) = (month.parse().ok()?, day.parse().ok()?);
+    let (hour, minute) = (hour.parse().ok()?, minute.parse().ok()?);
+    let earliest = saved_at - Duration::days(30);
+    let year = saved_at.with_timezone(&Local).year();
+    [year - 1, year, year + 1].into_iter().find_map(|year| {
+        Local
+            .with_ymd_and_hms(year, month, day, hour, minute, 0)
+            .earliest()
+            .map(|local| local.with_timezone(&Utc))
+            .filter(|instant| *instant >= earliest)
+    })
 }
 
 const MSG_RATE_LIMITED: &str = "RATE LIMITED";
@@ -195,6 +272,22 @@ fn cached_or_cooling<T: DeserializeOwned + Default>(cache: &CacheState, key: &st
     cached_service(cache, key, message, None)
 }
 
+/// Note in the diagnostic log why a provider is or is not live.
+fn log_outcome<T>(key: &str, result: &Result<T, FetchError>) {
+    match result {
+        Ok(_) => crate::diag::outcome(key, "ok"),
+        Err(FetchError::Auth { message }) => crate::diag::outcome(key, &format!("auth: {message}")),
+        Err(FetchError::RateLimited { retry_after }) => crate::diag::outcome(
+            key,
+            &match retry_after {
+                Some(seconds) => format!("rate limited, retry after {seconds}s"),
+                None => "rate limited".to_string(),
+            },
+        ),
+        Err(FetchError::Other(error)) => crate::diag::outcome(key, &format!("error: {error:#}")),
+    }
+}
+
 fn apply_standard_fetch<T>(
     cache: &mut CacheState,
     key: &'static str,
@@ -211,7 +304,9 @@ where
     if !fetched_live {
         return (cached_service(cache, key, MSG_RATE_LIMITED, None), true);
     }
-    match fetched.expect("live provider fetch was scheduled") {
+    let fetched = fetched.expect("live provider fetch was scheduled");
+    log_outcome(key, &fetched);
+    match fetched {
         Ok(svc) => {
             cache.clear_provider_cooldown(key);
             if let Ok(v) = serde_json::to_value(&svc) {
@@ -455,7 +550,9 @@ pub async fn collect_summary(config: &Config, cache: &mut CacheState) -> UsageSu
             true,
         )
     } else {
-        match claude_res.expect("Claude live fetch was scheduled") {
+        let claude_res = claude_res.expect("Claude live fetch was scheduled");
+        log_outcome("claude", &claude_res);
+        match claude_res {
             Ok(svc) => {
                 cache.claude_cooldown_until = None;
                 if let Ok(v) = serde_json::to_value(&svc) {
@@ -631,6 +728,77 @@ pub(crate) fn assemble(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cached_windows_are_dropped_once_their_reset_has_passed() {
+        use crate::util::fmt_local;
+        use chrono::Duration;
+        use serde_json::json;
+
+        let saved_at = Utc::now() - Duration::hours(8);
+        let passed = fmt_local(saved_at + Duration::hours(3));
+        let ahead = fmt_local(saved_at + Duration::days(5));
+        let mut card = json!({
+            "status": "NOMINAL",
+            "fiveHourPercent": 90.0,
+            "fiveHourResetLocal": passed,
+            "sevenDayPercent": 40.0,
+            "sevenDayResetLocal": ahead,
+            "extraUsagePercent": 5.0,
+        });
+        let fields = card.as_object_mut().unwrap();
+
+        super::drop_reset_windows(fields, saved_at, saved_at + Duration::hours(1));
+        assert_eq!(fields["fiveHourPercent"], json!(90.0));
+
+        super::drop_reset_windows(fields, saved_at, Utc::now());
+        assert!(!fields.contains_key("fiveHourPercent"));
+        assert!(!fields.contains_key("fiveHourResetLocal"));
+        assert_eq!(fields["sevenDayPercent"], json!(40.0));
+        assert_eq!(fields["sevenDayResetLocal"], json!(ahead));
+        assert_eq!(fields["extraUsagePercent"], json!(5.0));
+
+        // With every window gone, extra usage alone would read as an
+        // extra-usage-only account; a lapsed saved-reset expiry drops its count.
+        let mut card = json!({
+            "fiveHourPercent": 90.0,
+            "fiveHourResetLocal": passed,
+            "sevenDayPercent": 40.0,
+            "sevenDayResetLocal": passed,
+            "extraUsagePercent": 5.0,
+            "resetCreditsAvailable": 2,
+            "resetCreditsExpireLocal": passed,
+        });
+        let fields = card.as_object_mut().unwrap();
+        super::drop_reset_windows(fields, saved_at, Utc::now());
+        assert!(fields.is_empty(), "{fields:?}");
+    }
+
+    #[test]
+    fn reset_labels_resolve_to_the_first_time_after_the_card_was_saved() {
+        use chrono::{Duration, Local, TimeZone};
+
+        let saved_at = Local
+            .with_ymd_and_hms(2026, 12, 30, 9, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        let same_year = super::reset_label_instant("12-30 14:00", saved_at).unwrap();
+        assert_eq!(same_year - saved_at, Duration::hours(5));
+        let next_year = super::reset_label_instant("01-02 09:00", saved_at).unwrap();
+        assert_eq!(next_year - saved_at, Duration::days(3));
+        // A card saved minutes after its fetch, or early in January, still
+        // resolves a reset just behind it to the past.
+        let behind = super::reset_label_instant("12-30 08:40", saved_at).unwrap();
+        assert_eq!(saved_at - behind, Duration::minutes(20));
+        let january = Local
+            .with_ymd_and_hms(2027, 1, 2, 9, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        let last_year = super::reset_label_instant("12-30 09:00", january).unwrap();
+        assert_eq!(january - last_year, Duration::days(3));
+        assert!(super::reset_label_instant("soon", saved_at).is_none());
+        assert!(super::reset_label_instant("13-40 99:99", saved_at).is_none());
+    }
+
     use super::{
         assemble, parse_retry_after_at, require_success, FetchError, Resp, MSG_AUTH_EXPIRED,
         MSG_AUTH_FORBIDDEN,

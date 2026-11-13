@@ -2,6 +2,34 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Claude on macOS: the login is read from the Keychain item
+  `Claude Code-credentials`, where Claude Code stores the default profile,
+  before the `~/.claude` files. The card previously showed `LOGIN REQUIRED`
+  on a Mac with no credential file. Renewal through the `claude` command works
+  for the Keychain login too.
+- Claude: saved limit resets ("Reset for free") show again. The usage
+  endpoint now returns them only to a request that identifies as a recent
+  Claude Code CLI, so the usage request sends
+  `claude-cli/<version> (external, cli)` as its user agent instead of the
+  browser one. The version is the newer of `claude --version` (read through
+  `claudeCodeCommand`, at most every six hours) and 2.1.323.
+- A cached window whose reset time has passed no longer shows its old
+  percentage and reset label. The same applies to a saved-reset count past
+  its earliest expiry.
+- Antigravity: an access token refreshed in memory, and the OAuth client that
+  worked, are reused until the token expires instead of scanning the `agy`
+  binary and asking Google again on every refresh.
+
+### Added
+
+- `diagnostics.log` beside `state.json`: one line each time a provider's
+  outcome changes, plus the reason a Claude or Antigravity login renewal
+  failed. No tokens, keys, or response bodies; 256 KiB with one older copy.
+
 ## [0.9.5] - 2026-11-08
 
 ### Fixed

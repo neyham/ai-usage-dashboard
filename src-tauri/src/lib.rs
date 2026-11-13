@@ -3,6 +3,7 @@
 
 mod cache;
 mod config;
+mod diag;
 mod fetchers;
 mod fs_util;
 mod mock;

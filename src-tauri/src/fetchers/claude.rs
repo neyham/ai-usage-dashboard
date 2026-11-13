@@ -1,5 +1,6 @@
 //! Claude usage fetcher. Reads OAuth credentials from the local
-//! `.claude/.credentials.json`. Native credential files are read-only. An expired
+//! `.claude/.credentials.json`, or on macOS from the Keychain item Claude Code
+//! writes. Native credentials are read-only. An expired
 //! access token is renewed by starting Claude Code so it can rewrite its own
 //! file. The dashboard never posts the refresh token. Usage 429s are signaled
 //! back to the orchestrator so it can enter cooldown.
@@ -19,10 +20,9 @@ use reqwest::Client;
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
 use std::process::Stdio;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration as StdDuration, Instant};
 
@@ -33,6 +33,18 @@ const USAGE_WITH_RESETS_URL: &str = "https://api.anthropic.com/api/oauth/usage?c
 const MAX_RESET_CREDITS: u64 = 50;
 const MAX_RESET_GRANTS: usize = 200;
 const ANTHROPIC_BETA: &str = "oauth-2025-04-20";
+/// The saved-reset inventory only goes to a request that identifies as a
+/// recent Claude Code CLI: a browser agent gets `ineligible_reason: surface`
+/// and an old version `cli_version`. The installed version is sent when it is
+/// newer than this floor; the floor is sent when `claude` cannot be run.
+const CLAUDE_CLI_VERSION_FLOOR: [u64; 3] = [2, 1, 323];
+const CLI_VERSION_TIMEOUT: StdDuration = StdDuration::from_secs(5);
+const CLI_VERSION_TTL: StdDuration = StdDuration::from_secs(6 * 60 * 60);
+const CLI_VERSION_RETRY: StdDuration = StdDuration::from_secs(10 * 60);
+/// How often a running renewal rereads the login; a Keychain read is a
+/// process start, not a small file read.
+const CREDENTIAL_POLL_INTERVAL: StdDuration = StdDuration::from_secs(1);
+const MAX_CLI_VERSION_BYTES: u64 = 4096;
 const MSG_LOGIN_REQUIRED: &str = "LOGIN REQUIRED";
 const MSG_AUTH_EXPIRED: &str = "AUTH EXPIRED";
 const MSG_REFRESH_BLOCKED: &str = "REFRESH BLOCKED";
@@ -41,6 +53,20 @@ const CLAUDE_CODE_RECOVERY_THROTTLE: Duration = Duration::minutes(30);
 const CLAUDE_CODE_RECOVERY_LOCK_FILE: &str = "claude-code-recovery.lock";
 const CLAUDE_CODE_RECOVERY_STATE_FILE: &str = "claude-code-recovery-attempt.txt";
 const RECOVERY_LOCK_WAIT: StdDuration = StdDuration::from_secs(5);
+/// Stands in for a file path when the login came from the macOS Keychain,
+/// where Claude Code keeps it instead of `.credentials.json`.
+const KEYCHAIN_SOURCE: &str = "macos-keychain:Claude Code-credentials";
+#[cfg(target_os = "macos")]
+const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+#[cfg(target_os = "macos")]
+const KEYCHAIN_TIMEOUT: StdDuration = StdDuration::from_secs(8);
+#[cfg(target_os = "macos")]
+const MAX_KEYCHAIN_BYTES: u64 = 64 * 1024;
+/// `security` exits 44 when no item matches.
+#[cfg(target_os = "macos")]
+const KEYCHAIN_ITEM_MISSING: CaptureFailure = CaptureFailure::Exit(Some(44));
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 // Only override probe behavior. Preserve user connection settings (proxy, CA,
 // etc.); managed policy remains under Claude Code's control.
 const CLAUDE_CODE_TOUCH_SETTINGS: &str = r#"{"remoteControlAtStartup":false,"disableAllHooks":true,"disableDeepLinkRegistration":"disable"}"#;
@@ -64,11 +90,12 @@ pub async fn fetch(config: &Config, client: &Client) -> Result<ClaudeService, Fe
         refresh_or_recover(&config, client, &mut creds).await?;
     }
 
-    let mut resp = fetch_usage(client, &creds.access_token).await?;
+    let user_agent = claude_cli_user_agent(&config).await;
+    let mut resp = fetch_usage(client, &creds.access_token, &user_agent).await?;
 
     if resp.status == 401 {
         refresh_or_recover(&config, client, &mut creds).await?;
-        resp = fetch_usage(client, &creds.access_token).await?;
+        resp = fetch_usage(client, &creds.access_token, &user_agent).await?;
     }
 
     if resp.status == 429 {
@@ -119,8 +146,13 @@ async fn recover_allowed_error(
 ) -> Result<(), FetchError> {
     // `claudeCodeRefreshEnabled` used to opt into a billed prompt. Renewal now
     // starts Claude Code itself and does not consult that flag.
-    if delegates_to_claude_code(&err) && try_claude_code_refresh(config, creds).await.is_ok() {
-        return Ok(());
+    if delegates_to_claude_code(&err) {
+        match try_claude_code_refresh(config, creds).await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                crate::diag::detail("claude", &format!("Claude Code renewal failed: {error:#}"))
+            }
+        }
     }
     Err(FetchError::Auth {
         message: auth_failure_message(&err),
@@ -152,23 +184,195 @@ fn load_error(err: anyhow::Error) -> FetchError {
 
 /// The reset inventory is optional: when the server rejects that query, ask
 /// again without it so the usage windows still arrive.
-async fn fetch_usage(client: &Client, access_token: &str) -> Result<super::Resp, FetchError> {
-    let resp = send_with_one_retry(|| usage_request(client, USAGE_WITH_RESETS_URL, access_token))
-        .await
-        .map_err(FetchError::Other)?;
+async fn fetch_usage(
+    client: &Client,
+    access_token: &str,
+    user_agent: &str,
+) -> Result<super::Resp, FetchError> {
+    let resp = send_with_one_retry(|| {
+        usage_request(client, USAGE_WITH_RESETS_URL, access_token, user_agent)
+    })
+    .await
+    .map_err(FetchError::Other)?;
     if !matches!(resp.status, 400 | 403) {
         return Ok(resp);
     }
-    send_with_one_retry(|| usage_request(client, USAGE_URL, access_token))
+    send_with_one_retry(|| usage_request(client, USAGE_URL, access_token, user_agent))
         .await
         .map_err(FetchError::Other)
 }
 
-fn usage_request(client: &Client, url: &str, access_token: &str) -> reqwest::RequestBuilder {
+fn usage_request(
+    client: &Client,
+    url: &str,
+    access_token: &str,
+    user_agent: &str,
+) -> reqwest::RequestBuilder {
     client
         .get(url)
         .header("Authorization", format!("Bearer {access_token}"))
         .header("anthropic-beta", ANTHROPIC_BETA)
+        .header(reqwest::header::USER_AGENT, user_agent)
+}
+
+async fn claude_cli_user_agent(config: &Config) -> String {
+    let command = config.claude_code_command.trim().to_string();
+    let version = tokio::task::spawn_blocking(move || cached_cli_version(&command))
+        .await
+        .unwrap_or_else(|_| cli_version_to_send(None));
+    format!("claude-cli/{version} (external, cli)")
+}
+
+/// `claude --version` is asked at most every six hours, or every ten minutes
+/// while it cannot be read.
+fn cached_cli_version(command: &str) -> String {
+    static CACHE: Mutex<Option<(Instant, StdDuration, String, String)>> = Mutex::new(None);
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((read_at, ttl, cached_command, version)) = cache.as_ref() {
+        if cached_command == command && read_at.elapsed() < *ttl {
+            return version.clone();
+        }
+    }
+    let installed = installed_cli_version(command);
+    let version = cli_version_to_send(installed.as_ref().ok().copied());
+    let ttl = match &installed {
+        Ok(_) => CLI_VERSION_TTL,
+        Err(failure) => {
+            crate::diag::detail(
+                "claude",
+                &format!("Claude Code version not read ({failure}); sending {version}"),
+            );
+            CLI_VERSION_RETRY
+        }
+    };
+    *cache = Some((Instant::now(), ttl, command.to_string(), version.clone()));
+    version
+}
+
+fn cli_version_to_send(installed: Option<[u64; 3]>) -> String {
+    let [major, minor, patch] = installed.map_or(CLAUDE_CLI_VERSION_FLOOR, |version| {
+        version.max(CLAUDE_CLI_VERSION_FLOOR)
+    });
+    format!("{major}.{minor}.{patch}")
+}
+
+fn installed_cli_version(command: &str) -> Result<[u64; 3], CaptureFailure> {
+    let mut cmd = cli_version_command(command);
+    cmd.arg("--version").env("DISABLE_AUTOUPDATER", "1");
+    let text = command_stdout(cmd, CLI_VERSION_TIMEOUT, MAX_CLI_VERSION_BYTES)?;
+    parse_cli_version(&text).ok_or(CaptureFailure::Output)
+}
+
+/// `claude --version` prints `2.1.323 (Claude Code)`.
+fn parse_cli_version(text: &str) -> Option<[u64; 3]> {
+    let mut parts = text.split_whitespace().next()?.split('.');
+    let version = [
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    ];
+    parts.next().is_none().then_some(version)
+}
+
+fn cli_version_command(command: &str) -> std::process::Command {
+    let (program, arguments) = claude_code_program(command);
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(arguments);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureFailure {
+    NotStarted,
+    TimedOut,
+    Exit(Option<i32>),
+    Output,
+}
+
+impl std::fmt::Display for CaptureFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotStarted => f.write_str("could not start"),
+            Self::TimedOut => f.write_str("timed out"),
+            Self::Exit(Some(code)) => write!(f, "exit code {code}"),
+            Self::Exit(None) => f.write_str("ended by a signal"),
+            Self::Output => f.write_str("no usable output"),
+        }
+    }
+}
+
+/// Standard output of a command that exits successfully within `timeout`.
+/// Empty or oversized output counts as a failure.
+fn command_stdout(
+    mut command: std::process::Command,
+    timeout: StdDuration,
+    max_bytes: u64,
+) -> Result<String, CaptureFailure> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| CaptureFailure::NotStarted)?;
+    let Some(stdout) = child.stdout.take() else {
+        end_process_tree(&mut child);
+        return Err(CaptureFailure::NotStarted);
+    };
+    // The reader is never joined: a descendant that outlives the command can
+    // hold the pipe open, and the timeout must still hold then.
+    let (sender, output) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let read = stdout.take(max_bytes + 1).read_to_string(&mut text);
+        let _ = sender.send(read.map(|_| text));
+    });
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(StdDuration::from_millis(25));
+            }
+            _ => {
+                end_process_tree(&mut child);
+                return Err(CaptureFailure::TimedOut);
+            }
+        }
+    };
+    if !status.success() {
+        return Err(CaptureFailure::Exit(status.code()));
+    }
+    let wait = deadline
+        .saturating_duration_since(Instant::now())
+        .max(StdDuration::from_millis(500));
+    match output.recv_timeout(wait) {
+        Ok(Ok(text)) if !text.trim().is_empty() && text.len() as u64 <= max_bytes => Ok(text),
+        _ => Err(CaptureFailure::Output),
+    }
+}
+
+fn end_process_tree(child: &mut std::process::Child) {
+    // A batch shim runs the real program as a grandchild of cmd.exe.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 pub(crate) fn parse_usage(body: &str) -> anyhow::Result<ClaudeService> {
@@ -517,10 +721,12 @@ fn run_claude_code_touch(
     // The reader and CLI must address the same profile. Keep the default
     // profile's environment unchanged when no override was requested.
     let default_profile = dirs::home_dir().map(|home| home.join(".claude"));
-    if std::env::var_os("CLAUDE_CONFIG_DIR").is_some()
-        || default_profile.as_deref() != Some(profile.as_path())
-    {
+    let config_dir_set = std::env::var_os("CLAUDE_CONFIG_DIR").is_some_and(|dir| !dir.is_empty());
+    if config_dir_set || default_profile.as_deref() != Some(profile.as_path()) {
         cmd.env("CLAUDE_CONFIG_DIR", &profile);
+    } else {
+        // The reader treats an empty value as unset; make the CLI agree.
+        cmd.env_remove("CLAUDE_CONFIG_DIR");
     }
     cmd.env("DISABLE_AUTOUPDATER", "1");
     if let Some(path) = probe.as_os_str().to_str() {
@@ -553,27 +759,33 @@ fn run_claude_code_touch(
     session.wait_until(timeout, &mut refreshed)
 }
 
-#[cfg(not(windows))]
 fn claude_code_command(command: &str) -> CommandBuilder {
-    CommandBuilder::new(command)
+    let (program, arguments) = claude_code_program(command);
+    let mut cmd = CommandBuilder::new(program);
+    cmd.args(arguments);
+    cmd
 }
 
-/// portable-pty takes the first PATH match even without an extension, so an
+/// The program and leading arguments that start `command`.
+#[cfg(not(windows))]
+fn claude_code_program(command: &str) -> (std::ffi::OsString, Vec<std::ffi::OsString>) {
+    (command.into(), Vec::new())
+}
+
+/// A bare name takes the first PATH match even without an extension, so an
 /// npm install's extensionless `claude` shell shim fails with os error 193.
 /// Resolve through PATHEXT instead and start batch shims through cmd.exe.
 #[cfg(windows)]
-fn claude_code_command(command: &str) -> CommandBuilder {
+fn claude_code_program(command: &str) -> (std::ffi::OsString, Vec<std::ffi::OsString>) {
     match resolve_windows_command(command) {
-        Some(path) if is_windows_batch(&path) => {
-            // `call` keeps cmd.exe /c from stripping the first and last quote
-            // when the shim path is quoted.
-            let mut cmd = CommandBuilder::new("cmd.exe");
-            cmd.args(["/d", "/c", "call"]);
-            cmd.arg(path);
-            cmd
-        }
-        Some(path) => CommandBuilder::new(path),
-        None => CommandBuilder::new(command),
+        // `call` keeps cmd.exe /c from stripping the first and last quote
+        // when the shim path is quoted.
+        Some(path) if is_windows_batch(&path) => (
+            "cmd.exe".into(),
+            vec!["/d".into(), "/c".into(), "call".into(), path.into()],
+        ),
+        Some(path) => (path.into(), Vec::new()),
+        None => (command.into(), Vec::new()),
     }
 }
 
@@ -635,11 +847,16 @@ impl RunningClaudeTouch {
         let mut sent_status = false;
         let mut last_enter = start;
         let mut answered_queries = 0;
+        let mut last_check: Option<Instant> = None;
         loop {
-            if refreshed() {
-                return Ok(());
+            let timed_out = start.elapsed() >= timeout;
+            if timed_out || last_check.is_none_or(|at| at.elapsed() >= CREDENTIAL_POLL_INTERVAL) {
+                last_check = Some(Instant::now());
+                if refreshed() {
+                    return Ok(());
+                }
             }
-            if start.elapsed() >= timeout {
+            if timed_out {
                 bail!("Claude Code refresh timed out");
             }
             if let Some(writer) = self.writer.as_mut() {
@@ -743,7 +960,6 @@ fn terminate_claude_touch(child: &mut Box<dyn Child + Send + Sync>) {
     #[cfg(windows)]
     if let Some(pid) = child.process_id() {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let _ = std::process::Command::new("taskkill")
             .args(["/T", "/F", "/PID", &pid.to_string()])
             .stdin(std::process::Stdio::null())
@@ -785,6 +1001,12 @@ fn load_selected(config: &Config) -> anyhow::Result<(Config, Creds)> {
 }
 
 fn claude_profile_dir(config: &Config) -> anyhow::Result<PathBuf> {
+    if config.claude_credentials_path.trim() == KEYCHAIN_SOURCE {
+        // The Keychain item belongs to the default profile only.
+        return Ok(dirs::home_dir()
+            .context("Claude profile directory missing")?
+            .join(".claude"));
+    }
     let path = PathBuf::from(expand(config.claude_credentials_path.trim()));
     if path.file_name().and_then(|name| name.to_str()) != Some(".credentials.json") {
         bail!("Claude renewal requires the native .credentials.json file");
@@ -873,6 +1095,19 @@ fn credential_paths(
 }
 
 fn resolve_and_read_with_source(config: &Config) -> anyhow::Result<(PathBuf, String)> {
+    let configured = config.claude_credentials_path.trim();
+    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty());
+    // On macOS Claude Code stores the default profile's login in the Keychain
+    // and reads it before any file, so do the same. A custom profile uses a
+    // different item and keeps the file lookup.
+    if configured == KEYCHAIN_SOURCE || (configured.is_empty() && config_dir.is_none()) {
+        if let Some(text) = read_keychain_credentials() {
+            return Ok((PathBuf::from(KEYCHAIN_SOURCE), text));
+        }
+        if configured == KEYCHAIN_SOURCE {
+            bail!("Claude credentials not found");
+        }
+    }
     let paths = credential_paths(
         &config.claude_credentials_path,
         std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
@@ -893,6 +1128,42 @@ fn resolve_and_read_with_source(config: &Config) -> anyhow::Result<(PathBuf, Str
     }
 
     bail!("Claude credentials not found")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_keychain_credentials() -> Option<String> {
+    None
+}
+
+/// The login JSON Claude Code saved in the macOS Keychain, read with the same
+/// `security` tool it uses, so no extra Keychain prompt appears. Output other
+/// than the secret is discarded.
+#[cfg(target_os = "macos")]
+fn read_keychain_credentials() -> Option<String> {
+    let read = |account: Option<&str>| {
+        let mut command = std::process::Command::new("/usr/bin/security");
+        command.arg("find-generic-password");
+        if let Some(account) = account {
+            command.args(["-a", account]);
+        }
+        command.args(["-s", KEYCHAIN_SERVICE, "-w"]);
+        command_stdout(command, KEYCHAIN_TIMEOUT, MAX_KEYCHAIN_BYTES)
+    };
+    // Claude Code files the item under the login name. Ask for that one, and
+    // for any item of the service only when there is none.
+    let user = std::env::var("USER").ok().filter(|user| !user.is_empty());
+    let mut result = read(user.as_deref());
+    if user.is_some() && result == Err(KEYCHAIN_ITEM_MISSING) {
+        result = read(None);
+    }
+    match result {
+        Ok(text) => Some(text),
+        Err(KEYCHAIN_ITEM_MISSING) => None,
+        Err(failure) => {
+            crate::diag::detail("claude", &format!("Keychain read failed: {failure}"));
+            None
+        }
+    }
 }
 
 /// Minimal expansion of a leading `~` and `%VAR%` segments.
@@ -1196,6 +1467,130 @@ mod tests {
             .unwrap();
         assert_eq!(creds.access_token, "synthetic-rotated-access");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn keychain_login_renews_the_default_profile() {
+        let config = Config {
+            claude_credentials_path: super::KEYCHAIN_SOURCE.into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            claude_profile_dir(&config).unwrap(),
+            dirs::home_dir().unwrap().join(".claude")
+        );
+    }
+
+    #[test]
+    fn usage_requests_identify_as_a_recent_claude_code_cli() {
+        use super::{cli_version_to_send, parse_cli_version, usage_request};
+
+        assert_eq!(
+            parse_cli_version("2.1.323 (Claude Code)\n"),
+            Some([2, 1, 323])
+        );
+        assert_eq!(parse_cli_version("3.0.0"), Some([3, 0, 0]));
+        for bad in ["", "Claude Code", "2.1", "2.1.x (Claude Code)", "2.1.3.4"] {
+            assert_eq!(parse_cli_version(bad), None, "{bad}");
+        }
+
+        // An install older than the floor, or none, sends the floor.
+        assert_eq!(cli_version_to_send(None), "2.1.323");
+        assert_eq!(cli_version_to_send(Some([2, 1, 100])), "2.1.323");
+        assert_eq!(cli_version_to_send(Some([2, 2, 0])), "2.2.0");
+        assert_eq!(cli_version_to_send(Some([2, 1, 400])), "2.1.400");
+
+        let client = crate::fetchers::build_client(5).expect("client");
+        let request = usage_request(
+            &client,
+            super::USAGE_WITH_RESETS_URL,
+            "token",
+            "claude-cli/2.1.323 (external, cli)",
+        )
+        .build()
+        .expect("request");
+        let agents: Vec<_> = request.headers().get_all("user-agent").iter().collect();
+        assert_eq!(agents, ["claude-cli/2.1.323 (external, cli)"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_stdout_rejects_failures_oversized_output_and_hangs() {
+        use super::{command_stdout, CaptureFailure};
+        let sh = |script: &str| {
+            let mut command = std::process::Command::new("/bin/sh");
+            command.args(["-c", script]);
+            command
+        };
+        let limit = StdDuration::from_secs(5);
+        assert_eq!(
+            command_stdout(sh("echo 2.1.323"), limit, 64).as_deref(),
+            Ok("2.1.323\n")
+        );
+        assert_eq!(
+            command_stdout(sh("echo no; exit 44"), limit, 64),
+            Err(CaptureFailure::Exit(Some(44)))
+        );
+        assert_eq!(
+            command_stdout(sh("true"), limit, 64),
+            Err(CaptureFailure::Output)
+        );
+        assert_eq!(
+            command_stdout(sh("echo 123456789"), limit, 4),
+            Err(CaptureFailure::Output)
+        );
+        assert_eq!(
+            command_stdout(sh("exec sleep 30"), StdDuration::from_millis(200), 64),
+            Err(CaptureFailure::TimedOut)
+        );
+        let mut missing = std::process::Command::new("/nonexistent/claude");
+        missing.arg("--version");
+        assert_eq!(
+            command_stdout(missing, limit, 64),
+            Err(CaptureFailure::NotStarted)
+        );
+
+        // A descendant that keeps the pipe open must not outlast the timeout.
+        let started = std::time::Instant::now();
+        assert_eq!(
+            command_stdout(
+                sh("sleep 20 & exec sleep 20"),
+                StdDuration::from_millis(300),
+                64
+            ),
+            Err(CaptureFailure::TimedOut)
+        );
+        assert_eq!(
+            command_stdout(
+                sh("sleep 20 & echo held"),
+                StdDuration::from_millis(300),
+                64
+            ),
+            Err(CaptureFailure::Output)
+        );
+        assert!(started.elapsed() < StdDuration::from_secs(5));
+    }
+
+    #[test]
+    #[ignore = "requires a signed-in Claude Code install on this machine"]
+    fn live_fetch_uses_local_claude_login() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let client = crate::fetchers::build_client(15).expect("client");
+        let svc = runtime
+            .block_on(super::fetch(&Config::default(), &client))
+            .unwrap_or_else(|error| match error {
+                crate::fetchers::FetchError::Auth { message } => panic!("auth: {message}"),
+                crate::fetchers::FetchError::RateLimited { .. } => panic!("rate limited"),
+                crate::fetchers::FetchError::Other(error) => panic!("other: {error:#}"),
+            });
+        assert_eq!(svc.status, "NOMINAL");
+        eprintln!(
+            "saved resets: {:?}, first expiry {:?}",
+            svc.reset_credits_available, svc.reset_credits_expire_local
+        );
     }
 
     #[test]

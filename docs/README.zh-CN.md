@@ -96,6 +96,15 @@ macOS 和 Linux 安装脚本会根据 Release 中发布的 SHA-256 文件校验�
 - 在 Settings 中填写的 DeepSeek key 会保存到当前用户的 `config.json`，不会写入
   usage cache，也不会再次显示在 UI 中。macOS/Linux 配置文件使用 0600 权限。
 
+- macOS 上 Claude Code 把默认 profile 的登录存在 Keychain（`Claude Code-credentials`），
+  面板通过 `/usr/bin/security` 只读读取；其他平台读取 `~/.claude/.credentials.json`。
+- Claude 用量请求使用 Claude Code 自己的 User-Agent（`claude-cli/<版本> (external, cli)`），
+  因为接口只把可用的免费重置次数返回给较新的 Claude Code CLI。版本取 `claude --version`
+  和 2.1.323 中较新的一个，最多每 6 小时读取一次。面板仍然不是官方客户端。
+- 缓存里某个窗口的重置时间已过时，不再显示它的旧百分比，等下一次刷新成功后恢复。
+- `state.json` 同目录下的 `diagnostics.log` 记录每个 provider 状态变化的原因（状态文字、
+  HTTP 状态码、错误描述），不含 token、key 或响应内容，上限 256 KiB。
+
 完整说明见 [SECURITY.md](../SECURITY.md)。
 
 ## 不读取 credential 的离线演示

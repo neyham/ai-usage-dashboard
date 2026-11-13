@@ -291,7 +291,7 @@ leave its password field blank to keep the existing value.
 
 | Provider | Default credential source | Override |
 | --- | --- | --- |
-| Claude | `$CLAUDE_CONFIG_DIR` when set; otherwise `~/.claude`: `.credentials.json`, then `credentials.json` | `claudeCredentialsPath` (native file path) |
+| Claude | `$CLAUDE_CONFIG_DIR` when set; otherwise the macOS Keychain item `Claude Code-credentials` (macOS only), then `~/.claude`: `.credentials.json`, then `credentials.json` | `claudeCredentialsPath` (native file path) |
 | Codex | `~/.codex/auth.json` | `codexAuthPath` (native file path) |
 | DeepSeek | `deepSeekApiKey` saved from Display Settings, then `DEEPSEEK_API_KEY` | Enter or replace it in Display Settings |
 | Grok Build | `~/.grok/auth.json` | `grokCredentialsPath` (native file path) |
@@ -380,9 +380,22 @@ closed to sanitized last-known-good data.
 
 ### Claude token renewal
 
-Claude credential files are read-only to the dashboard. It does not call
+On macOS, Claude Code keeps the default profile's login in the Keychain rather
+than in `.credentials.json`. The dashboard reads that item with
+`/usr/bin/security`, the tool Claude Code itself uses, so no extra Keychain
+prompt appears. A profile selected with `CLAUDE_CONFIG_DIR` or
+`claudeCredentialsPath` uses its file instead.
+
+Claude credentials are read-only to the dashboard. It does not call
 Anthropic's token endpoint. A refresh token rotates, and a second client
 refreshing it can invalidate Claude Code's own login.
+
+The usage request identifies itself with Claude Code's own user agent,
+`claude-cli/<version> (external, cli)`: the endpoint returns saved limit
+resets only to a recent Claude Code CLI. The version is the newer of what
+`claude --version` reports (asked at most every six hours through
+`claudeCodeCommand`) and 2.1.323. The dashboard is still not an official
+client.
 
 An unexpired access token is used for the usage request. After expiry or an HTTP
 401, the dashboard rereads the selected file first: Claude Code may already have
@@ -393,7 +406,8 @@ refresh API. It sends no model prompt. Success requires changed, usable
 credentials followed by a successful usage response; a CLI exit alone is not
 proof of recovery.
 
-The CLI uses the same profile as the selected native `.credentials.json` file.
+The CLI uses the same profile as the selected native `.credentials.json` file
+or the Keychain login.
 Renamed/imported credential files are readable but do not trigger CLI renewal.
 Probe attempts are limited to one every 30 minutes; that cooldown does not
 prevent adopting credentials already renewed by Claude Code. `claudeCodeCommand`
@@ -509,6 +523,12 @@ value again.
   provider's `Retry-After` deadline.
 - A successful response is cached per provider. Cached data older than six
   hours is marked as possibly stale.
+- A cached window whose reset time has passed is no longer shown: its last
+  known percentage belongs to the previous window. The figure returns with the
+  next successful refresh.
+- An Antigravity access token refreshed in memory is reused until it expires,
+  together with the OAuth client that worked, so the installed `agy` binary is
+  not scanned again on every refresh.
 
 ## Understanding status warnings
 
@@ -540,6 +560,18 @@ If every enabled panel fails:
 
 Deleting `%LOCALAPPDATA%\AiUsageDashboard\state.json` only clears cached display
 data; it does not repair authentication.
+
+### Diagnostic log
+
+`diagnostics.log`, in the same folder as `state.json`, records why a card is
+not live: one line each time a provider's outcome changes (`ok`, an auth
+status, a rate limit, or an error description), plus the reason a Claude or
+Antigravity login renewal failed. It contains timestamps, provider names,
+status text, HTTP status codes, and error descriptions with the home directory
+shortened to `~`. It never contains tokens, keys, or response bodies. The file
+is limited to 256 KiB with one older copy (`diagnostics.log.1`), and the offline
+demo does not write to it. Review it before sharing: file paths can still name
+folders on your machine.
 
 ## Launch modes
 

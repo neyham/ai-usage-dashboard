@@ -59,12 +59,32 @@ dashboard does not write the OAuth file or OS keyring item. If no client is
 found, refresh is skipped and the panel reports `SESSION EXPIRED` until `agy`
 renews the login.
 
+## Claude request identity
+
+The Claude usage request sends Claude Code's user agent,
+`claude-cli/<version> (external, cli)`, because the endpoint returns saved
+limit resets only to a recent Claude Code CLI. To learn the version, the
+dashboard runs `claudeCodeCommand` with `--version` at most every six hours,
+reads at most 4 KiB of its output, and stops it after 5 seconds. No credential
+is passed to that process. A `claudeCodeCommand` pointing at an untrusted
+binary runs that binary, as it already does for login renewal.
+
+## Diagnostic log
+
+`diagnostics.log` beside the usage cache records provider outcomes: status
+text, HTTP status codes, error descriptions, and why a login renewal failed.
+Tokens, API keys, cookies, and response bodies are never written to it; from a
+rejected Google token request only the HTTP status and the short OAuth error
+code are kept. The home directory is shortened to `~`. On macOS and Linux the
+file is created with mode 0600. A credential or response body appearing in this
+file is a vulnerability.
+
 ## Protect credentials when reporting
 
 Never attach or paste any of the following:
 
-- Claude credential files, access tokens, refresh tokens, or raw OAuth
-  responses;
+- Claude credential files, the macOS Keychain item `Claude Code-credentials`,
+  access tokens, refresh tokens, or raw OAuth responses;
 - Codex `auth.json`, authorization headers, cookies, or account identifiers;
 - Grok Build `auth.json`, access or refresh tokens, or account/team identifiers;
 - Cursor CLI `auth.json`, macOS Keychain / Linux `secret-tool` items, desktop
