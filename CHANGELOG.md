@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.7] - 2026-11-20
+
+### Security
+
+- Updated `rusqlite` from 0.32.1 to 0.41.1 (bundling `libsqlite3-sys` 0.39.1)
+  to address `RUSTSEC-2026-0459` / `CVE-2026-119375`.
+- Updated `rustix` from 1.1.4 to 1.1.6 to address `RUSTSEC-2026-0486`.
+
+### Changed
+
+- Release upgrade checks use 0.9.6 as the baseline.
+
 ## [0.9.6] - 2026-11-20
 
 ### Fixed
