@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.9.6] - 2026-11-20
 
 ### Fixed
 
@@ -29,6 +29,10 @@ All notable changes to this project are documented in this file.
 - `diagnostics.log` beside `state.json`: one line each time a provider's
   outcome changes, plus the reason a Claude or Antigravity login renewal
   failed. No tokens, keys, or response bodies; 256 KiB with one older copy.
+
+### Changed
+
+- Release upgrade checks use 0.9.5 as the baseline.
 
 ## [0.9.5] - 2026-11-08
 

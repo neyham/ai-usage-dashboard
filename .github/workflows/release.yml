@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  PREVIOUS_VERSION: "0.9.4"
+  PREVIOUS_VERSION: "0.9.5"
 
 jobs:
   validate:
